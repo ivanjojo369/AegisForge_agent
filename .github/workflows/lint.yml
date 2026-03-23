@@ -1,0 +1,114 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download actionlint
+        id: get_actionlint
+        run: bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+        shell: bash
+
+      - name: Check workflow files
+        run: ${{ steps.get_actionlint.outputs.executable }} -color
+        shell: bash
+
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Create virtual environment
+        run: uv venv
+
+      - name: Install project dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+
+          if [ -f requirements-dev.txt ]; then
+            uv pip install -r requirements-dev.txt
+          elif [ -f requirements.txt ]; then
+            uv pip install -r requirements.txt
+          fi
+
+          uv pip install -e .
+          uv pip install ruff
+
+      - name: Run Ruff
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+
+          TARGETS=()
+          for path in src tests scripts; do
+            if [ -e "$path" ]; then
+              TARGETS+=("$path")
+            fi
+          done
+
+          if [ ${#TARGETS[@]} -eq 0 ]; then
+            echo "No lint targets found."
+            exit 0
+          fi
+
+          echo "Lint targets: ${TARGETS[*]}"
+          ruff check "${TARGETS[@]}"
+
+      - name: Run Python syntax compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+
+          TARGETS=()
+          for path in src tests scripts; do
+            if [ -e "$path" ]; then
+              TARGETS+=("$path")
+            fi
+          done
+
+          if [ ${#TARGETS[@]} -eq 0 ]; then
+            echo "No compile targets found."
+            exit 0
+          fi
+
+          python -m compileall "${TARGETS[@]}"
+          

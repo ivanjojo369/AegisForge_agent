@@ -1,0 +1,29 @@
+{
+  "task_id": "quipu_lab_test_task_001",
+  "title": "Validate minimal quipu_lab tau2-style task",
+  "user_goal": "Confirm that the quipu_lab task schema can be loaded and processed in a minimal smoke flow.",
+  "conversation_context": [
+    {
+      "role": "user",
+      "content": "Please validate the minimal quipu_lab task structure."
+    }
+  ],
+  "required_tools": [
+    "list_available_assets"
+  ],
+  "success_criteria": [
+    "task loads successfully",
+    "required tool is recognized",
+    "result shape is structured"
+  ],
+  "constraints": [
+    "do not invent extra tools",
+    "keep the output compact"
+  ],
+  "metadata": {
+    "domain": "quipu_lab",
+    "mode": "tau2-style",
+    "split": "base",
+    "fixture": true
+  }
+}

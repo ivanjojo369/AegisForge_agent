@@ -1,0 +1,64 @@
+{
+  "domain": "quipu_lab",
+  "tools": [
+    {
+      "name": "lookup_lab_note",
+      "description": "Retrieve a compact note or memo from the quipu_lab knowledge base.",
+      "safe": true,
+      "tags": [
+        "retrieval",
+        "notes"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "list_available_assets",
+      "description": "List named assets currently available to the task context.",
+      "safe": true,
+      "tags": [
+        "inventory",
+        "assets"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "draft_structured_plan",
+      "description": "Produce a structured step plan from a short task description.",
+      "safe": true,
+      "tags": [
+        "planning"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "max_steps": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goal"
+        ]
+      }
+    }
+  ]
+}

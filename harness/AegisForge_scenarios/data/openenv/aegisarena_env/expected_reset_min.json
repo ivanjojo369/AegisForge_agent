@@ -1,0 +1,55 @@
+{
+  "required_top_level_keys": [
+    "observation",
+    "state",
+    "info"
+  ],
+  "required_observation_keys": [
+    "mission_id",
+    "mission_type",
+    "mission_summary",
+    "available_tools",
+    "observed_context",
+    "recent_actions",
+    "step_count",
+    "max_steps",
+    "budget_remaining",
+    "cost_so_far",
+    "done"
+  ],
+  "required_state_keys": [
+    "episode_id",
+    "mission_id",
+    "mission_type",
+    "hidden_truth",
+    "step_count",
+    "max_steps",
+    "budget_remaining",
+    "cost_so_far",
+    "score",
+    "success",
+    "done",
+    "failure_mode",
+    "history"
+  ],
+  "required_info_keys": [
+    "env_name",
+    "reset",
+    "mission_type",
+    "heldout_mode",
+    "seed_metadata"
+  ],
+  "expected_defaults": {
+    "env_name": "aegisarena_env",
+    "reset": true,
+    "step_count": 0,
+    "done": false,
+    "success": false,
+    "cost_so_far": 0
+  },
+  "allowed_mission_types": [
+    "game_ops",
+    "finance_ops",
+    "business_ops"
+  ]
+}

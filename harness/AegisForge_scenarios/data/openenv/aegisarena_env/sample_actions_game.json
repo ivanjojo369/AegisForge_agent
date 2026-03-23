@@ -1,0 +1,39 @@
+{
+  "mission_type": "game_ops",
+  "seed": 12345,
+  "heldout_mode": false,
+  "episode_plan": [
+    {
+      "step": 1,
+      "action": "inspect_context",
+      "payload": {}
+    },
+    {
+      "step": 2,
+      "action": "query_tool",
+      "tool_name": "map_probe",
+      "payload": {
+        "region": "forward_path"
+      }
+    },
+    {
+      "step": 3,
+      "action": "query_tool",
+      "tool_name": "simulate_move",
+      "payload": {
+        "candidate_move": "move_east"
+      }
+    },
+    {
+      "step": 4,
+      "action": "submit_final",
+      "answer": "objective_reached",
+      "payload": {}
+    }
+  ],
+  "expected_outcome": {
+    "done": true,
+    "success": true,
+    "mission_type": "game_ops"
+  }
+}

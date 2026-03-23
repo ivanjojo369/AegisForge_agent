@@ -1,0 +1,41 @@
+{
+  "run_id": "quipu_lab_demo_run_001",
+  "task_id": "quipu_lab_demo_task_001",
+  "status": "ok",
+  "score": 0.92,
+  "summary": "Task processed in quipu_lab tau2-style mode with a structured response and tool-aware reasoning path.",
+  "used_tools": [
+    "list_available_assets",
+    "draft_structured_plan"
+  ],
+  "trace": [
+    {
+      "step": 1,
+      "event_type": "task_loaded",
+      "content": "Loaded quipu_lab demo task and validated required fields.",
+      "timestamp": "2026-03-11T18:00:00+00:00",
+      "extra": {
+        "domain": "quipu_lab"
+      }
+    },
+    {
+      "step": 2,
+      "event_type": "response_generated",
+      "content": "Produced final structured response with tool-aware reasoning.",
+      "timestamp": "2026-03-11T18:00:08+00:00",
+      "extra": {
+        "status": "ok"
+      }
+    }
+  ],
+  "extra": {
+    "domain": "quipu_lab",
+    "mode": "tau2-style",
+    "split": "base",
+    "evaluation_notes": [
+      "task constraints were respected",
+      "required tools were referenced consistently",
+      "output remained concise and structured"
+    ]
+  }
+}

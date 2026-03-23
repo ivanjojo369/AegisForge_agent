@@ -1,0 +1,3 @@
+base_url = "http://127.0.0.1:8011"
+timeout = 10.0
+env_name = "demo_env"

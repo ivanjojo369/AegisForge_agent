@@ -1,0 +1,20 @@
+{
+  "env_name": "demo_env",
+  "episode_plan": [
+    {
+      "step": 1,
+      "action": "advance",
+      "value": 1
+    },
+    {
+      "step": 2,
+      "action": "advance",
+      "value": 2
+    }
+  ],
+  "expected_outcome": {
+    "score_min": 3,
+    "done": true,
+    "success": true
+  }
+}

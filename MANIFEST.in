@@ -1,0 +1,17 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include SUBMISSION.md
+include VERSIONING.md
+include requirements.txt
+include requirements-dev.txt
+include .env.example
+include run.sh
+
+recursive-include src/aegisforge/prompts *.md *.json
+recursive-include src/aegisforge_eval/heldouts *.yaml
+recursive-include templates/security_adapter *.toml *.template *.md
+recursive-include assets *.json *.png
+recursive-include harness *.toml *.json *.md
+
+global-exclude __pycache__ *.py[cod] .DS_Store

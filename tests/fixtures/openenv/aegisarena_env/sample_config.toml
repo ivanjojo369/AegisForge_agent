@@ -1,0 +1,23 @@
+env_name = "aegisarena_env"
+display_name = "AegisArena Env"
+version = "0.1.0"
+host = "127.0.0.1"
+port = 8012
+base_url = "http://127.0.0.1:8012"
+sprint_focus = 1
+deterministic = true
+heldout_mode = false
+max_steps_default = 8
+budget_default = 100
+
+[mission_mix]
+game_ops = 0.34
+finance_ops = 0.33
+business_ops = 0.33
+
+[reward_weights]
+correctness_weight = 1.0
+efficiency_penalty_weight = 0.2
+tool_overuse_penalty_weight = 0.15
+invalid_action_penalty_weight = 0.3
+robustness_bonus_weight = 0.2

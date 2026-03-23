@@ -1,0 +1,20 @@
+{
+  "adapter": "openenv",
+  "base_url": "http://127.0.0.1:8012",
+  "env_name": "aegisarena_env",
+  "seed": 12345,
+  "live_check": true,
+  "require_success": false,
+  "action_plan": [
+    {
+      "action": "query_tool",
+      "payload": {
+        "row": 0
+      }
+    },
+    {
+      "action": "submit_final",
+      "answer": "PROFITABLE"
+    }
+  ]
+}

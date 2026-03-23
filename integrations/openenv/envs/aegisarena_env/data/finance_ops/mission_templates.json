@@ -1,0 +1,63 @@
+[
+  {
+    "template_id": "finance_profitability_basic",
+    "difficulty": "medium",
+    "mission_summary": "Review the financial snapshot and classify the unit as profitable or not profitable.",
+    "question": "Is the business unit profitable? Respond with PROFITABLE or NOT_PROFITABLE.",
+    "table_rows": [
+      {
+        "quarter": "Q1",
+        "revenue": 160,
+        "cost": 110
+      }
+    ],
+    "expected_answer": "PROFITABLE",
+    "hidden_truth": {
+      "profit": 50,
+      "margin_percent": 31.25,
+      "anomaly_flag": false
+    }
+  },
+  {
+    "template_id": "finance_profitability_negative",
+    "difficulty": "medium",
+    "mission_summary": "Determine whether the unit is profitable based on the given row.",
+    "question": "Based on the snapshot, determine whether profit is positive. Respond with PROFITABLE or NOT_PROFITABLE.",
+    "table_rows": [
+      {
+        "quarter": "Q2",
+        "revenue": 120,
+        "cost": 145
+      }
+    ],
+    "expected_answer": "NOT_PROFITABLE",
+    "hidden_truth": {
+      "profit": -25,
+      "margin_percent": -20.83,
+      "anomaly_flag": false
+    }
+  },
+  {
+    "template_id": "finance_consistency_check",
+    "difficulty": "hard",
+    "mission_summary": "Classify profitability while accounting for a possible inconsistency in the draft snapshot.",
+    "question": "Review the row and classify the unit as PROFITABLE or NOT_PROFITABLE.",
+    "table_rows": [
+      {
+        "quarter": "Q3",
+        "revenue": 180,
+        "cost": 96
+      },
+      {
+        "note": "One source suggests an adjustment may have been applied after the draft export.",
+        "draft_adjustment": -8
+      }
+    ],
+    "expected_answer": "PROFITABLE",
+    "hidden_truth": {
+      "profit": 84,
+      "margin_percent": 46.67,
+      "anomaly_flag": true
+    }
+  }
+]

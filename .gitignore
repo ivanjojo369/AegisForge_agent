@@ -1,0 +1,106 @@
+# =========================
+# Secrets / local env files
+# =========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+secrets/
+**/secrets/
+
+# =========================
+# Python caches / artifacts
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# =========================
+# Packaging / build outputs
+# =========================
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+*.whl
+
+# =========================
+# Test / coverage caches
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# Type checkers / linters
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# =========================
+# Jupyter / notebooks
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# OS / editor files
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
+# =========================
+# UV / lock / temporary
+# =========================
+# Keep uv.lock tracked if you use it
+# uv.lock
+*.tmp
+*.temp
+*.swp
+
+# =========================
+# Project-specific outputs
+# =========================
+results/
+output/
+outputs/
+artifacts/
+logs/
+tmp/
+temp/
+
+# Agent/eval run dumps (common naming)
+**/test_results/
+**/run_results/
+**/runs/
+**/provenance/*.json
+**/provenance/*.csv
+
+# If your tooling produces local databases or caches
+*.sqlite
+*.db
+data/cache/
+cache/
+
+# =========================
+# Docker
+# =========================
+**/.dockerignore.backup

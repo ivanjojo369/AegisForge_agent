@@ -1,0 +1,26 @@
+# AegisForge security adapter template configuration
+
+[adapter]
+name = "security_adapter"
+track = "security"
+enabled = true
+
+[prompt]
+profile = "tracks/security.md"
+reflection = "core/reflection.md"
+
+[budget]
+max_llm_calls = 4
+max_context_chars = 16000
+soft_token_budget = 5500
+hard_token_budget = 8000
+
+[policy]
+strict_self_check = true
+default_posture = "conservative"
+artifact_mode = "report"
+
+[telemetry]
+emit_events = true
+write_traces = true
+write_scorecards = true

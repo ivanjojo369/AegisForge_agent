@@ -1,0 +1,7 @@
+suite: smoke
+description: Minimal held-out sanity checks for registry and execution wiring.
+cases:
+  - id: smoke-001
+    focus: completion
+  - id: smoke-002
+    focus: formatting

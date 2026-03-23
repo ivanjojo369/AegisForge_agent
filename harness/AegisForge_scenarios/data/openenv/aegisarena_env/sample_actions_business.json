@@ -1,0 +1,34 @@
+{
+  "mission_type": "business_ops",
+  "seed": 12345,
+  "heldout_mode": false,
+  "episode_plan": [
+    {
+      "step": 1,
+      "action": "query_tool",
+      "tool_name": "ticket_lookup",
+      "payload": {
+        "field": "priority"
+      }
+    },
+    {
+      "step": 2,
+      "action": "query_tool",
+      "tool_name": "policy_lookup",
+      "payload": {
+        "policy": "routing"
+      }
+    },
+    {
+      "step": 3,
+      "action": "submit_final",
+      "answer": "escalate_ops",
+      "payload": {}
+    }
+  ],
+  "expected_outcome": {
+    "done": true,
+    "success": true,
+    "mission_type": "business_ops"
+  }
+}

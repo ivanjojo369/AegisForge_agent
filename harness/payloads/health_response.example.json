@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "service": "aegisforge",
+  "version": "0.1.0",
+  "public_url": "http://127.0.0.1:8000"
+}

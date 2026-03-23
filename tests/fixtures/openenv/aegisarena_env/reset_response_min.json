@@ -1,0 +1,82 @@
+{
+  "observation": {
+    "mission_id": "finance-demo-0001",
+    "mission_type": "finance_ops",
+    "mission_summary": "Analyze a compact financial snapshot, reason about profitability, and submit the correct classification with minimal wasted actions.",
+    "available_tools": [
+      "inspect_context",
+      "query_tool",
+      "propose_plan",
+      "take_action",
+      "submit_final",
+      "table_lookup",
+      "calc_metric",
+      "consistency_check"
+    ],
+    "observed_context": [
+      {
+        "type": "mode",
+        "value": "finance_ops",
+        "tag": "standard"
+      },
+      {
+        "type": "finance_table",
+        "value": [
+          {
+            "quarter": "Q1",
+            "revenue": 160,
+            "cost": 110
+          }
+        ]
+      },
+      {
+        "type": "question",
+        "value": "Is the business unit profitable? Respond with PROFITABLE or NOT_PROFITABLE."
+      }
+    ],
+    "recent_actions": [],
+    "step_count": 0,
+    "max_steps": 8,
+    "budget_remaining": 100,
+    "cost_so_far": 0,
+    "done": false
+  },
+  "state": {
+    "episode_id": "12345-finance-demo-0001",
+    "mission_id": "finance-demo-0001",
+    "mission_type": "finance_ops",
+    "hidden_truth": {
+      "success_label": "PROFITABLE",
+      "expected_answer": "PROFITABLE",
+      "profit": 50,
+      "margin_percent": 31.25,
+      "anomaly_flag": false
+    },
+    "step_count": 0,
+    "max_steps": 8,
+    "budget_remaining": 100,
+    "cost_so_far": 0,
+    "score": 0.0,
+    "success": false,
+    "done": false,
+    "failure_mode": null,
+    "history": []
+  },
+  "info": {
+    "env_name": "aegisarena_env",
+    "reset": true,
+    "mission_type": "finance_ops",
+    "heldout_mode": false,
+    "seed_metadata": {
+      "seed_bundle": {
+        "root_seed": 12345,
+        "mission_seed": 11111111,
+        "context_seed": 22222222,
+        "reward_seed": 33333333,
+        "mission_type": "finance_ops"
+      },
+      "heldout_mode": false,
+      "reproducible": true
+    }
+  }
+}

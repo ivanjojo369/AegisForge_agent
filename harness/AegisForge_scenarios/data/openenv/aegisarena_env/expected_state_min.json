@@ -1,0 +1,42 @@
+{
+  "required_state_keys": [
+    "episode_id",
+    "mission_id",
+    "mission_type",
+    "hidden_truth",
+    "step_count",
+    "max_steps",
+    "budget_remaining",
+    "cost_so_far",
+    "score",
+    "success",
+    "done",
+    "failure_mode",
+    "history"
+  ],
+  "expected_after_first_query_tool": {
+    "step_count": 1,
+    "done": false,
+    "success": false,
+    "failure_mode": null
+  },
+  "history_item_required_keys": [
+    "action",
+    "target",
+    "tool_name",
+    "answer",
+    "plan_text",
+    "payload",
+    "reward",
+    "reward_breakdown",
+    "step_count_after",
+    "budget_remaining_after",
+    "done",
+    "success"
+  ],
+  "allowed_mission_types": [
+    "game_ops",
+    "finance_ops",
+    "business_ops"
+  ]
+}

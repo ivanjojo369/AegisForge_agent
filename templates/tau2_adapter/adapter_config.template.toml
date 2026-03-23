@@ -1,0 +1,54 @@
+# ============================================================================
+# AegisForge τ² Adapter Config Template
+# ============================================================================
+# This template documents the expected configuration surface for the internal
+# τ²-style adapter used by AegisForge.
+#
+# Main code paths:
+# - src/aegisforge/adapters/tau2/config.py
+# - src/aegisforge/adapters/tau2/adapter.py
+# - src/aegisforge/adapters/tau2/quipu_lab/
+# ============================================================================
+
+[adapter]
+provider = "tau2"
+enabled = false
+domain_name = "quipu_lab"
+strict_mode = false
+
+[service]
+base_url = "http://127.0.0.1:8020"
+timeout_seconds = 30
+
+[defaults]
+track = "tau2"
+mode = "tau2-style"
+split = "base"
+
+[domain.quipu_lab]
+enabled = true
+label = "quipu_lab"
+description = "Purple-adapted τ²-style domain for structured multi-turn evaluation."
+
+[env]
+AEGISFORGE_ENABLE_TAU2 = "false"
+TAU2_BASE_URL = "http://127.0.0.1:8020"
+TAU2_DOMAIN_NAME = "quipu_lab"
+TAU2_TIMEOUT_SECONDS = "30"
+TAU2_STRICT_MODE = "false"
+
+[validation]
+min_timeout_seconds = 1
+max_timeout_seconds = 300
+require_http_url = true
+require_non_empty_domain_name = true
+
+[artifacts]
+demo_task = "integrations/tau2/data_demo/quipu_lab/sample_task.json"
+demo_trace = "integrations/tau2/data_demo/quipu_lab/sample_trace.json"
+demo_run = "integrations/tau2/data_demo/quipu_lab/sample_run.json"
+
+[notes]
+summary = "Template config for the AegisForge τ² adapter."
+expected_adapter_class = "Tau2Adapter"
+expected_config_class = "Tau2AdapterConfig"

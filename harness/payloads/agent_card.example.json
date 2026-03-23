@@ -1,0 +1,28 @@
+{
+  "id": "aegisforge",
+  "name": "AegisForge",
+  "version": "0.1.0",
+  "description": "A submission-ready A2A purple agent runtime designed for judge-friendly evaluation and clean integration across AgentBeats-compatible tracks.",
+  "url": "https://example.com",
+  "health_url": "https://example.com/health",
+  "capabilities": [
+    "a2a",
+    "judge-friendly",
+    "fresh-state",
+    "purple-agent"
+  ],
+  "tracks": [
+    "purple"
+  ],
+  "integrations": [
+    "openenv",
+    "tau2",
+    "security_arena"
+  ],
+  "metadata": {
+    "provider": "AegisForge",
+    "runtime": "python",
+    "transport": "http",
+    "card_path": "/.well-known/agent-card.json"
+  }
+}

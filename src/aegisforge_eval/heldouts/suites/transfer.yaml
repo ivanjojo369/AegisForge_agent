@@ -1,0 +1,7 @@
+suite: transfer
+description: Cases that check whether policies transfer across task families.
+cases:
+  - id: transfer-001
+    focus: cross-domain
+  - id: transfer-002
+    focus: unfamiliar-structure

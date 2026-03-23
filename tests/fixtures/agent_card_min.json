@@ -1,0 +1,24 @@
+{
+  "id": "aegisforge",
+  "name": "AegisForge",
+  "version": "0.1.0",
+  "description": "Submission-ready A2A purple agent runtime.",
+  "url": "http://127.0.0.1:8000",
+  "health_url": "http://127.0.0.1:8000/health",
+  "capabilities": [
+    "a2a",
+    "judge-friendly",
+    "fresh-state",
+    "purple-agent"
+  ],
+  "tracks": [
+    "purple"
+  ],
+  "integrations": [],
+  "metadata": {
+    "provider": "AegisForge",
+    "runtime": "python",
+    "transport": "http",
+    "card_path": "/.well-known/agent-card.json"
+  }
+}

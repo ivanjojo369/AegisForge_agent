@@ -1,0 +1,7 @@
+suite: budget
+description: Cases that stress efficiency and bounded reasoning.
+cases:
+  - id: budget-001
+    focus: low-call-budget
+  - id: budget-002
+    focus: compact-output

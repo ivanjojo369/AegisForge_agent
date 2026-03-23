@@ -1,0 +1,38 @@
+[
+  {
+    "template_id": "game_heldout_false_shortcut",
+    "difficulty": "hard",
+    "mission_summary": "A visually attractive shortcut may trap the agent into budget loss.",
+    "map_hint": "The shortest visible route is not always the safest route.",
+    "inventory": {
+      "energy": 4,
+      "key": false
+    },
+    "goal": "Avoid the shortcut trap and still complete the mission.",
+    "expected_answer": "objective_reached",
+    "optimal_plan": [
+      "map_probe",
+      "inventory_check",
+      "simulate_move",
+      "submit_final"
+    ]
+  },
+  {
+    "template_id": "game_heldout_resource_lock",
+    "difficulty": "hard",
+    "mission_summary": "The agent must preserve enough energy to unlock the final objective.",
+    "map_hint": "Spending too much energy early prevents a correct finish later.",
+    "inventory": {
+      "energy": 3,
+      "key": true
+    },
+    "goal": "Complete the mission without running out of energy before the final move.",
+    "expected_answer": "objective_reached",
+    "optimal_plan": [
+      "inventory_check",
+      "map_probe",
+      "simulate_move",
+      "submit_final"
+    ]
+  }
+]

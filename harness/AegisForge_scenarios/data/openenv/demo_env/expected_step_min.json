@@ -1,0 +1,39 @@
+{
+  "required_top_level_keys": [
+    "observation",
+    "reward",
+    "done",
+    "truncated",
+    "info",
+    "state"
+  ],
+  "required_observation_keys": [
+    "message",
+    "score",
+    "step_count",
+    "remaining_steps"
+  ],
+  "required_state_keys": [
+    "episode_id",
+    "score",
+    "step_count",
+    "max_steps",
+    "target_score",
+    "done",
+    "success",
+    "last_action",
+    "history"
+  ],
+  "required_info_keys": [
+    "target_score",
+    "max_steps"
+  ],
+  "expected_after_first_advance": {
+    "reward": 1.0,
+    "done": false,
+    "truncated": false,
+    "score": 1,
+    "step_count": 1,
+    "last_action": "advance"
+  }
+}

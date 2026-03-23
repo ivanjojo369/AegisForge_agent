@@ -1,0 +1,45 @@
+[
+  {
+    "name": "ticket_lookup",
+    "category": "business_ops",
+    "description": "Inspect the structured ticket and recover process metadata.",
+    "cost": 2,
+    "output_shape": {
+      "ticket_id": "string",
+      "priority": "string",
+      "stage": "string",
+      "sla_hours": "int"
+    }
+  },
+  {
+    "name": "policy_lookup",
+    "category": "business_ops",
+    "description": "Look up routing policy hints or process constraints relevant to the case.",
+    "cost": 2,
+    "output_shape": {
+      "policy_rule": "string",
+      "applies": "bool"
+    }
+  },
+  {
+    "name": "route_case",
+    "category": "business_ops",
+    "description": "Propose or simulate a routing action for the current case.",
+    "cost": 3,
+    "output_shape": {
+      "candidate_route": "string",
+      "route_valid": "bool"
+    }
+  },
+  {
+    "name": "update_stage",
+    "category": "business_ops",
+    "description": "Simulate a stage transition within the business workflow.",
+    "cost": 2,
+    "output_shape": {
+      "previous_stage": "string",
+      "next_stage": "string",
+      "allowed": "bool"
+    }
+  }
+]

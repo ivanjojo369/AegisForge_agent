@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "service": "aegisforge",
+  "version": "0.1.0",
+  "public_url": "http://127.0.0.1:8000",
+  "environment": "test",
+  "metadata": {
+    "track": "purple",
+    "git_sha": "test-sha",
+    "image_ref": "local/aegisforge:test",
+    "integrations": []
+  }
+}

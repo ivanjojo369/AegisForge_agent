@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AegisForge Submission Metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submission_name",
+    "agent_name",
+    "agent_version",
+    "track",
+    "public_url",
+    "agent_card_url",
+    "docker_image",
+    "git_commit",
+    "created_at_utc",
+    "abstract_path",
+    "readme_path"
+  ],
+  "properties": {
+    "submission_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "track": {
+      "type": "string",
+      "enum": [
+        "purple",
+        "openenv",
+        "tau2",
+        "security_arena"
+      ]
+    },
+    "public_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "agent_card_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "docker_image": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_commit": {
+      "type": "string",
+      "minLength": 7
+    },
+    "git_branch": {
+      "type": "string"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "abstract_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "readme_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    },
+    "integrations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "openenv",
+          "tau2",
+          "security_arena"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "fair_play_acknowledged": {
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

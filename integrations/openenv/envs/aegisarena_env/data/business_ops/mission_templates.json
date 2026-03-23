@@ -1,0 +1,74 @@
+[
+  {
+    "template_id": "business_high_priority_ops",
+    "difficulty": "medium",
+    "mission_summary": "Route the case to the correct queue while respecting process priority.",
+    "ticket": {
+      "id": "biz-demo-001",
+      "priority": "high",
+      "stage": "new",
+      "sla_hours": 4,
+      "customer_type": "enterprise"
+    },
+    "blockers": [
+      "missing_owner"
+    ],
+    "policy_hint": "High priority cases go to Ops, medium priority to Priority Queue, and low priority to Standard Queue.",
+    "expected_answer": "escalate_ops",
+    "hidden_truth": {
+      "expected_route": "escalate_ops",
+      "priority": "high",
+      "stage": "new",
+      "sla_hours": 4,
+      "customer_type": "enterprise"
+    }
+  },
+  {
+    "template_id": "business_medium_priority_queue",
+    "difficulty": "medium",
+    "mission_summary": "Review the case metadata and route it to the appropriate process queue.",
+    "ticket": {
+      "id": "biz-demo-002",
+      "priority": "medium",
+      "stage": "triage",
+      "sla_hours": 8,
+      "customer_type": "premium"
+    },
+    "blockers": [
+      "billing_flag"
+    ],
+    "policy_hint": "High priority cases go to Ops, medium priority to Priority Queue, and low priority to Standard Queue.",
+    "expected_answer": "priority_queue",
+    "hidden_truth": {
+      "expected_route": "priority_queue",
+      "priority": "medium",
+      "stage": "triage",
+      "sla_hours": 8,
+      "customer_type": "premium"
+    }
+  },
+  {
+    "template_id": "business_low_priority_standard",
+    "difficulty": "medium",
+    "mission_summary": "Choose the correct route for a low-priority case without wasting unnecessary actions.",
+    "ticket": {
+      "id": "biz-demo-003",
+      "priority": "low",
+      "stage": "pending_review",
+      "sla_hours": 24,
+      "customer_type": "standard"
+    },
+    "blockers": [
+      "missing_approval"
+    ],
+    "policy_hint": "High priority cases go to Ops, medium priority to Priority Queue, and low priority to Standard Queue.",
+    "expected_answer": "standard_queue",
+    "hidden_truth": {
+      "expected_route": "standard_queue",
+      "priority": "low",
+      "stage": "pending_review",
+      "sla_hours": 24,
+      "customer_type": "standard"
+    }
+  }
+]

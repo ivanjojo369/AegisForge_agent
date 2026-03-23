@@ -1,0 +1,7 @@
+suite: robustness
+description: Adversarial or unusual prompts intended to probe generalization.
+cases:
+  - id: robust-001
+    focus: misleading-instructions
+  - id: robust-002
+    focus: partial-context

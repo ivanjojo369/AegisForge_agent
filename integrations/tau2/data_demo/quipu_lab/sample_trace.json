@@ -1,0 +1,64 @@
+{
+  "run_id": "quipu_lab_demo_run_001",
+  "task_id": "quipu_lab_demo_task_001",
+  "trace": [
+    {
+      "step": 1,
+      "event_type": "task_loaded",
+      "content": "Loaded quipu_lab demo task and validated required fields.",
+      "timestamp": "2026-03-11T18:00:00+00:00",
+      "extra": {
+        "domain": "quipu_lab",
+        "mode": "tau2-style"
+      }
+    },
+    {
+      "step": 2,
+      "event_type": "tool_invocation",
+      "content": "Requested tool inventory for the current task context.",
+      "timestamp": "2026-03-11T18:00:02+00:00",
+      "extra": {
+        "tool": "list_available_assets",
+        "arguments": {
+          "kind": "general"
+        }
+      }
+    },
+    {
+      "step": 3,
+      "event_type": "tool_result",
+      "content": "Received asset list for quipu_lab context.",
+      "timestamp": "2026-03-11T18:00:03+00:00",
+      "extra": {
+        "tool": "list_available_assets",
+        "asset_count": 3
+      }
+    },
+    {
+      "step": 4,
+      "event_type": "tool_invocation",
+      "content": "Drafted a compact structured plan for the task.",
+      "timestamp": "2026-03-11T18:00:05+00:00",
+      "extra": {
+        "tool": "draft_structured_plan",
+        "arguments": {
+          "goal": "Organize the next research coordination step inside quipu_lab",
+          "max_steps": 3
+        }
+      }
+    },
+    {
+      "step": 5,
+      "event_type": "response_generated",
+      "content": "Produced final structured response with tool-aware reasoning.",
+      "timestamp": "2026-03-11T18:00:08+00:00",
+      "extra": {
+        "status": "ok",
+        "used_tools": [
+          "list_available_assets",
+          "draft_structured_plan"
+        ]
+      }
+    }
+  ]
+}

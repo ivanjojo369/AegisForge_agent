@@ -1,0 +1,37 @@
+{
+  "domain": "quipu_lab",
+  "seed_id": "quipu_lab_seed_v1",
+  "description": "Minimal starting state for the quipu_lab tau2-style integration.",
+  "lab_context": {
+    "name": "quipu_lab",
+    "focus": "structured research coordination and tool-aware multi-turn tasks",
+    "environment": "AegisForge Purple integration demo"
+  },
+  "available_assets": [
+    {
+      "name": "quipu_lab_policy_excerpt",
+      "type": "json",
+      "description": "Compact rules for agent behavior in the domain."
+    },
+    {
+      "name": "quipu_lab_tools",
+      "type": "json",
+      "description": "Tool inventory used by the tau2-style adapter."
+    },
+    {
+      "name": "sample_task",
+      "type": "json",
+      "description": "Minimal reproducible task input."
+    }
+  ],
+  "default_constraints": [
+    "do not invent unavailable tools",
+    "keep responses concise and structured",
+    "avoid unsupported claims"
+  ],
+  "metadata": {
+    "mode": "tau2-style",
+    "split": "base",
+    "public_safe": true
+  }
+}

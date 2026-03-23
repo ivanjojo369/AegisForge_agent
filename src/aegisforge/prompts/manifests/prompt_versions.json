@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "description": "Initial prompt asset pack for AegisForge strategy and orchestration integration.",
+  "files": {
+    "core/system.md": "v1",
+    "core/planning.md": "v1",
+    "core/reflection.md": "v1",
+    "core/tool_use.md": "v1",
+    "tracks/openenv.md": "v1",
+    "tracks/security.md": "v1",
+    "tracks/tau2.md": "v1",
+    "contracts/json_response.md": "v1",
+    "contracts/artifact_response.md": "v1"
+  }
+}

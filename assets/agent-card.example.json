@@ -1,0 +1,20 @@
+{
+  "name": "AegisForge",
+  "version": "0.1.0",
+  "description": "A2A-compatible purple agent for AgentX–AgentBeats Phase 2.",
+  "endpoints": {
+    "a2a": "/",
+    "agent_card": "/.well-known/agent-card.json",
+    "health": "/health"
+  },
+  "capabilities": [
+    "multi_turn",
+    "tool_use",
+    "fresh_state"
+  ],
+  "policies": {
+    "fair_play": true,
+    "no_hardcoding": true,
+    "no_bug_exploitation": true
+  }
+}

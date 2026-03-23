@@ -1,0 +1,60 @@
+name: demo_env
+display_name: AegisForge OpenEnv Demo Env
+version: 0.1.0
+description: >
+  Entorno OpenEnv mínimo para validar integración local de reset/step/state
+  dentro de AegisForge_agent.
+
+transport:
+  type: http
+  base_url: http://127.0.0.1:8011
+
+server:
+  app: server.app:app
+  host: 0.0.0.0
+  port: 8011
+
+api:
+  health: /health
+  reset:
+    method: POST
+    path: /reset
+  step:
+    method: POST
+    path: /step
+  state:
+    method: GET
+    path: /state
+
+environment:
+  max_steps: 5
+  target_score: 3
+  deterministic: true
+  persistence: memory_only
+
+actions:
+  - name: advance
+    description: Incrementa el score según el valor enviado.
+  - name: hold
+    description: No cambia el score.
+  - name: finish
+    description: Termina el episodio y evalúa éxito o fracaso.
+
+observation_fields:
+  - message
+  - score
+  - step_count
+  - remaining_steps
+
+state_fields:
+  - episode_id
+  - score
+  - step_count
+  - max_steps
+  - target_score
+  - done
+  - success
+  - last_action
+  - history
+  - message
+  

@@ -1,0 +1,33 @@
+[
+  {
+    "name": "map_probe",
+    "category": "game_ops",
+    "description": "Reveal a limited hint about nearby map structure or route risk.",
+    "cost": 2,
+    "output_shape": {
+      "probe_result": "string",
+      "confidence": "float"
+    }
+  },
+  {
+    "name": "inventory_check",
+    "category": "game_ops",
+    "description": "Inspect the current inventory and remaining consumable resources.",
+    "cost": 1,
+    "output_shape": {
+      "energy": "int",
+      "key": "bool"
+    }
+  },
+  {
+    "name": "simulate_move",
+    "category": "game_ops",
+    "description": "Simulate a candidate move before committing to a domain action.",
+    "cost": 2,
+    "output_shape": {
+      "candidate_move": "string",
+      "expected_risk": "string",
+      "expected_cost": "int"
+    }
+  }
+]

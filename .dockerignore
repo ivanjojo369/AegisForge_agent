@@ -1,0 +1,81 @@
+# =========
+# Secrets
+# =========
+.env
+.env.*
+secrets/
+**/secrets/
+*.key
+*.pem
+*.pfx
+*.p12
+
+# =========================
+# Python caches / artifacts
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.whl
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# ======================
+# Virtual environments
+# ======================
+.venv/
+venv/
+env/
+ENV/
+
+# ======================
+# Project output folders
+# ======================
+results/
+output/
+outputs/
+artifacts/
+logs/
+tmp/
+temp/
+**/test_results/
+**/run_results/
+**/runs/
+
+# ======================
+# Notebooks / datasets
+# ======================
+.ipynb_checkpoints/
+*.ipynb
+data/
+datasets/
+
+# ======================
+# VCS / IDE
+# ======================
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ======================
+# Optional: docs/assets (si no los necesitas dentro de la imagen)
+# ======================
+docs/
+assets/
+harness/
+integrations/
+tooling/
+tests/
+scripts/

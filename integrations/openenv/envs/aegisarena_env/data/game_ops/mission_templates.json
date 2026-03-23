@@ -1,0 +1,56 @@
+[
+  {
+    "template_id": "game_corridor_key_exit",
+    "difficulty": "medium",
+    "mission_summary": "Reach the objective using as few actions and probes as possible.",
+    "map_hint": "The exit is not adjacent to the starting tile.",
+    "inventory": {
+      "energy": 3,
+      "key": false
+    },
+    "goal": "Reach the exit with the key.",
+    "expected_answer": "objective_reached",
+    "optimal_plan": [
+      "map_probe",
+      "simulate_move",
+      "take_action",
+      "submit_final"
+    ]
+  },
+  {
+    "template_id": "game_resource_tradeoff",
+    "difficulty": "medium",
+    "mission_summary": "Choose a path that preserves enough resources to finish the mission.",
+    "map_hint": "A shorter route may consume more energy than the safer one.",
+    "inventory": {
+      "energy": 4,
+      "key": true
+    },
+    "goal": "Reach the objective without exhausting energy.",
+    "expected_answer": "objective_reached",
+    "optimal_plan": [
+      "inventory_check",
+      "map_probe",
+      "simulate_move",
+      "submit_final"
+    ]
+  },
+  {
+    "template_id": "game_signal_and_decoy",
+    "difficulty": "hard",
+    "mission_summary": "Inspect the environment and avoid the decoy path before committing.",
+    "map_hint": "One visible route is a decoy; inspect before committing.",
+    "inventory": {
+      "energy": 5,
+      "key": false
+    },
+    "goal": "Avoid the decoy path and still reach the objective.",
+    "expected_answer": "objective_reached",
+    "optimal_plan": [
+      "inspect_context",
+      "map_probe",
+      "simulate_move",
+      "submit_final"
+    ]
+  }
+]

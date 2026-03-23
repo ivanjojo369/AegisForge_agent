@@ -1,0 +1,8 @@
+{
+  "task_id": "quipu_lab_test_task_001",
+  "status": "ok",
+  "summary": "Task processed in quipu_lab τ²-style mode with a structured response and tool-aware reasoning path.",
+  "used_tools": [
+    "list_available_assets"
+  ]
+}

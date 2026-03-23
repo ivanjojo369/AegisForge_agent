@@ -1,0 +1,61 @@
+{
+  "required_top_level_keys": [
+    "observation",
+    "reward",
+    "done",
+    "truncated",
+    "info",
+    "state"
+  ],
+  "required_observation_keys": [
+    "mission_id",
+    "mission_type",
+    "mission_summary",
+    "available_tools",
+    "observed_context",
+    "recent_actions",
+    "step_count",
+    "max_steps",
+    "budget_remaining",
+    "cost_so_far",
+    "done"
+  ],
+  "required_state_keys": [
+    "episode_id",
+    "mission_id",
+    "mission_type",
+    "hidden_truth",
+    "step_count",
+    "max_steps",
+    "budget_remaining",
+    "cost_so_far",
+    "score",
+    "success",
+    "done",
+    "failure_mode",
+    "history"
+  ],
+  "required_info_keys": [
+    "mission_type",
+    "invalid_action",
+    "action",
+    "action_cost",
+    "truncated",
+    "reward_breakdown"
+  ],
+  "expected_after_first_query_tool": {
+    "action": "query_tool",
+    "invalid_action": false,
+    "step_count": 1,
+    "done": false,
+    "truncated": false
+  },
+  "reward_breakdown_required_keys": [
+    "correctness",
+    "efficiency_penalty",
+    "tool_overuse_penalty",
+    "invalid_action_penalty",
+    "robustness_bonus",
+    "total"
+  ]
+}

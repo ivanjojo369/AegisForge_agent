@@ -1,0 +1,22 @@
+{
+  "required_state_keys": [
+    "episode_id",
+    "score",
+    "step_count",
+    "max_steps",
+    "target_score",
+    "done",
+    "success",
+    "last_action",
+    "history"
+  ],
+  "expected_after_first_advance": {
+    "score": 1,
+    "step_count": 1,
+    "max_steps": 5,
+    "target_score": 3,
+    "done": false,
+    "success": false,
+    "last_action": "advance"
+  }
+}

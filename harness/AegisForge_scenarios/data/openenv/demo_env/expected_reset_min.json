@@ -1,0 +1,36 @@
+{
+  "required_top_level_keys": [
+    "observation",
+    "state",
+    "info"
+  ],
+  "required_observation_keys": [
+    "message",
+    "score",
+    "step_count",
+    "remaining_steps"
+  ],
+  "required_state_keys": [
+    "episode_id",
+    "score",
+    "step_count",
+    "max_steps",
+    "target_score",
+    "done",
+    "success",
+    "last_action",
+    "history"
+  ],
+  "required_info_keys": [
+    "env_name",
+    "reset"
+  ],
+  "expected_defaults": {
+    "score": 0,
+    "step_count": 0,
+    "done": false,
+    "success": false,
+    "env_name": "demo_env",
+    "reset": true
+  }
+}

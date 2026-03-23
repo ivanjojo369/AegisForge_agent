@@ -1,0 +1,25 @@
+name = "debate-example"
+kind = "scenario"
+version = "0.1.0"
+description = "Minimal example debate-style scenario for local structure, smoke checks, and documentation purposes."
+
+[agent]
+id = "aegisforge"
+name = "AegisForge"
+
+[runtime]
+host = "0.0.0.0"
+port = 8000
+health_path = "/health"
+agent_card_path = "/.well-known/agent-card.json"
+
+[scenario]
+topic = "Is reproducibility more important than peak benchmark performance?"
+max_turns = 4
+mode = "local-example"
+judge_style = "balanced"
+
+[metadata]
+owner = "AegisForge"
+track = "purple"
+notes = "Example only. Not an official benchmark submission artifact."

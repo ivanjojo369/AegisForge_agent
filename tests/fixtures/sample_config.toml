@@ -1,0 +1,22 @@
+host = "0.0.0.0"
+port = 8000
+agent_port = 8000
+log_level = "INFO"
+environment = "test"
+public_url = "http://127.0.0.1:8000"
+
+agent_id = "aegisforge"
+agent_name = "AegisForge"
+agent_version = "0.1.0"
+agent_description = "Submission-ready A2A purple agent runtime for tests."
+
+health_path = "/health"
+agent_card_path = "/.well-known/agent-card.json"
+
+enable_openenv = false
+enable_tau2 = false
+enable_security = false
+
+git_sha = "test-sha"
+image_ref = "local/aegisforge:test"
+track = "purple"

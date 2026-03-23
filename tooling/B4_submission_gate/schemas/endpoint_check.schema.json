@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quipuloop.dev/schemas/endpoint_check.schema.json",
+  "title": "Endpoint Check Report",
+  "type": "object",
+  "required": [
+    "base_url",
+    "timestamp",
+    "ok",
+    "checks"
+  ],
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "object",
+      "required": [
+        "health",
+        "agent_card",
+        "repo"
+      ],
+      "properties": {
+        "health": {
+          "$ref": "#/$defs/check"
+        },
+        "agent_card": {
+          "$ref": "#/$defs/check"
+        },
+        "repo": {
+          "type": "object",
+          "required": [
+            "ok",
+            "artifacts",
+            "missing"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "artifacts": {
+              "type": "object"
+            },
+            "missing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "root": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": [
+        "ok",
+        "errors"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "payload": {}
+      }
+    }
+  }
+}

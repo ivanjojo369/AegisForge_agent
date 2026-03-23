@@ -1,0 +1,36 @@
+{
+  "observation": {
+    "message": "Episode demo0001 | score=1 | step_count=1 | remaining_steps=4",
+    "score": 1,
+    "step_count": 1,
+    "remaining_steps": 4
+  },
+  "reward": 1.0,
+  "done": false,
+  "truncated": false,
+  "info": {
+    "target_score": 3,
+    "max_steps": 5
+  },
+  "state": {
+    "episode_id": "episode-demo-0001",
+    "score": 1,
+    "step_count": 1,
+    "max_steps": 5,
+    "target_score": 3,
+    "done": false,
+    "success": false,
+    "last_action": "advance",
+    "history": [
+      {
+        "action": "advance",
+        "value": 1,
+        "score_after": 1,
+        "step_count_after": 1,
+        "done": false,
+        "success": false,
+        "reward": 1.0
+      }
+    ]
+  }
+}

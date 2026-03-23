@@ -1,0 +1,15 @@
+{
+  "env_name": "aegisarena_env",
+  "sprint_focus": 1,
+  "allowed_mission_types": [
+    "game_ops",
+    "finance_ops",
+    "business_ops"
+  ],
+  "mission_mix": {
+    "game_ops": 0.34,
+    "finance_ops": 0.33,
+    "business_ops": 0.33
+  },
+  "notes": "Distribución base de misiones para el Sprint 1 de AgentX–AgentBeats Phase 2 Purple."
+}

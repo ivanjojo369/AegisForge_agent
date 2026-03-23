@@ -1,0 +1,32 @@
+{
+  "task_id": "quipu_lab_demo_task_001",
+  "title": "Prepare a structured lab coordination response",
+  "user_goal": "Review the context, identify the relevant lab assets, and produce a concise structured response with a short plan.",
+  "conversation_context": [
+    {
+      "role": "user",
+      "content": "I need help organizing the next step for a small research coordination task inside quipu_lab."
+    }
+  ],
+  "required_tools": [
+    "list_available_assets",
+    "draft_structured_plan"
+  ],
+  "success_criteria": [
+    "references available assets consistently",
+    "produces a structured plan",
+    "respects task constraints"
+  ],
+  "constraints": [
+    "do not invent unavailable tools",
+    "keep the answer concise and structured",
+    "do not claim hidden external access"
+  ],
+  "metadata": {
+    "domain": "quipu_lab",
+    "mode": "tau2-style",
+    "split": "base",
+    "difficulty": "easy",
+    "source": "AegisForge integration demo"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "env_name": "aegisarena_env",
+  "seed": 12345,
+  "deterministic": true,
+  "heldout_mode": false,
+  "notes": "Seed base para corridas locales reproducibles de Sprint 1 en aegisarena_env."
+}

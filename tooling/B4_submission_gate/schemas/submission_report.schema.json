@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quipuloop.dev/schemas/submission_report.schema.json",
+  "title": "Submission Report",
+  "type": "object",
+  "required": [
+    "repo",
+    "endpoints",
+    "summary"
+  ],
+  "properties": {
+    "repo": {
+      "type": "object",
+      "required": [
+        "name",
+        "public_url"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public_url": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        }
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "type": "string"
+        },
+        "health": {
+          "type": "string"
+        },
+        "agent_card": {
+          "type": "string"
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "abstract",
+        "track_strategy"
+      ],
+      "properties": {
+        "abstract": {
+          "type": "string",
+          "minLength": 1
+        },
+        "track_strategy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

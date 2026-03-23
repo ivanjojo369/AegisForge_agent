@@ -1,0 +1,32 @@
+[
+  {
+    "name": "table_lookup",
+    "category": "finance_ops",
+    "description": "Inspect a compact financial table or row from the current mission context.",
+    "cost": 2,
+    "output_shape": {
+      "row_count": "int",
+      "selected_row": "object"
+    }
+  },
+  {
+    "name": "calc_metric",
+    "category": "finance_ops",
+    "description": "Calculate a simple derived metric such as profit or margin.",
+    "cost": 2,
+    "output_shape": {
+      "metric_name": "string",
+      "value": "float"
+    }
+  },
+  {
+    "name": "consistency_check",
+    "category": "finance_ops",
+    "description": "Check whether the visible financial snapshot contains signals of inconsistency or draft noise.",
+    "cost": 3,
+    "output_shape": {
+      "consistent": "bool",
+      "notes": "list[string]"
+    }
+  }
+]

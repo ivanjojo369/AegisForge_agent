@@ -1,0 +1,170 @@
+name: test-and-publish
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Default image: ghcr.io/<owner>/<repo>
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # Typical A2A server host/port (adjust if your server uses different values)
+  AGENT_HOST: "127.0.0.1"
+  AGENT_PORT: "9009"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install deps (uv preferred, pip fallback)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          if [ -f "pyproject.toml" ]; then
+            # Prefer reproducible installs when a lockfile exists.
+            if [ -f "uv.lock" ]; then
+              uv sync --extra test --frozen
+            else
+              uv sync --extra test
+            fi
+          elif [ -f "requirements.txt" ]; then
+            python -m pip install -U pip
+            pip install -r requirements.txt
+            if [ -f "requirements-dev.txt" ]; then pip install -r requirements-dev.txt; fi
+          else
+            echo "No pyproject.toml or requirements.txt found." >&2
+            exit 1
+          fi
+
+      - name: Lint (optional)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if uv run ruff --version >/dev/null 2>&1; then
+            uv run ruff check .
+          else
+            echo "ruff not installed; skipping lint."
+          fi
+
+      - name: Unit tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f "pyproject.toml" ]; then
+            uv run pytest -q
+          else
+            pytest -q
+          fi
+
+      # Optional: A2A conformance tests.
+      # Enable if your test suite supports `pytest --agent-url ...`
+      # and your server can run in CI without external secrets.
+      #
+      # - name: Start agent server (background)
+      #   shell: bash
+      #   run: |
+      #     set -euxo pipefail
+      #     # Adjust to your entrypoint if needed:
+      #     uv run python -m aegisforge.a2a_server &
+      #     echo $! > server.pid
+      #
+      #     # Wait until port is accepting connections (max ~30s)
+      #     python - <<'PY'
+      #     import socket, time, os
+      #     host = os.environ.get("AGENT_HOST", "127.0.0.1")
+      #     port = int(os.environ.get("AGENT_PORT", "9009"))
+      #     deadline = time.time() + 30
+      #     while time.time() < deadline:
+      #         try:
+      #             with socket.create_connection((host, port), timeout=1):
+      #                 print("Server is up")
+      #                 raise SystemExit(0)
+      #         except OSError:
+      #             time.sleep(1)
+      #     raise SystemExit("Server did not start in time")
+      #     PY
+      #
+      # - name: Conformance tests (A2A)
+      #   shell: bash
+      #   run: |
+      #     set -euxo pipefail
+      #     uv run pytest --agent-url "http://${AGENT_HOST}:${AGENT_PORT}"
+      #
+      # - name: Stop server
+      #   if: always()
+      #   shell: bash
+      #   run: |
+      #     if [ -f server.pid ]; then kill "$(cat server.pid)" || true; fi
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

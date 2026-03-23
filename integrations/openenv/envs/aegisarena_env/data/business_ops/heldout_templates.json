@@ -1,0 +1,52 @@
+[
+  {
+    "template_id": "business_heldout_priority_conflict",
+    "difficulty": "hard",
+    "mission_summary": "Resolve a routing decision where SLA pressure and blocker noise may distract from the correct policy route.",
+    "ticket": {
+      "id": "biz-heldout-001",
+      "priority": "high",
+      "stage": "triage",
+      "sla_hours": 4,
+      "customer_type": "premium"
+    },
+    "blockers": [
+      "billing_flag",
+      "compliance_note"
+    ],
+    "policy_hint": "High priority cases go to Ops, medium priority to Priority Queue, and low priority to Standard Queue.",
+    "expected_answer": "escalate_ops",
+    "hidden_truth": {
+      "expected_route": "escalate_ops",
+      "priority": "high",
+      "stage": "triage",
+      "sla_hours": 4,
+      "customer_type": "premium"
+    }
+  },
+  {
+    "template_id": "business_heldout_medium_sla_noise",
+    "difficulty": "hard",
+    "mission_summary": "Route the case correctly even when blockers and customer tier create misleading urgency.",
+    "ticket": {
+      "id": "biz-heldout-002",
+      "priority": "medium",
+      "stage": "pending_review",
+      "sla_hours": 8,
+      "customer_type": "enterprise"
+    },
+    "blockers": [
+      "missing_owner",
+      "missing_approval"
+    ],
+    "policy_hint": "High priority cases go to Ops, medium priority to Priority Queue, and low priority to Standard Queue.",
+    "expected_answer": "priority_queue",
+    "hidden_truth": {
+      "expected_route": "priority_queue",
+      "priority": "medium",
+      "stage": "pending_review",
+      "sla_hours": 8,
+      "customer_type": "enterprise"
+    }
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "env_name": "demo_env",
+  "seed": 123,
+  "deterministic": true,
+  "notes": "Seed base para corridas locales y pruebas de smoke en OpenEnv demo."
+}

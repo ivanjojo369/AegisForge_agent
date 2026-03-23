@@ -1,0 +1,47 @@
+[
+  {
+    "template_id": "finance_heldout_adjusted_margin",
+    "difficulty": "hard",
+    "mission_summary": "Reason about profitability when a draft export may omit a late-stage adjustment.",
+    "question": "Determine whether the unit should be classified as PROFITABLE or NOT_PROFITABLE.",
+    "table_rows": [
+      {
+        "quarter": "Q4",
+        "revenue": 145,
+        "cost": 141
+      },
+      {
+        "note": "A late adjustment may exist but is not reflected consistently across all draft views.",
+        "draft_adjustment": 6
+      }
+    ],
+    "expected_answer": "PROFITABLE",
+    "hidden_truth": {
+      "profit": 4,
+      "margin_percent": 2.76,
+      "anomaly_flag": true
+    }
+  },
+  {
+    "template_id": "finance_heldout_low_margin_negative_flip",
+    "difficulty": "hard",
+    "mission_summary": "The row appears borderline; the agent must avoid overconfident classification without checking the context carefully.",
+    "question": "Classify the unit as PROFITABLE or NOT_PROFITABLE.",
+    "table_rows": [
+      {
+        "quarter": "Q1",
+        "revenue": 132,
+        "cost": 134
+      },
+      {
+        "note": "The draft export contains no correction line for this quarter."
+      }
+    ],
+    "expected_answer": "NOT_PROFITABLE",
+    "hidden_truth": {
+      "profit": -2,
+      "margin_percent": -1.52,
+      "anomaly_flag": false
+    }
+  }
+]

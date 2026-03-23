@@ -1,0 +1,138 @@
+name: aegisarena_env
+display_name: AegisArena Env
+version: 0.1.0
+description: >
+  OpenEnv environment for AegisForge_agent focused on AgentX–AgentBeats
+  Phase 2 Purple, Sprint 1. This v1 environment concentrates on three
+  mission families: game_ops, finance_ops, and business_ops.
+
+transport:
+  type: http
+  base_url: http://127.0.0.1:8012
+
+server:
+  app: server.app:app
+  host: 0.0.0.0
+  port: 8012
+
+api:
+  root: /
+  health:
+    method: GET
+    path: /health
+  reset:
+    method: POST
+    path: /reset
+  step:
+    method: POST
+    path: /step
+  state:
+    method: GET
+    path: /state
+
+environment:
+  sprint_focus: 1
+  max_steps_default: 8
+  budget_default: 100
+  deterministic: true
+  persistence: memory_only
+  heldout_mode: false
+  allowed_mission_types:
+    - game_ops
+    - finance_ops
+    - business_ops
+  mission_mix:
+    game_ops: 0.34
+    finance_ops: 0.33
+    business_ops: 0.33
+
+missions:
+  game_ops:
+    description: >
+      Sequential decision-making tasks inspired by Game Agent tracks,
+      emphasizing planning, partial information, and resource use.
+    default_tools:
+      - inspect_context
+      - query_tool
+      - take_action
+      - submit_final
+    domain_tools:
+      - map_probe
+      - inventory_check
+      - simulate_move
+
+  finance_ops:
+    description: >
+      Finance-oriented tasks inspired by OfficeQA-like reasoning, including
+      table reading, metric calculation, and inconsistency detection.
+    default_tools:
+      - inspect_context
+      - query_tool
+      - take_action
+      - submit_final
+    domain_tools:
+      - table_lookup
+      - calc_metric
+      - consistency_check
+
+  business_ops:
+    description: >
+      Business process tasks inspired by CRM and workflow handling,
+      emphasizing routing, stage updates, prioritization, and SLA-aware actions.
+    default_tools:
+      - inspect_context
+      - query_tool
+      - take_action
+      - submit_final
+    domain_tools:
+      - ticket_lookup
+      - policy_lookup
+      - route_case
+      - update_stage
+
+actions:
+  - name: inspect_context
+    description: Inspect visible mission context or a named context target.
+  - name: query_tool
+    description: Query a tool exposed by the current mission family.
+  - name: propose_plan
+    description: Propose a short plan before taking domain actions.
+  - name: take_action
+    description: Execute a domain-level action with a structured payload.
+  - name: submit_final
+    description: Submit the final answer or final decision for the mission.
+
+reward_model:
+  correctness_weight: 1.0
+  efficiency_penalty_weight: 0.2
+  tool_overuse_penalty_weight: 0.15
+  invalid_action_penalty_weight: 0.3
+  robustness_bonus_weight: 0.2
+
+observation_fields:
+  - mission_id
+  - mission_type
+  - mission_summary
+  - available_tools
+  - observed_context
+  - recent_actions
+  - step_count
+  - max_steps
+  - budget_remaining
+  - cost_so_far
+  - done
+
+state_fields:
+  - episode_id
+  - mission_id
+  - mission_type
+  - hidden_truth
+  - step_count
+  - max_steps
+  - budget_remaining
+  - cost_so_far
+  - score
+  - success
+  - done
+  - failure_mode
+  - history

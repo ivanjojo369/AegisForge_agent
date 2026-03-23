@@ -1,0 +1,23 @@
+{
+  "observation": {
+    "message": "Episode demo0001 | score=0 | step_count=0 | remaining_steps=5",
+    "score": 0,
+    "step_count": 0,
+    "remaining_steps": 5
+  },
+  "state": {
+    "episode_id": "episode-demo-0001",
+    "score": 0,
+    "step_count": 0,
+    "max_steps": 5,
+    "target_score": 3,
+    "done": false,
+    "success": false,
+    "last_action": null,
+    "history": []
+  },
+  "info": {
+    "env_name": "demo_env",
+    "reset": true
+  }
+}

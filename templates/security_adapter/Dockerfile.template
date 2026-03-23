@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
+
+LABEL org.opencontainers.image.title="AegisForge Adapter Template"
+LABEL org.opencontainers.image.description="Reusable Docker template for AegisForge adapter services"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    AGENT_PORT=8000 \
+    AEGISFORGE_PUBLIC_URL=http://127.0.0.1:8000 \
+    APP_MODULE=server.app:app
+
+WORKDIR /app
+
+# Dependencias mínimas de sistema:
+# - curl: para HEALTHCHECK
+# - build-essential: por si algún paquete Python necesita compilar extensiones
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar primero requirements para aprovechar cache de Docker
+COPY requirements.txt ./requirements.txt
+
+# Instalar dependencias Python
+# uvicorn se instala explícitamente para asegurar el entrypoint ASGI
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip install --no-cache-dir -r requirements.txt uvicorn
+
+# Copiar el resto del código
+COPY . .
+
+# Usuario no root para mejor práctica de seguridad
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8000
+
+# El servicio debe responder /health
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+  CMD sh -c 'curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1'
+
+# Cambia APP_MODULE si tu servidor no vive en server.app:app
+CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host ${HOST} --port ${PORT}"]
+
+# AegisForge security adapter template Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY . /app
+
+RUN pip install --no-cache-dir -e .
+
+ENV PYTHONUNBUFFERED=1
+ENV AEGISFORGE_TRACK=security
+
+CMD ["python", "-m", "src.aegisforge.cli", "--track", "security"]
