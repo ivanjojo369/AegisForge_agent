@@ -61,7 +61,7 @@ pluggy==1.6.0
     # via pytest
 proto-plus==1.27.1
     # via google-api-core
-protobuf==6.33.5
+protobuf==7.34.1
     # via
     #   a2a-sdk
     #   google-api-core
