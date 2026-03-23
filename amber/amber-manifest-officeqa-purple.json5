@@ -1,0 +1,39 @@
+{
+  manifest_version: "0.2.0",
+
+  name: "AegisForge OfficeQA Purple",
+
+  program: {
+    image: "ghcr.io/ivanjojo369/aegisforge-officeqa-purple:latest",
+    entrypoint: "python -u -m aegisforge.runner --host 0.0.0.0 --port 8001",
+    env: {
+      PYTHONUNBUFFERED: "1",
+      AEGISFORGE_TRACK: "officeqa"
+    },
+    network: {
+      endpoints: [
+        { name: "endpoint", port: 8001 }
+      ]
+    }
+  },
+
+  config_schema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false
+  },
+
+  slots: {},
+
+  provides: {
+    a2a: {
+      kind: "a2a",
+      endpoint: "endpoint"
+    }
+  },
+
+  exports: {
+    a2a: "a2a"
+  }
+}
