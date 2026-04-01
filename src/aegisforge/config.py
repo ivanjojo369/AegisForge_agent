@@ -35,6 +35,16 @@ class AppConfig:
     enable_openenv: bool
     enable_tau2: bool
     enable_security: bool
+    enable_officeqa: bool
+    enable_crmarena: bool
+
+    officeqa_data_dir: str
+    officeqa_enable_rag: bool
+    officeqa_answer_format: str
+
+    crmarena_data_dir: str
+    crmarena_enable_guardrails: bool
+    crmarena_extraction_policy: str
 
     git_sha: str
     image_ref: str
@@ -98,6 +108,16 @@ class AppConfig:
             enable_openenv=_read_bool_env("AEGISFORGE_ENABLE_OPENENV", False),
             enable_tau2=_read_bool_env("AEGISFORGE_ENABLE_TAU2", False),
             enable_security=_read_bool_env("AEGISFORGE_ENABLE_SECURITY", False),
+            enable_officeqa=_read_bool_env("AEGISFORGE_ENABLE_OFFICEQA", False),
+            enable_crmarena=_read_bool_env("AEGISFORGE_ENABLE_CRMARENA", False),
+            officeqa_data_dir=os.environ.get("AEGISFORGE_OFFICEQA_DATA_DIR", "").strip(),
+            officeqa_enable_rag=_read_bool_env("AEGISFORGE_OFFICEQA_ENABLE_RAG", False),
+            officeqa_answer_format=os.environ.get("AEGISFORGE_OFFICEQA_ANSWER_FORMAT", "<solution>/<answer>").strip()
+            or "<solution>/<answer>",
+            crmarena_data_dir=os.environ.get("AEGISFORGE_CRMARENA_DATA_DIR", "").strip(),
+            crmarena_enable_guardrails=_read_bool_env("AEGISFORGE_CRMARENA_ENABLE_GUARDRAILS", True),
+            crmarena_extraction_policy=os.environ.get("AEGISFORGE_CRMARENA_EXTRACTION_POLICY", "deny").strip()
+            or "deny",
             git_sha=os.environ.get("AEGISFORGE_GIT_SHA", "dev").strip() or "dev",
             image_ref=os.environ.get("AEGISFORGE_IMAGE_REF", "local/aegisforge:dev").strip() or "local/aegisforge:dev",
             track=os.environ.get("AEGISFORGE_TRACK", "purple").strip() or "purple",
@@ -120,6 +140,10 @@ class AppConfig:
             integrations.append("tau2")
         if self.enable_security:
             integrations.append("security_arena")
+        if self.enable_officeqa:
+            integrations.append("officeqa")
+        if self.enable_crmarena:
+            integrations.append("crmarena")
         return integrations
 
     def health_url(self) -> str:

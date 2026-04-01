@@ -59,6 +59,7 @@ function Invoke-JsonWithRetry {
   }
 }
 
+Assert-PathExists -Path $SubmissionDir -Label 'submission directory'
 $ResolvedSubmissionDir = (Resolve-Path -LiteralPath $SubmissionDir).Path
 $SubmissionJsonPath = Join-Path $ResolvedSubmissionDir 'submission.json'
 $MetricsPath = Join-Path $ResolvedSubmissionDir 'metrics.json'
@@ -69,6 +70,7 @@ $LogsDir = Join-Path $ResolvedSubmissionDir 'logs'
 $TrajectoriesDir = Join-Path $ResolvedSubmissionDir 'trajectories'
 $HealthPath = Join-Path $EvidenceDir 'health.json'
 $AgentCardPath = Join-Path $EvidenceDir 'agent_card.json'
+$CatalogSummaryPath = Join-Path $EvidenceDir 'task_catalog_summary.json'
 
 Write-Section 'Checking submission structure'
 Assert-PathExists -Path $SubmissionJsonPath -Label 'submission.json'
@@ -80,6 +82,7 @@ Assert-PathExists -Path $LogsDir -Label 'logs directory'
 Assert-PathExists -Path $TrajectoriesDir -Label 'trajectories directory'
 Assert-PathExists -Path $HealthPath -Label 'health evidence'
 Assert-PathExists -Path $AgentCardPath -Label 'agent-card evidence'
+Assert-PathExists -Path $CatalogSummaryPath -Label 'task catalog summary'
 
 $submission = Load-JsonFile -Path $SubmissionJsonPath
 $metrics = Load-JsonFile -Path $MetricsPath
@@ -87,6 +90,7 @@ $runManifest = Load-JsonFile -Path $RunManifestPath
 $packageManifest = Load-JsonFile -Path $PackageManifestPath
 $health = Load-JsonFile -Path $HealthPath
 $agentCard = Load-JsonFile -Path $AgentCardPath
+$catalogSummary = Load-JsonFile -Path $CatalogSummaryPath
 
 Write-Section 'Checking metadata consistency'
 Assert-Condition -Condition ($submission.run.domain -eq $ExpectedDomain) -Message ("Unexpected domain in submission.json: {0}" -f $submission.run.domain)
@@ -105,11 +109,21 @@ Assert-Condition -Condition ($null -ne $agentCard.name) -Message 'agent_card.jso
 Assert-Condition -Condition ($null -ne $agentCard.url) -Message 'agent_card.json is missing url.'
 Assert-Condition -Condition ($packageManifest.package_status -eq 'prepared') -Message 'package_manifest.json is not marked as prepared.'
 
-Write-Section 'Checking trajectories and logs'
-$trajectoryFiles = @(Get-ChildItem -LiteralPath $TrajectoriesDir -File)
-$logFiles = @(Get-ChildItem -LiteralPath $LogsDir -File)
+Write-Section 'Checking task catalog consistency'
+$trajectoryFiles = @(Get-ChildItem -LiteralPath $TrajectoriesDir -File | Sort-Object Name)
+$logFiles = @(Get-ChildItem -LiteralPath $LogsDir -File | Sort-Object Name)
 Assert-Condition -Condition ($trajectoryFiles.Count -ge 1) -Message 'No trajectory files found in trajectories directory.'
 Assert-Condition -Condition ($logFiles.Count -ge 1) -Message 'No log files found in logs directory.'
+
+$catalogTaskIds = @($catalogSummary.task_ids)
+$runTaskIds = @($runManifest.selected_task_ids)
+$submissionTaskIds = @($submission.run.selected_task_ids)
+Assert-Condition -Condition ($catalogTaskIds.Count -ge 1) -Message 'task_catalog_summary.json lists no tasks.'
+Assert-Condition -Condition ($runManifest.task_count -eq $catalogTaskIds.Count) -Message 'run_manifest task_count does not match task_catalog_summary.'
+Assert-Condition -Condition ($submission.run.task_count -eq $catalogTaskIds.Count) -Message 'submission.run.task_count does not match task_catalog_summary.'
+Assert-Condition -Condition (($runTaskIds -join '|') -eq ($catalogTaskIds -join '|')) -Message 'run_manifest selected_task_ids do not match task_catalog_summary.'
+Assert-Condition -Condition (($submissionTaskIds -join '|') -eq ($catalogTaskIds -join '|')) -Message 'submission selected_task_ids do not match task_catalog_summary.'
+Assert-Condition -Condition ($submission.artifacts.trajectories_count -eq $trajectoryFiles.Count) -Message 'submission.artifacts.trajectories_count does not match actual files.'
 
 foreach ($trajectoryFile in $trajectoryFiles) {
   Assert-Condition -Condition ($trajectoryFile.Length -gt 0) -Message ("Empty trajectory file: {0}" -f $trajectoryFile.FullName)
@@ -133,12 +147,14 @@ $summary = [ordered]@{
   domain_ok = $true
   task_split_ok = $true
   run_status_ok = $true
+  task_catalog_ok = $true
   adapter_tests_ok = [bool]$metrics.adapter_tests_passed
   smoke_tests_ok = [bool]$metrics.smoke_tests_passed
   docker_build_ok = [bool]$metrics.docker_build_passed
   health_ok = [bool]$metrics.health_ok
   agent_card_ok = [bool]$metrics.agent_card_ok
   local_e2e_ok = [bool]$metrics.local_e2e_ok
+  task_count = $catalogTaskIds.Count
   trajectories_count = $trajectoryFiles.Count
   logs_count = $logFiles.Count
   live_check = [bool]$CheckLive.IsPresent

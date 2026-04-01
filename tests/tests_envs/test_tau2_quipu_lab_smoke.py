@@ -1,31 +1,82 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-from aegisforge.adapters.tau2.quipu_lab import (
+from aegisforge.adapters.tau2.quipu_lab.policy import (
+    get_default_policy_rules,
+    get_policy_excerpt,
+)
+from aegisforge.adapters.tau2.quipu_lab.tasks import (
     build_minimal_result,
     build_sample_task,
-    execute_tool,
-    get_default_policy_rules,
-    get_default_tools,
-    get_policy_excerpt,
+    build_task_catalog,
+    dump_task_to_json,
+    get_smoke_tasks,
+    get_task_by_id,
+    get_tasks,
+    iter_task_ids,
     load_task_from_json,
+    task_to_trace_seed,
+    validate_catalog,
+)
+from aegisforge.adapters.tau2.quipu_lab.tools import (
+    execute_tool,
+    get_default_tools,
 )
 
+EXPECTED_SMOKE_TASK_IDS = {
+    "quipu_lab_mcu_chained_craft_constraints",
+    "quipu_lab_officeqa_year_distractor_exact_extraction",
+    "quipu_lab_tau2_airline_policy_clarification",
+    "quipu_lab_car_ambiguous_vehicle_preference",
+}
 
-def _fixture_path(*parts: str) -> Path:
-    return Path(__file__).resolve().parents[1] / "fixtures" / "tau2" / "quipu_lab" / Path(*parts)
+def test_quipu_lab_catalog_builds_multiple_tasks() -> None:
+    catalog = build_task_catalog()
+    base_tasks = get_tasks("base")
+    task_ids = iter_task_ids(catalog)
+    base_task_ids = iter_task_ids(base_tasks)
+
+    assert catalog
+    assert len(task_ids) == len(set(task_ids))
+    assert len(base_tasks) == len(catalog)
+    assert set(base_task_ids) == set(task_ids)
+
+    sample_task = build_sample_task()
+    assert sample_task.task_id in task_ids
+    assert sample_task.metadata["domain"] == "quipu_lab"
+    assert sample_task.metadata["mode"] == "tau2-style"
+
+    for task in catalog:
+        assert task.metadata["domain"] == "quipu_lab"
+        assert task.metadata["mode"] == "tau2-style"
+        assert task.metadata["split"] == "base"
+        assert len(task.conversation_context) >= 2
+        assert len(task.success_criteria) >= 1
+        assert len(task.constraints) >= 1
 
 
-def test_quipu_lab_sample_task_builds() -> None:
-    task = build_sample_task()
+def test_quipu_lab_get_tasks_and_get_task_by_id_are_consistent() -> None:
+    base_tasks = get_tasks("base")
+    smoke_tasks = get_smoke_tasks()
 
-    assert task.task_id == "quipu_lab_demo_task_001"
-    assert task.metadata["domain"] == "quipu_lab"
-    assert task.metadata["mode"] == "tau2-style"
-    assert isinstance(task.required_tools, list)
-    assert "draft_structured_plan" in task.required_tools
+    base_ids = set(iter_task_ids(base_tasks))
+    smoke_ids = set(iter_task_ids(smoke_tasks))
+
+    assert smoke_ids == EXPECTED_SMOKE_TASK_IDS
+    assert len(smoke_tasks) == len(EXPECTED_SMOKE_TASK_IDS)
+    assert len(smoke_ids) == len(smoke_tasks)
+    assert smoke_ids.issubset(base_ids)
+
+    selected = get_task_by_id("quipu_lab_tau2_airline_policy_clarification")
+    assert selected.task_id == "quipu_lab_tau2_airline_policy_clarification"
+    assert selected.metadata["enemy_repo"] == "RDI-Foundation/tau2-agentbeats"
+    assert selected.metadata["pressure_type"] == "clarify_before_action"
+
+    smoke_selected = get_task_by_id("quipu_lab_car_ambiguous_vehicle_preference")
+    assert smoke_selected.task_id in smoke_ids
+    assert smoke_selected.metadata["smoke"] is True
+
+def test_quipu_lab_catalog_validation_passes() -> None:
+    assert validate_catalog() == []
 
 
 def test_quipu_lab_policy_excerpt_has_rules() -> None:
@@ -41,56 +92,71 @@ def test_quipu_lab_policy_excerpt_has_rules() -> None:
     assert rules[0].rule_id.startswith("qlab-")
 
 
-def test_quipu_lab_tool_catalog_executes_known_tool() -> None:
+def test_quipu_lab_tool_catalog_executes_known_and_unknown_tools() -> None:
     tools = get_default_tools()
-    tool_names = [tool.name for tool in tools]
+    tool_names = {tool.name for tool in tools}
 
-    assert "list_available_assets" in tool_names
+    assert {"list_available_assets", "lookup_lab_note", "draft_structured_plan"}.issubset(
+        tool_names
+    )
 
-    result = execute_tool("list_available_assets", {"kind": "general"})
-    assert result["ok"] is True
-    assert result["tool"] == "list_available_assets"
-    assert "assets" in result
-    assert len(result["assets"]) >= 1
+    asset_result = execute_tool("list_available_assets", {"kind": "general"})
+    assert asset_result["ok"] is True
+    assert asset_result["tool"] == "list_available_assets"
+    assert len(asset_result["assets"]) >= 1
 
-
-def test_quipu_lab_tool_execution_rejects_unknown_tool() -> None:
-    result = execute_tool("totally_unknown_tool", {"foo": "bar"})
-
-    assert result["ok"] is False
-    assert result["tool"] == "totally_unknown_tool"
-    assert "unknown tool" in result["error"]
+    unknown = execute_tool("totally_unknown_tool", {"foo": "bar"})
+    assert unknown["ok"] is False
+    assert unknown["tool"] == "totally_unknown_tool"
+    assert "unknown tool" in unknown["error"]
 
 
-def test_quipu_lab_fixture_task_loads() -> None:
-    task = load_task_from_json(_fixture_path("task_min.json"))
+def test_quipu_lab_dump_and_load_roundtrip(tmp_path) -> None:
+    task = get_task_by_id("quipu_lab_officeqa_year_distractor_exact_extraction")
+    output_path = tmp_path / "quipu_lab_task.json"
 
-    assert task.task_id == "quipu_lab_test_task_001"
-    assert task.title == "Validate minimal quipu_lab tau2-style task"
-    assert task.metadata["domain"] == "quipu_lab"
-    assert task.required_tools == ["list_available_assets"]
+    dump_task_to_json(task, output_path)
+    loaded = load_task_from_json(output_path)
+
+    assert loaded.task_id == task.task_id
+    assert loaded.title == task.title
+    assert loaded.required_tools == task.required_tools
+    assert loaded.metadata["domain"] == "quipu_lab"
 
 
-def test_quipu_lab_minimal_result_matches_expected_shape() -> None:
-    task = load_task_from_json(_fixture_path("task_min.json"))
-    expected = json.loads(_fixture_path("expected_result_min.json").read_text(encoding="utf-8"))
-
+def test_quipu_lab_trace_seed_and_minimal_result_are_structured() -> None:
+    task = get_task_by_id("quipu_lab_mcu_chained_craft_constraints")
+    trace_seed = task_to_trace_seed(task)
     result = build_minimal_result(task)
 
-    assert result["task_id"] == expected["task_id"]
-    assert result["status"] == expected["status"]
-    assert result["summary"] == expected["summary"]
-    assert result["used_tools"] == expected["used_tools"]
+    assert trace_seed["task_id"] == task.task_id
+    assert trace_seed["required_tools"] == task.required_tools
+    assert trace_seed["metadata"]["domain"] == "quipu_lab"
+
+    assert result["task_id"] == task.task_id
+    assert result["status"] == "ok"
+    assert "structured response" in result["summary"]
+    assert result["used_tools"] == task.required_tools
+    assert result["metadata"]["split"] == "base"
 
 
 def test_quipu_lab_smoke_flow_end_to_end() -> None:
-    task = load_task_from_json(_fixture_path("task_min.json"))
-    tool_result = execute_tool("list_available_assets", {"kind": "general"})
+    task = get_task_by_id("quipu_lab_tau2_airline_policy_clarification")
+
+    tool_results = []
+    for tool_name in task.required_tools:
+        if tool_name == "lookup_lab_note":
+            args = {"query": task.title}
+        elif tool_name == "draft_structured_plan":
+            args = {"goal": task.user_goal, "max_steps": 3}
+        else:
+            args = {"kind": "general"}
+        tool_results.append(execute_tool(tool_name, args))
+
     final_result = build_minimal_result(task)
 
     assert task.metadata["mode"] == "tau2-style"
-    assert tool_result["ok"] is True
+    assert len(tool_results) == len(task.required_tools)
+    assert all(result["ok"] is True for result in tool_results)
     assert final_result["status"] == "ok"
-    assert "structured response" in final_result["summary"]
-    assert final_result["used_tools"] == ["list_available_assets"]
-    
+    assert final_result["used_tools"] == task.required_tools

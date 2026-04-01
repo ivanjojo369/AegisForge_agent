@@ -1,0 +1,140 @@
+# Security Arena attacker runtime template (hardened v2)
+# Rendered by scenario_resolver.py using scenario_catalog.toml
+
+[scenario]
+scenario_id = {{scenario_id}}
+name = {{name}}
+slug = {{slug}}
+category = {{category}}
+scenario_family = {{scenario_family}}
+mode = "attacker"
+source_url = {{source_url}}
+summary = {{summary}}
+attack_vector = {{attack_vector}}
+success_condition = {{success_condition}}
+
+[metadata]
+assessment_mode = "attacker"
+track = "security_arena"
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+scenario_slug = {{slug}}
+scenario_family = {{scenario_family}}
+category = {{category}}
+heldout_like = {{heldout_like}}
+strict_mode = {{strict_mode}}
+normal_user = false
+max_turns = {{max_turns}}
+expected_risk = {{expected_risk}}
+requires_artifact = {{requires_artifact}}
+required_sections = {{required_sections}}
+prompt_profile = "security_attacker"
+policy_profile = "security_attacker"
+artifact_mode = {{artifact_mode}}
+
+[context]
+target_system = {{target_system}}
+attack_surface = {{attack_surface}}
+artifact_type = {{artifact_type}}
+sensitive_asset = {{sensitive_asset}}
+source_type = {{source_type}}
+generalization_pattern = {{generalization_pattern}}
+summary = {{summary}}
+attack_vector = {{attack_vector}}
+success_condition = {{success_condition}}
+
+[signals]
+heldout_like = {{heldout_like}}
+strict_mode = {{strict_mode}}
+requires_artifact = {{requires_artifact}}
+artifact_mode = {{artifact_mode}}
+source_type = {{source_type}}
+attack_surface = {{attack_surface}}
+artifact_type = {{artifact_type}}
+expected_risk = {{expected_risk}}
+
+[objectives]
+primary_objective = {{success_condition}}
+primary_vector = {{attack_vector}}
+attacker_brief = {{attacker_message}}
+
+[playbook]
+attacker_strategy = {{attacker_strategy}}
+recommended_tasks = {{recommended_tasks}}
+recommended_tools = {{recommended_tools}}
+failure_modes = {{failure_modes}}
+
+[attack_constraints]
+stay_grounded_in_context = true
+preserve_surface_plausibility = true
+avoid_meta_discussion = true
+
+[agent]
+id = "aegisforge"
+name = "AegisForge"
+role = "attacker"
+
+[payload]
+message = {{attacker_message}}
+goal = {{success_condition}}
+format = "json"
+profile = "security_attacker"
+
+[payload.metadata]
+assessment_mode = "attacker"
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+scenario_family = {{scenario_family}}
+category = {{category}}
+heldout_like = {{heldout_like}}
+strict_mode = {{strict_mode}}
+normal_user = false
+max_turns = {{max_turns}}
+expected_risk = {{expected_risk}}
+requires_artifact = {{requires_artifact}}
+required_sections = {{required_sections}}
+attack_surface = {{attack_surface}}
+artifact_type = {{artifact_type}}
+sensitive_asset = {{sensitive_asset}}
+source_type = {{source_type}}
+artifact_mode = {{artifact_mode}}
+
+[payload.context]
+summary = {{summary}}
+target_system = {{target_system}}
+attack_vector = {{attack_vector}}
+success_condition = {{success_condition}}
+generalization_pattern = {{generalization_pattern}}
+
+[payload.findings]
+primary_vector = {{attack_vector}}
+target_system = {{target_system}}
+attack_surface = {{attack_surface}}
+artifact_type = {{artifact_type}}
+sensitive_asset = {{sensitive_asset}}
+success_condition = {{success_condition}}
+generalization_pattern = {{generalization_pattern}}
+
+[payload.playbook]
+attacker_strategy = {{attacker_strategy}}
+recommended_tasks = {{recommended_tasks}}
+recommended_tools = {{recommended_tools}}
+failure_modes = {{failure_modes}}
+
+[payload.contract]
+required_sections = {{required_sections}}
+response_style = "competitive_attacker"
+keep_section_identity = true
+
+[payload.artifact]
+required = {{requires_artifact}}
+type = {{artifact_type}}
+mode = {{artifact_mode}}
+source_type = {{source_type}}
+
+[runtime]
+base_url = {{runtime_base_url}}
+health_path = {{runtime_health_path}}
+agent_card_path = {{runtime_agent_card_path}}
+transport = "http"
+timeout_seconds = {{runtime_timeout_seconds}}

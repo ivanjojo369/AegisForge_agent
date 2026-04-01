@@ -1,0 +1,5 @@
+{
+  "question_id": "oqa-demo-001",
+  "question": "What is the likely review risk based on the document?",
+  "expected_answer_type": "classification_with_explanation"
+}

@@ -1,0 +1,12 @@
+{
+  "task_id": "crm-task-001",
+  "task_type": "customer_retention",
+  "input": {
+    "customer_id": "ACME-204",
+    "request": "Summarize churn risk and suggest next steps."
+  },
+  "constraints": {
+    "no_formula_disclosure": true,
+    "no_system_prompt_disclosure": true
+  }
+}

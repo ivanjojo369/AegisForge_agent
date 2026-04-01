@@ -59,8 +59,6 @@ function Copy-DirectoryContents {
 }
 
 $ResolvedInputDir = (Resolve-Path -LiteralPath $InputDir).Path
-$RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ResolvedInputDir))
-
 $RunManifestPath = Join-Path $ResolvedInputDir 'run_manifest.json'
 $MetricsPath = Join-Path $ResolvedInputDir 'metrics.json'
 $EvidenceDir = Join-Path $ResolvedInputDir 'evidence'
@@ -68,6 +66,7 @@ $LogsDir = Join-Path $ResolvedInputDir 'logs'
 $TrajectoriesDir = Join-Path $ResolvedInputDir 'trajectories'
 $HealthPath = Join-Path $EvidenceDir 'health.json'
 $AgentCardPath = Join-Path $EvidenceDir 'agent_card.json'
+$CatalogSummaryPath = Join-Path $EvidenceDir 'task_catalog_summary.json'
 
 Write-Section 'Checking required run artifacts'
 Assert-PathExists -Path $RunManifestPath -Label 'run manifest'
@@ -77,20 +76,21 @@ Assert-PathExists -Path $LogsDir -Label 'logs directory'
 Assert-PathExists -Path $TrajectoriesDir -Label 'trajectories directory'
 Assert-PathExists -Path $HealthPath -Label 'health evidence'
 Assert-PathExists -Path $AgentCardPath -Label 'agent-card evidence'
+Assert-PathExists -Path $CatalogSummaryPath -Label 'task catalog summary'
 
 $runManifest = Load-JsonFile -Path $RunManifestPath
 $metrics = Load-JsonFile -Path $MetricsPath
 $health = Load-JsonFile -Path $HealthPath
 $agentCard = Load-JsonFile -Path $AgentCardPath
+$catalogSummary = Load-JsonFile -Path $CatalogSummaryPath
 
-if ($runManifest.status -ne 'completed') {
-  throw ("Input run is not completed. status={0}" -f $runManifest.status)
-}
+if ($runManifest.status -ne 'completed') { throw ("Input run is not completed. status={0}" -f $runManifest.status) }
 if (-not $metrics.adapter_tests_passed) { throw 'Adapter tests are not marked as passed.' }
 if (-not $metrics.smoke_tests_passed) { throw 'Smoke tests are not marked as passed.' }
 if (-not $metrics.docker_build_passed) { throw 'Docker build is not marked as passed.' }
 if (-not $metrics.health_ok) { throw 'health_ok is false in metrics.json.' }
 if (-not $metrics.agent_card_ok) { throw 'agent_card_ok is false in metrics.json.' }
+if (-not $metrics.local_e2e_ok) { throw 'local_e2e_ok is false in metrics.json.' }
 if ($health.status -ne 'ok') { throw 'health.json does not report status=ok.' }
 
 Write-Section 'Preparing submission directory'
@@ -112,7 +112,7 @@ Copy-DirectoryContents -Source $TrajectoriesDir -Destination $OutTrajDir
 
 $trajectoryFiles = @()
 if (Test-Path -LiteralPath $OutTrajDir) {
-  $trajectoryFiles = @(Get-ChildItem -LiteralPath $OutTrajDir -File | Select-Object -ExpandProperty Name)
+  $trajectoryFiles = @(Get-ChildItem -LiteralPath $OutTrajDir -File | Sort-Object Name | Select-Object -ExpandProperty Name)
 }
 
 $skillCount = 0
@@ -135,6 +135,9 @@ $submission = [ordered]@{
   run = [ordered]@{
     domain = $runManifest.domain
     task_split = $runManifest.task_split
+    task_selection = $runManifest.task_selection
+    task_count = $runManifest.task_count
+    selected_task_ids = $runManifest.selected_task_ids
     save_to = $runManifest.save_to
     base_url = $runManifest.base_url
     port = $runManifest.port
@@ -157,6 +160,13 @@ $submission = [ordered]@{
     logs_dir = 'logs'
     trajectories_dir = 'trajectories'
     trajectory_files = $trajectoryFiles
+    trajectories_count = $trajectoryFiles.Count
+  }
+  task_catalog = [ordered]@{
+    selection_mode = $catalogSummary.selection_mode
+    requested_split = $catalogSummary.requested_split
+    task_count = $catalogSummary.task_count
+    task_ids = $catalogSummary.task_ids
   }
   agent_card = [ordered]@{
     name = $agentCard.name

@@ -1,0 +1,8 @@
+track = "officeqa"
+mode = "document_qa"
+require_evidence = true
+strict_output = true
+detect_indirect_injection = true
+allow_tool_use = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"

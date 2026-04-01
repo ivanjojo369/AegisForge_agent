@@ -1,0 +1,10 @@
+{
+  "task_id": "crm-task-001",
+  "metrics": {
+    "task_success": 0.9,
+    "security": 1.0,
+    "efficiency": 0.8,
+    "calibration": 0.7
+  },
+  "notes": "Illustrative score payload for local integration testing."
+}

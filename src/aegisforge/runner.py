@@ -34,6 +34,10 @@ TRACK_TAGS = (
     "tau2",
     "openenv",
     "security",
+    "officeqa",
+    "finance",
+    "crmarena",
+    "business-process",
 )
 
 SUPPORTED_MODES = (
@@ -109,6 +113,9 @@ def _build_runtime_snapshot(*, host: str, port: int, card_url: str, mode: str) -
         "trace_artifacts": _env_bool("AEGISFORGE_TRACE_ARTIFACTS", False),
         "max_context_agents": os.getenv("AEGISFORGE_MAX_CONTEXT_AGENTS", "128"),
         "default_assessment_mode": os.getenv("AEGISFORGE_DEFAULT_ASSESSMENT_MODE", "defender"),
+        "default_track": os.getenv("AEGISFORGE_TRACK", "purple"),
+        "officeqa_enabled": _env_bool("AEGISFORGE_ENABLE_OFFICEQA", False),
+        "crmarena_enabled": _env_bool("AEGISFORGE_ENABLE_CRMARENA", False),
         "tags": list(TRACK_TAGS),
         "supported_assessment_modes": list(SUPPORTED_MODES),
     }
@@ -137,6 +144,8 @@ def _build_doctor_report(*, host: str, port: int, card_url: str) -> dict[str, An
             "context_mapper": agent.context_mapper.__class__.__name__,
             "policy_bridge": agent.policy_bridge.__class__.__name__,
             "mcu_adapter": agent.mcu_adapter.__class__.__name__ if getattr(agent, "mcu_adapter", None) else None,
+            "officeqa_adapter": agent.officeqa_adapter.__class__.__name__ if getattr(agent, "officeqa_adapter", None) else None,
+            "crmarena_adapter": agent.crmarena_adapter.__class__.__name__ if getattr(agent, "crmarena_adapter", None) else None,
             "classifier": agent.classifier.__class__.__name__,
             "router": agent.router.__class__.__name__,
             "planner": agent.planner.__class__.__name__,
