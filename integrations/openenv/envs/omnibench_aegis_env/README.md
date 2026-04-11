@@ -5,7 +5,7 @@ colorFrom: indigo
 colorTo: purple
 sdk: docker
 app_port: 8000
-base_path: /web
+base_path: /docs
 pinned: false
 short_description: Reproducible multi-domain OpenEnv benchmark env.
 ---
