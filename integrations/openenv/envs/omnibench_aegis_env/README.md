@@ -7,7 +7,7 @@ sdk: docker
 app_port: 8000
 base_path: /web
 pinned: false
-short_description: Reproducible multi-domain OpenEnv environment for agent evaluation and post-training.
+short_description: Reproducible multi-domain OpenEnv benchmark env.
 ---
 # OmniBench Aegis Env
 
