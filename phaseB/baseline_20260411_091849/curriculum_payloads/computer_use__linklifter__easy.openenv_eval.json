@@ -1,0 +1,65 @@
+{
+  "adapter": "openenv",
+  "environment_url": "http://127.0.0.1:8001",
+  "base_url": "http://127.0.0.1:8001",
+  "env_name": "omnibench_aegis_env",
+  "timeout": 10.0,
+  "live_check": true,
+  "require_success": false,
+  "seed": 42,
+  "domain": "computer_use",
+  "scenario_id": "LinkLifter",
+  "fixture": "sample_actions_computer_use.json",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "LinkLifter",
+    "mission_id": "linklifter_computer_use_easy_seed42",
+    "options": {
+      "env_id": "omnibench_aegis_env:computer_use.linklifter",
+      "max_steps": 5,
+      "target_score": 1,
+      "domain": "computer_use",
+      "difficulty": "easy",
+      "curriculum_level": "easy",
+      "seed_variant": 42
+    }
+  },
+  "action_plan": [
+    {
+      "name": "inspect_page",
+      "args": {}
+    },
+    {
+      "name": "scan_links",
+      "args": {}
+    },
+    {
+      "name": "open_link",
+      "args": {
+        "link_id": "link-primary"
+      }
+    },
+    {
+      "name": "verify_destination",
+      "args": {}
+    },
+    {
+      "name": "submit_result",
+      "args": {}
+    }
+  ],
+  "mission_id": "linklifter_computer_use_easy_seed42",
+  "curriculum_level": "easy",
+  "curriculum_rank": 0,
+  "curriculum_note": "baseline payload with the canonical success path",
+  "variant_key": "computer_use__linklifter__easy",
+  "curriculum_realigned": true,
+  "canonical_env_id": "omnibench_aegis_env:computer_use.linklifter",
+  "canonical_fixture_candidates": [
+    "sample_actions_computer_use.json",
+    "sample_actions_web.json"
+  ],
+  "notes": [
+    "Realigned curriculum payload for computer_use/LinkLifter using canonical fixture/fallback action plan."
+  ]
+}

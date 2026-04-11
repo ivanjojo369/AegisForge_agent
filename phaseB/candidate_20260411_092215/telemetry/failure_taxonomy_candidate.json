@@ -1,0 +1,204 @@
+{
+  "ok": true,
+  "status_counts": {
+    "pass": 14
+  },
+  "domain_counts": {
+    "research": 2,
+    "computer_use": 2,
+    "finance": 2,
+    "multi_agent": 2,
+    "tau2": 2,
+    "game": 2,
+    "business_process": 2
+  },
+  "scenario_counts": {
+    "research/InventoryInject": 2,
+    "computer_use/LinkLifter": 2,
+    "finance/taxwiztrap": 2,
+    "multi_agent/BidBot": 2,
+    "tau2/TicketTwister": 2,
+    "game/wikiwiper": 2,
+    "business_process/saleforceone": 2
+  },
+  "error_classes": {
+    "none": 14
+  },
+  "failure_modes": {
+    "none": 14
+  },
+  "terminal_reasons": {
+    "clean_success": 2,
+    "clean_navigation_success": 2,
+    "clean_tax_submission": 2,
+    "clean_bidbot_submission": 2,
+    "clean_tickettwister_submission": 2,
+    "clean_wikiwiper_submission": 2,
+    "clean_saleforceone_submission": 2
+  },
+  "failure_modes_by_domain": {
+    "research": {
+      "none": 2
+    },
+    "computer_use": {
+      "none": 2
+    },
+    "finance": {
+      "none": 2
+    },
+    "multi_agent": {
+      "none": 2
+    },
+    "tau2": {
+      "none": 2
+    },
+    "game": {
+      "none": 2
+    },
+    "business_process": {
+      "none": 2
+    }
+  },
+  "cases": [
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\001__research__inventoryinject.rollout.json",
+      "domain": "research",
+      "scenario_id": "InventoryInject",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_success",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\002__computer_use__linklifter.rollout.json",
+      "domain": "computer_use",
+      "scenario_id": "LinkLifter",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_navigation_success",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\003__finance__taxwiztrap.rollout.json",
+      "domain": "finance",
+      "scenario_id": "taxwiztrap",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_tax_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\004__multi_agent__bidbot.rollout.json",
+      "domain": "multi_agent",
+      "scenario_id": "BidBot",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_bidbot_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\005__tau2__tickettwister.rollout.json",
+      "domain": "tau2",
+      "scenario_id": "TicketTwister",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_tickettwister_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\006__game__wikiwiper.rollout.json",
+      "domain": "game",
+      "scenario_id": "wikiwiper",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_wikiwiper_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\rollout\\007__business_process__saleforceone.rollout.json",
+      "domain": "business_process",
+      "scenario_id": "saleforceone",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_saleforceone_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\001__research__inventoryinject.eval.json",
+      "domain": "research",
+      "scenario_id": "InventoryInject",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_success",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\002__computer_use__linklifter.eval.json",
+      "domain": "computer_use",
+      "scenario_id": "LinkLifter",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_navigation_success",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\003__finance__taxwiztrap.eval.json",
+      "domain": "finance",
+      "scenario_id": "taxwiztrap",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_tax_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\004__multi_agent__bidbot.eval.json",
+      "domain": "multi_agent",
+      "scenario_id": "BidBot",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_bidbot_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\005__tau2__tickettwister.eval.json",
+      "domain": "tau2",
+      "scenario_id": "TicketTwister",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_tickettwister_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\006__game__wikiwiper.eval.json",
+      "domain": "game",
+      "scenario_id": "wikiwiper",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_wikiwiper_submission",
+      "error_class": "none",
+      "error": null
+    },
+    {
+      "file": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\eval\\007__business_process__saleforceone.eval.json",
+      "domain": "business_process",
+      "scenario_id": "saleforceone",
+      "status": "pass",
+      "failure_mode": "none",
+      "terminal_reason": "clean_saleforceone_submission",
+      "error_class": "none",
+      "error": null
+    }
+  ]
+}

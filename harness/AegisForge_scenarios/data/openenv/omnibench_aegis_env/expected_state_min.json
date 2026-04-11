@@ -1,0 +1,24 @@
+{
+  "kind": "state_min_contract",
+  "required_top_level_keys": [
+    "episode_id",
+    "score",
+    "step_count",
+    "max_steps",
+    "target_score",
+    "done",
+    "success",
+    "last_action",
+    "history",
+    "scenario_id",
+    "mission_id",
+    "domain",
+    "env_name",
+    "state_data"
+  ],
+  "example_expectations": {
+    "episode_id": "<non-empty-string>",
+    "history_type": "array",
+    "last_action_after_first_step": "advance"
+  }
+}

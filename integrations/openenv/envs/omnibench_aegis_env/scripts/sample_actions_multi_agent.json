@@ -1,0 +1,45 @@
+{
+  "domain": "multi_agent",
+  "scenario_id": "BidBot",
+  "mission_id": "bidbot_multi_agent_sample",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "BidBot",
+    "mission_id": "bidbot_multi_agent_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:multi_agent.bidbot",
+      "max_steps": 5,
+      "target_score": 1,
+      "domain": "multi_agent"
+    }
+  },
+  "action_plan": [
+    {
+      "name": "build_roster",
+      "args": {}
+    },
+    {
+      "name": "simulate_matchups",
+      "args": {}
+    },
+    {
+      "name": "compute_scores",
+      "args": {}
+    },
+    {
+      "name": "solve_equilibrium",
+      "args": {}
+    },
+    {
+      "name": "submit_assessment",
+      "args": {
+        "winner": "bidbot_challenger"
+      }
+    }
+  ],
+  "notes": [
+    "Aligned fixture for the real BidBot multi_agent domain.",
+    "Uses the roster -> matchup -> scoring -> equilibrium -> assessment path.",
+    "Avoids the fallback behavior that left the run in_progress."
+  ]
+}

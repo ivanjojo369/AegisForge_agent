@@ -1,0 +1,22 @@
+# Minimal OpenEnv manifest for omnibench_aegis_env.
+#
+# Why this stays intentionally small:
+# - Current OpenEnv docs explicitly show `name`, `version`, and `description`
+#   as the manifest fields used to control Space configuration.
+# - The CLI also validates the presence of `openenv.yaml`, `pyproject.toml`, and
+#   `server/app.py` as core environment files.
+# - Keeping the manifest conservative reduces the chance of schema drift while the
+#   rest of the environment is still under active construction.
+#
+# Once `server/app.py`, `requirements.txt`, and packaging are finalized, this file
+# can be extended if the target OpenEnv release documents additional stable keys.
+
+name: omnibench_aegis_env
+version: "0.1.0"
+description: >-
+  OpenEnv environment for AegisForge focused on OmniBench-style agentic evaluation.
+  Provides a single primary environment with base domains (coding, computer_use,
+  finance, healthcare, research, web, agent_safety) plus extended domains such as
+  game, officeqa, business_process, crmarena, fieldwork, multi_agent, tau2, and
+  osworld. Primary anchored scenarios include InventoryInject, BidBot,
+  TicketTwister, and LinkLifter.

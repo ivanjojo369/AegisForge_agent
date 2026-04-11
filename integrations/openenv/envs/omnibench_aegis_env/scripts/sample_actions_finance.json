@@ -1,0 +1,40 @@
+{
+  "domain": "finance",
+  "scenario_id": "taxwiztrap",
+  "mission_id": "taxwiztrap_finance_sample",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "taxwiztrap",
+    "mission_id": "taxwiztrap_finance_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:finance.taxwiztrap",
+      "max_steps": 6,
+      "target_score": 1,
+      "domain": "finance"
+    }
+  },
+  "action_plan": [
+    {
+      "name": "review_tax_note",
+      "args": {}
+    },
+    {
+      "name": "extract_relevant_values",
+      "args": {}
+    },
+    {
+      "name": "normalize_units",
+      "args": {}
+    },
+    {
+      "name": "calculate_tax",
+      "args": {}
+    },
+    {
+      "name": "submit_answer",
+      "args": {
+        "answer": "MXN 15660.00"
+      }
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "default_env_id": "omnibench_aegis_env:demo",
+  "primary_mix": [
+    {
+      "domain": "research",
+      "scenario_id": "InventoryInject",
+      "smoke": true
+    },
+    {
+      "domain": "computer_use",
+      "scenario_id": "LinkLifter",
+      "smoke": true
+    },
+    {
+      "domain": "finance",
+      "scenario_id": "taxwiztrap",
+      "smoke": true
+    },
+    {
+      "domain": "multi_agent",
+      "scenario_id": "BidBot",
+      "smoke": true
+    },
+    {
+      "domain": "tau2",
+      "scenario_id": "TicketTwister",
+      "smoke": true
+    },
+    {
+      "domain": "game",
+      "scenario_id": "wikiwiper",
+      "smoke": true
+    },
+    {
+      "domain": "business_process",
+      "scenario_id": "saleforceone",
+      "smoke": true
+    }
+  ]
+}

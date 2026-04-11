@@ -1,0 +1,40 @@
+{
+  "domain": "finance",
+  "scenario_id": "LedgerGuard",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "LedgerGuard",
+    "mission_id": "ledgerguard_finance_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:demo",
+      "max_steps": 5,
+      "target_score": 1
+    }
+  },
+  "action_examples": {
+    "shorthand": [
+      {
+        "action": "advance",
+        "value": 1
+      }
+    ],
+    "canonical": [
+      {
+        "name": "advance",
+        "args": {
+          "value": 1
+        }
+      }
+    ]
+  },
+  "expected_flow": [
+    "health",
+    "reset",
+    "step",
+    "state"
+  ],
+  "notes": [
+    "Placeholder finance fixture until the dedicated finance domain is wired.",
+    "These fixtures are execution-safe against the current demo fallback environment."
+  ]
+}

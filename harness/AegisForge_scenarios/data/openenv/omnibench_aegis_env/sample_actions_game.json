@@ -1,0 +1,138 @@
+{
+  "domain": "game",
+  "episodes": [
+    {
+      "task_category": "building",
+      "mission": "Build a compact shelter with a door and clear entry path.",
+      "action_plan": [
+        {
+          "forward": 1,
+          "back": 0,
+          "left": 0,
+          "right": 0,
+          "jump": 0,
+          "sneak": 0,
+          "sprint": 1,
+          "attack": 0,
+          "use": 0,
+          "drop": 0,
+          "inventory": 0,
+          "hotbar.1": 0,
+          "hotbar.2": 0,
+          "hotbar.3": 0,
+          "hotbar.4": 0,
+          "hotbar.5": 1,
+          "hotbar.6": 0,
+          "hotbar.7": 0,
+          "hotbar.8": 0,
+          "hotbar.9": 0,
+          "camera": [0.0, 12.0]
+        },
+        {
+          "forward": 0,
+          "back": 0,
+          "left": 0,
+          "right": 0,
+          "jump": 1,
+          "sneak": 0,
+          "sprint": 0,
+          "attack": 0,
+          "use": 1,
+          "drop": 0,
+          "inventory": 0,
+          "hotbar.1": 0,
+          "hotbar.2": 0,
+          "hotbar.3": 0,
+          "hotbar.4": 0,
+          "hotbar.5": 1,
+          "hotbar.6": 0,
+          "hotbar.7": 0,
+          "hotbar.8": 0,
+          "hotbar.9": 0,
+          "camera": [35.0, 0.0]
+        }
+      ]
+    },
+    {
+      "task_category": "combat",
+      "mission": "Defeat a nearby hostile mob while minimizing damage.",
+      "action_plan": [
+        {
+          "forward": 1,
+          "back": 0,
+          "left": 0,
+          "right": 0,
+          "jump": 1,
+          "sneak": 0,
+          "sprint": 1,
+          "attack": 1,
+          "use": 0,
+          "drop": 0,
+          "inventory": 0,
+          "hotbar.1": 0,
+          "hotbar.2": 1,
+          "hotbar.3": 0,
+          "hotbar.4": 0,
+          "hotbar.5": 0,
+          "hotbar.6": 0,
+          "hotbar.7": 0,
+          "hotbar.8": 0,
+          "hotbar.9": 0,
+          "camera": [0.0, 8.0]
+        }
+      ]
+    },
+    {
+      "task_category": "crafting",
+      "mission": "Craft a basic tool from gathered resources.",
+      "action_plan": [
+        {
+          "forward": 0,
+          "back": 0,
+          "left": 0,
+          "right": 0,
+          "jump": 0,
+          "sneak": 0,
+          "sprint": 0,
+          "attack": 0,
+          "use": 0,
+          "drop": 0,
+          "inventory": 1,
+          "hotbar.1": 0,
+          "hotbar.2": 0,
+          "hotbar.3": 0,
+          "hotbar.4": 0,
+          "hotbar.5": 0,
+          "hotbar.6": 0,
+          "hotbar.7": 0,
+          "hotbar.8": 0,
+          "hotbar.9": 0,
+          "camera": [0.0, 0.0]
+        },
+        {
+          "forward": 0,
+          "back": 0,
+          "left": 0,
+          "right": 0,
+          "jump": 0,
+          "sneak": 0,
+          "sprint": 0,
+          "attack": 0,
+          "use": 1,
+          "drop": 0,
+          "inventory": 0,
+          "hotbar.1": 0,
+          "hotbar.2": 0,
+          "hotbar.3": 1,
+          "hotbar.4": 0,
+          "hotbar.5": 0,
+          "hotbar.6": 0,
+          "hotbar.7": 0,
+          "hotbar.8": 0,
+          "hotbar.9": 0,
+          "camera": [12.0, 0.0]
+        }
+      ]
+    }
+  ]
+}

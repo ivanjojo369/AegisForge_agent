@@ -1,0 +1,50 @@
+[
+  {
+    "league_id": "curriculum__bidbot__league_01",
+    "pool_id": "curriculum__bidbot__league_01__pool",
+    "group_key": "curriculum__bidbot",
+    "scenario_id": "BidBot",
+    "split": "curriculum",
+    "pool_size": 4,
+    "participants": [
+      "017__multi_agent__bidbot__easy__r01",
+      "018__multi_agent__bidbot__medium__r03",
+      "019__multi_agent__bidbot__hard__r01",
+      "020__multi_agent__bidbot__heldout_like__r03"
+    ],
+    "rounds": 6,
+    "double_round_robin": true
+  },
+  {
+    "league_id": "curriculum__bidbot__league_02",
+    "pool_id": "curriculum__bidbot__league_02__pool",
+    "group_key": "curriculum__bidbot",
+    "scenario_id": "BidBot",
+    "split": "curriculum",
+    "pool_size": 4,
+    "participants": [
+      "017__multi_agent__bidbot__easy__r02",
+      "018__multi_agent__bidbot__medium__r02",
+      "019__multi_agent__bidbot__hard__r02",
+      "020__multi_agent__bidbot__heldout_like__r02"
+    ],
+    "rounds": 6,
+    "double_round_robin": true
+  },
+  {
+    "league_id": "curriculum__bidbot__league_03",
+    "pool_id": "curriculum__bidbot__league_03__pool",
+    "group_key": "curriculum__bidbot",
+    "scenario_id": "BidBot",
+    "split": "curriculum",
+    "pool_size": 4,
+    "participants": [
+      "017__multi_agent__bidbot__easy__r03",
+      "018__multi_agent__bidbot__medium__r01",
+      "019__multi_agent__bidbot__hard__r03",
+      "020__multi_agent__bidbot__heldout_like__r01"
+    ],
+    "rounds": 6,
+    "double_round_robin": true
+  }
+]

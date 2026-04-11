@@ -1,0 +1,58 @@
+{
+  "ok": true,
+  "input_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\baseline_20260411_091849\\transfer_curriculum_payloads",
+  "output_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\baseline_20260411_091849\\transfer_variant_matrix",
+  "count": 15,
+  "repeats": 3,
+  "split": "transfer",
+  "domains": [
+    "business_process",
+    "computer_use",
+    "finance",
+    "multi_agent",
+    "tau2"
+  ],
+  "levels": [
+    "heldout_like"
+  ],
+  "families": [
+    "arena_competition",
+    "browser_ops",
+    "interactive_dialogue",
+    "numerical_reasoning",
+    "policy_workflow"
+  ],
+  "competition_modes": {
+    "bundle_match": 3,
+    "league_match": 3,
+    "policy_duel": 3,
+    "precision_trial": 3,
+    "speedrun": 3
+  },
+  "stages": {
+    "championship": 15
+  },
+  "rows_by_domain": {
+    "business_process": 3,
+    "computer_use": 3,
+    "finance": 3,
+    "multi_agent": 3,
+    "tau2": 3
+  },
+  "rows_by_level": {
+    "heldout_like": 15
+  },
+  "rows_by_family": {
+    "arena_competition": 3,
+    "browser_ops": 3,
+    "interactive_dialogue": 3,
+    "numerical_reasoning": 3,
+    "policy_workflow": 3
+  },
+  "telemetry_enabled": true,
+  "competitive_metadata_enabled": true,
+  "files": [
+    "variant_matrix.json",
+    "variant_matrix_summary.json"
+  ]
+}

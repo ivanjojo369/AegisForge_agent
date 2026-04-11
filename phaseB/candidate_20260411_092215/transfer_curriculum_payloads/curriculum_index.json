@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "input_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\generated_payloads",
+  "output_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\transfer_curriculum_payloads",
+  "count": 5,
+  "levels": [
+    "heldout_like"
+  ],
+  "realigned_count": 10,
+  "files": [
+    "business_process__saleforceone__heldout_like.client_bundle.json",
+    "business_process__saleforceone__heldout_like.openenv_eval.json",
+    "computer_use__linklifter__heldout_like.client_bundle.json",
+    "computer_use__linklifter__heldout_like.openenv_eval.json",
+    "finance__taxwiztrap__heldout_like.client_bundle.json",
+    "finance__taxwiztrap__heldout_like.openenv_eval.json",
+    "multi_agent__bidbot__heldout_like.client_bundle.json",
+    "multi_agent__bidbot__heldout_like.openenv_eval.json",
+    "tau2__tickettwister__heldout_like.client_bundle.json",
+    "tau2__tickettwister__heldout_like.openenv_eval.json",
+    "all_client_curriculum_bundles.json",
+    "all_openenv_curriculum_payloads.json",
+    "curriculum_index.json"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "kind": "reset_min_contract",
+  "required_top_level_keys": [
+    "observation",
+    "state",
+    "info"
+  ],
+  "required_observation_keys": [
+    "instruction",
+    "summary",
+    "available_actions",
+    "progress",
+    "notices",
+    "context"
+  ],
+  "required_state_keys": [
+    "episode_id",
+    "score",
+    "step_count",
+    "max_steps",
+    "target_score",
+    "done",
+    "success",
+    "last_action",
+    "history",
+    "scenario_id",
+    "mission_id",
+    "domain",
+    "env_name",
+    "state_data"
+  ],
+  "required_info_keys": [
+    "env_name",
+    "domain",
+    "episode_id",
+    "timestamp"
+  ],
+  "example_expectations": {
+    "score": 0,
+    "step_count": 0,
+    "done": false,
+    "success": false,
+    "last_action": "",
+    "history_first_event": "reset"
+  },
+  "dynamic_placeholders": {
+    "episode_id": "<non-empty-string>",
+    "timestamp": "<iso8601-utc>"
+  }
+}

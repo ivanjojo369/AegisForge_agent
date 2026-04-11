@@ -1,0 +1,70 @@
+{
+  "adapter": "openenv",
+  "environment_url": "http://127.0.0.1:8001",
+  "base_url": "http://127.0.0.1:8001",
+  "env_name": "omnibench_aegis_env",
+  "timeout": 10.0,
+  "live_check": true,
+  "require_success": false,
+  "seed": 53,
+  "domain": "tau2",
+  "scenario_id": "TicketTwister",
+  "fixture": "sample_actions_tau2.json",
+  "reset_payload": {
+    "seed": 53,
+    "scenario_id": "TicketTwister",
+    "mission_id": "tickettwister_tau2_medium_seed53",
+    "options": {
+      "env_id": "omnibench_aegis_env:tau2.tickettwister",
+      "max_steps": 6,
+      "target_score": 1,
+      "domain": "tau2",
+      "difficulty": "medium",
+      "curriculum_level": "medium",
+      "seed_variant": 53
+    }
+  },
+  "action_plan": [
+    {
+      "name": "load_tasks",
+      "args": {}
+    },
+    {
+      "name": "prepare_user",
+      "args": {}
+    },
+    {
+      "name": "run_conversation",
+      "args": {}
+    },
+    {
+      "name": "score_task_bundle",
+      "args": {
+        "task_rewards": {
+          "tt_air_1": 1.0,
+          "tt_air_2": 1.0
+        }
+      }
+    },
+    {
+      "name": "submit_assessment",
+      "args": {}
+    }
+  ],
+  "mission_id": "tickettwister_tau2_medium_seed53",
+  "curriculum_level": "medium",
+  "curriculum_rank": 1,
+  "curriculum_note": "same trajectory with a shifted seed",
+  "variant_key": "tau2__tickettwister__medium",
+  "curriculum_realigned": true,
+  "canonical_env_id": "omnibench_aegis_env:tau2.tickettwister",
+  "canonical_fixture_candidates": [
+    "sample_actions_tau2.json"
+  ],
+  "notes": [
+    "Aligned fixture for the real TicketTwister tau2 domain.",
+    "Uses the task-loading and conversation flow before scoring the bundle.",
+    "Avoids the fallback behavior that left the run in_progress.",
+    "Realigned curriculum payload for tau2/TicketTwister using canonical fixture/fallback action plan."
+  ]
+}

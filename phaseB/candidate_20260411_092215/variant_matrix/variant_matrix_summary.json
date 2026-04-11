@@ -1,0 +1,90 @@
+{
+  "ok": true,
+  "input_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\curriculum_payloads",
+  "output_dir": "C:\\Users\\PC\\Documents\\AGI-Prototipo\\AegisForge_agent\\phaseB\\candidate_20260411_092215\\variant_matrix",
+  "count": 144,
+  "repeats": 3,
+  "split": "curriculum",
+  "domains": [
+    "business_process",
+    "computer_use",
+    "finance",
+    "game",
+    "multi_agent",
+    "research",
+    "tau2"
+  ],
+  "levels": [
+    "easy",
+    "hard",
+    "heldout_like",
+    "medium"
+  ],
+  "families": [
+    "analysis",
+    "arena_competition",
+    "browser_ops",
+    "embodied_strategy",
+    "interactive_dialogue",
+    "numerical_reasoning",
+    "policy_workflow"
+  ],
+  "competition_modes": {
+    "analysis_trial": 12,
+    "arena_run": 12,
+    "bundle_match": 12,
+    "policy_duel": 12,
+    "precision_trial": 12,
+    "round_robin_league": 72,
+    "speedrun": 12
+  },
+  "stages": {
+    "championship": 18,
+    "group_stage": 18,
+    "league_stage": 72,
+    "playoff": 18,
+    "qualifier": 18
+  },
+  "rows_by_domain": {
+    "business_process": 12,
+    "computer_use": 12,
+    "finance": 12,
+    "game": 12,
+    "multi_agent": 72,
+    "research": 12,
+    "tau2": 12
+  },
+  "rows_by_level": {
+    "easy": 36,
+    "hard": 36,
+    "heldout_like": 36,
+    "medium": 36
+  },
+  "rows_by_family": {
+    "analysis": 12,
+    "arena_competition": 72,
+    "browser_ops": 12,
+    "embodied_strategy": 12,
+    "interactive_dialogue": 12,
+    "numerical_reasoning": 12,
+    "policy_workflow": 12
+  },
+  "telemetry_enabled": true,
+  "competitive_metadata_enabled": true,
+  "multi_agent_round_robin_enabled": true,
+  "multi_agent_pool_size": 4,
+  "multi_agent_double_round_robin": true,
+  "multi_agent_mix_levels": true,
+  "league_count": 3,
+  "league_rows": 72,
+  "league_row_distribution": {
+    "curriculum__bidbot__league_01": 24,
+    "curriculum__bidbot__league_02": 24,
+    "curriculum__bidbot__league_03": 24
+  },
+  "files": [
+    "variant_matrix.json",
+    "variant_matrix_summary.json",
+    "league_index.json"
+  ]
+}

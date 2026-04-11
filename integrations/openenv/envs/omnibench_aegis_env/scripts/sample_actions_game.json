@@ -1,0 +1,109 @@
+{
+  "domain": "game",
+  "scenario_id": "wikiwiper",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "wikiwiper",
+    "mission_id": "wikiwiper_game_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:game.wikiwiper",
+      "max_steps": 8,
+      "target_score": 1
+    }
+  },
+  "action_examples": {
+    "canonical": [
+      {
+        "name": "inspect_objective",
+        "args": {}
+      },
+      {
+        "name": "scan_zone",
+        "args": {}
+      },
+      {
+        "name": "select_tool",
+        "args": {
+          "tool_slot": "hotbar.2"
+        }
+      },
+      {
+        "name": "navigate_route",
+        "args": {
+          "route": "lower_corridor"
+        }
+      },
+      {
+        "name": "engage_threat",
+        "args": {
+          "aggressive": false
+        }
+      },
+      {
+        "name": "wipe_target",
+        "args": {
+          "target_id": "target-archive-core"
+        }
+      },
+      {
+        "name": "verify_cleanup",
+        "args": {}
+      },
+      {
+        "name": "submit_run",
+        "args": {}
+      }
+    ],
+    "shorthand": [
+      {
+        "action": "inspect_objective"
+      },
+      {
+        "action": "scan_zone"
+      },
+      {
+        "action": "select_tool",
+        "tool_slot": "hotbar.2"
+      },
+      {
+        "action": "navigate_route",
+        "route": "lower_corridor"
+      },
+      {
+        "action": "engage_threat",
+        "aggressive": false
+      },
+      {
+        "action": "wipe_target",
+        "target_id": "target-archive-core"
+      },
+      {
+        "action": "verify_cleanup"
+      },
+      {
+        "action": "submit_run"
+      }
+    ]
+  },
+  "expected_good_trajectory": [
+    "inspect_objective",
+    "scan_zone",
+    "select_tool",
+    "navigate_route",
+    "engage_threat",
+    "wipe_target",
+    "verify_cleanup",
+    "submit_run"
+  ],
+  "expected_flow": [
+    "health",
+    "reset",
+    "step",
+    "state"
+  ],
+  "notes": [
+    "Aligned fixture for the real wikiwiper domain.",
+    "Uses domain-level semantic actions instead of raw control vectors.",
+    "The selected tool slot and target_id match the default seeded wikiwiper variant used in local smoke/eval runs."
+  ]
+}

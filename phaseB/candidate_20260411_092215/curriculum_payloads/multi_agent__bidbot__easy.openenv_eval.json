@@ -1,0 +1,67 @@
+{
+  "adapter": "openenv",
+  "environment_url": "http://127.0.0.1:8001",
+  "base_url": "http://127.0.0.1:8001",
+  "env_name": "omnibench_aegis_env",
+  "timeout": 10.0,
+  "live_check": true,
+  "require_success": false,
+  "seed": 42,
+  "domain": "multi_agent",
+  "scenario_id": "BidBot",
+  "fixture": "sample_actions_multi_agent.json",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "BidBot",
+    "mission_id": "bidbot_multi_agent_easy_seed42",
+    "options": {
+      "env_id": "omnibench_aegis_env:multi_agent.bidbot",
+      "max_steps": 5,
+      "target_score": 1,
+      "domain": "multi_agent",
+      "difficulty": "easy",
+      "curriculum_level": "easy",
+      "seed_variant": 42
+    }
+  },
+  "action_plan": [
+    {
+      "name": "build_roster",
+      "args": {}
+    },
+    {
+      "name": "simulate_matchups",
+      "args": {}
+    },
+    {
+      "name": "compute_scores",
+      "args": {}
+    },
+    {
+      "name": "solve_equilibrium",
+      "args": {}
+    },
+    {
+      "name": "submit_assessment",
+      "args": {
+        "winner": "bidbot_challenger"
+      }
+    }
+  ],
+  "mission_id": "bidbot_multi_agent_easy_seed42",
+  "curriculum_level": "easy",
+  "curriculum_rank": 0,
+  "curriculum_note": "baseline payload with the canonical success path",
+  "variant_key": "multi_agent__bidbot__easy",
+  "curriculum_realigned": true,
+  "canonical_env_id": "omnibench_aegis_env:multi_agent.bidbot",
+  "canonical_fixture_candidates": [
+    "sample_actions_multi_agent.json"
+  ],
+  "notes": [
+    "Aligned fixture for the real BidBot multi_agent domain.",
+    "Uses the roster -> matchup -> scoring -> equilibrium -> assessment path.",
+    "Avoids the fallback behavior that left the run in_progress.",
+    "Realigned curriculum payload for multi_agent/BidBot using canonical fixture/fallback action plan."
+  ]
+}

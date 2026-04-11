@@ -1,0 +1,40 @@
+{
+  "domain": "computer_use",
+  "scenario_id": "LinkLifter",
+  "mission_id": "linklifter_computer_use_sample",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "LinkLifter",
+    "mission_id": "linklifter_computer_use_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:computer_use.linklifter",
+      "max_steps": 6,
+      "target_score": 1,
+      "domain": "computer_use"
+    }
+  },
+  "action_plan": [
+    {
+      "name": "inspect_page",
+      "args": {}
+    },
+    {
+      "name": "scan_links",
+      "args": {}
+    },
+    {
+      "name": "open_link",
+      "args": {
+        "link_id": "link-primary"
+      }
+    },
+    {
+      "name": "verify_destination",
+      "args": {}
+    },
+    {
+      "name": "submit_result",
+      "args": {}
+    }
+  ]
+}

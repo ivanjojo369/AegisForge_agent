@@ -1,0 +1,66 @@
+{
+  "adapter": "openenv",
+  "environment_url": "http://127.0.0.1:8001",
+  "base_url": "http://127.0.0.1:8001",
+  "env_name": "omnibench_aegis_env",
+  "timeout": 10.0,
+  "live_check": true,
+  "require_success": false,
+  "seed": 42,
+  "domain": "game",
+  "scenario_id": "wikiwiper",
+  "fixture": "sample_actions_game.json",
+  "reset_payload": {
+    "seed": 42,
+    "scenario_id": "wikiwiper",
+    "mission_id": "wikiwiper_game_sample",
+    "options": {
+      "env_id": "omnibench_aegis_env:game.wikiwiper",
+      "max_steps": 8,
+      "target_score": 1,
+      "domain": "game"
+    }
+  },
+  "action_plan": [
+    {
+      "name": "inspect_objective",
+      "args": {}
+    },
+    {
+      "name": "scan_zone",
+      "args": {}
+    },
+    {
+      "name": "select_tool",
+      "args": {
+        "tool_slot": "hotbar.2"
+      }
+    },
+    {
+      "name": "navigate_route",
+      "args": {
+        "route": "lower_corridor"
+      }
+    },
+    {
+      "name": "engage_threat",
+      "args": {
+        "aggressive": false
+      }
+    },
+    {
+      "name": "wipe_target",
+      "args": {
+        "target_id": "target-archive-core"
+      }
+    },
+    {
+      "name": "verify_cleanup",
+      "args": {}
+    },
+    {
+      "name": "submit_run",
+      "args": {}
+    }
+  ]
+}

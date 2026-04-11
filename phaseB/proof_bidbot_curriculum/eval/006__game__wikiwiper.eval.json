@@ -1,0 +1,2381 @@
+{
+  "kind": "openenv_eval_result",
+  "timestamp": "2026-04-11T15:42:37.960338+00:00",
+  "eval_index": 6,
+  "domain": "game",
+  "scenario_id": "wikiwiper",
+  "env_name": "omnibench_aegis_env",
+  "base_url": "http://127.0.0.1:8001",
+  "status": "pass",
+  "summary": "contract and success path validated",
+  "score": 1.0,
+  "error": null,
+  "require_success": false,
+  "checks": {
+    "health": true,
+    "reset": true,
+    "step_count": 8,
+    "state": true,
+    "success_path": true
+  },
+  "health": {
+    "status": "ok",
+    "env": "omnibench_aegis_env",
+    "env_name": "omnibench_aegis_env",
+    "version": "0.1.0",
+    "initialized": true,
+    "active_env_id": "omnibench_aegis_env:tau2.tickettwister",
+    "active_domain": "tau2",
+    "active_scenario": "TicketTwister"
+  },
+  "reset": {
+    "env_id": "omnibench_aegis_env:game.wikiwiper",
+    "scenario_id": "wikiwiper",
+    "mission_id": "wikiwiper_game_sample",
+    "observation": {
+      "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "domain": "game",
+      "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "scenario_id": "wikiwiper",
+      "step_count": 0,
+      "max_steps": 8,
+      "progress": 0,
+      "target_progress": 100,
+      "progress_view": {
+        "score": 0,
+        "target_score": 100,
+        "remaining": 100
+      },
+      "visible_zone_brief": {
+        "zone_name": "Archive Ruins",
+        "biome_hint": "stone corridors with moss and broken signage",
+        "visible_landmarks": [
+          "Moss Gate",
+          "Dusty Beacon",
+          "Corrupted archive node",
+          "Broken Index Tower"
+        ],
+        "threat_profile_hint": "crawler swarm",
+        "resource_hint": "carry at least 2 purge charges",
+        "candidate_tool_slots": [
+          "hotbar.2",
+          "hotbar.3",
+          "hotbar.4"
+        ]
+      },
+      "alerts": [],
+      "notes": [
+        "Verification after the wipe is mandatory.",
+        "Tool choice matters: one loadout matches the target's corruption pattern.",
+        "Zone biome: stone corridors with moss and broken signage.",
+        "A decoy landmark may look closer than the real corruption node."
+      ],
+      "available_actions": [
+        "inspect_objective",
+        "scan_zone",
+        "select_tool",
+        "navigate_route",
+        "engage_threat",
+        "wipe_target",
+        "verify_cleanup",
+        "submit_run"
+      ],
+      "status_flags": {
+        "objective_inspected": false,
+        "zone_scanned": false,
+        "tool_selected": false,
+        "route_navigated": false,
+        "threat_engaged": false,
+        "target_wiped": false,
+        "cleanup_verified": false,
+        "run_submitted": false,
+        "premature_submission": false,
+        "wrong_tool_selected": false,
+        "wrong_route_taken": false,
+        "false_target_wiped": false,
+        "unsafe_engagement": false
+      },
+      "navigation_confidence": 0.0,
+      "tool_readiness": 0.0,
+      "wipe_confidence": 0.0,
+      "verification_score": 0.0,
+      "damage_taken": 0,
+      "evidence_count": 0,
+      "last_event": "reset"
+    },
+    "state": {
+      "domain": "game",
+      "seed": 42,
+      "scenario_id": "wikiwiper",
+      "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "task_category": "objective_cleanup",
+      "max_steps": 8,
+      "progress": 0,
+      "target_progress": 100,
+      "score": 0.0,
+      "done": false,
+      "success": false,
+      "final_outcome": "in_progress",
+      "failure_mode": "none",
+      "terminal_reason": "in_progress",
+      "compromise_type": "none",
+      "navigation_confidence": 0.0,
+      "tool_readiness": 0.0,
+      "wipe_confidence": 0.0,
+      "verification_score": 0.0,
+      "safety_score": 100,
+      "efficiency_score": 100,
+      "objective_inspected": false,
+      "zone_scanned": false,
+      "tool_selected": false,
+      "route_navigated": false,
+      "threat_engaged": false,
+      "target_wiped": false,
+      "cleanup_verified": false,
+      "run_submitted": false,
+      "premature_submission": false,
+      "wrong_tool_selected": false,
+      "wrong_route_taken": false,
+      "false_target_wiped": false,
+      "unsafe_engagement": false,
+      "damage_taken": 0,
+      "evidence_count": 0,
+      "selected_tool_slot": null,
+      "selected_tool_name": null,
+      "final_answer": null,
+      "public_zone_brief": {
+        "zone_name": "Archive Ruins",
+        "biome_hint": "stone corridors with moss and broken signage",
+        "visible_landmarks": [
+          "Moss Gate",
+          "Dusty Beacon",
+          "Corrupted archive node",
+          "Broken Index Tower"
+        ],
+        "threat_profile_hint": "crawler swarm",
+        "resource_hint": "carry at least 2 purge charges",
+        "candidate_tool_slots": [
+          "hotbar.2",
+          "hotbar.3",
+          "hotbar.4"
+        ]
+      },
+      "visible_notes": [
+        "Verification after the wipe is mandatory.",
+        "Tool choice matters: one loadout matches the target's corruption pattern.",
+        "Zone biome: stone corridors with moss and broken signage.",
+        "A decoy landmark may look closer than the real corruption node."
+      ],
+      "event_log": [],
+      "metadata": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper"
+      },
+      "step_count": 0,
+      "last_action": {
+        "name": "",
+        "args": {}
+      },
+      "history": [],
+      "target_score": 100
+    },
+    "info": {
+      "domain": "game",
+      "env_name": "omnibench_aegis_env",
+      "env_id": "omnibench_aegis_env:game.wikiwiper",
+      "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "task_category": "objective_cleanup"
+    },
+    "actions": [
+      "inspect_objective",
+      "scan_zone",
+      "select_tool",
+      "navigate_route",
+      "engage_threat",
+      "wipe_target",
+      "verify_cleanup",
+      "submit_run"
+    ]
+  },
+  "steps": [
+    {
+      "index": 1,
+      "request": {
+        "name": "inspect_objective",
+        "args": {}
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 1,
+          "max_steps": 8,
+          "progress": 12,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 12,
+            "target_score": 100,
+            "remaining": 88
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": false,
+            "tool_selected": false,
+            "route_navigated": false,
+            "threat_engaged": false,
+            "target_wiped": false,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.16,
+          "tool_readiness": 0.0,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "damage_taken": 0,
+          "evidence_count": 1,
+          "last_event": "objective_inspected"
+        },
+        "reward": 0.18,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "objective_inspected",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "objective marker inspected"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 12,
+          "target_progress": 100,
+          "score": 0.18,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.16,
+          "tool_readiness": 0.0,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": false,
+          "tool_selected": false,
+          "route_navigated": false,
+          "threat_engaged": false,
+          "target_wiped": false,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 0,
+          "evidence_count": 1,
+          "selected_tool_slot": null,
+          "selected_tool_name": null,
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 1,
+          "last_action": {
+            "name": "inspect_objective",
+            "args": {}
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "request": {
+        "name": "scan_zone",
+        "args": {}
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 2,
+          "max_steps": 8,
+          "progress": 26,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 26,
+            "target_score": 100,
+            "remaining": 74
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": false,
+            "route_navigated": false,
+            "threat_engaged": false,
+            "target_wiped": false,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.44,
+          "tool_readiness": 0.0,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "damage_taken": 0,
+          "evidence_count": 3,
+          "last_event": "zone_scanned"
+        },
+        "reward": 0.22,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "zone_scanned",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "zone scan mapped routes and decoys"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 26,
+          "target_progress": 100,
+          "score": 0.4,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.44,
+          "tool_readiness": 0.0,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": false,
+          "route_navigated": false,
+          "threat_engaged": false,
+          "target_wiped": false,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 0,
+          "evidence_count": 3,
+          "selected_tool_slot": null,
+          "selected_tool_name": null,
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 2,
+          "last_action": {
+            "name": "scan_zone",
+            "args": {}
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "request": {
+        "name": "select_tool",
+        "args": {
+          "tool_slot": "hotbar.2"
+        }
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 3,
+          "max_steps": 8,
+          "progress": 40,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 40,
+            "target_score": 100,
+            "remaining": 60
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": false,
+            "threat_engaged": false,
+            "target_wiped": false,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.44,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "damage_taken": 0,
+          "evidence_count": 4,
+          "last_event": "correct_tool_selected"
+        },
+        "reward": 0.24,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "correct_tool_selected",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "selected the correct purge tool for the objective"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 40,
+          "target_progress": 100,
+          "score": 0.64,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.44,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": false,
+          "threat_engaged": false,
+          "target_wiped": false,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 0,
+          "evidence_count": 4,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 3,
+          "last_action": {
+            "name": "select_tool",
+            "args": {
+              "tool_slot": "hotbar.2"
+            }
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 4,
+      "request": {
+        "name": "navigate_route",
+        "args": {
+          "route": "lower_corridor"
+        }
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 4,
+          "max_steps": 8,
+          "progress": 54,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 54,
+            "target_score": 100,
+            "remaining": 46
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": true,
+            "threat_engaged": false,
+            "target_wiped": false,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "damage_taken": 0,
+          "evidence_count": 4,
+          "last_event": "safe_route_navigated"
+        },
+        "reward": 0.23,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "safe_route_navigated",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "navigated along the safe route toward the target"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 54,
+          "target_progress": 100,
+          "score": 0.87,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": true,
+          "threat_engaged": false,
+          "target_wiped": false,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 0,
+          "evidence_count": 4,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2",
+            "safe_route_confirmed"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 4,
+          "last_action": {
+            "name": "navigate_route",
+            "args": {
+              "route": "lower_corridor"
+            }
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            },
+            {
+              "step": 4,
+              "event": "safe_route_navigated",
+              "reward": 0.23,
+              "progress": 54,
+              "info": {
+                "reason": "navigated along the safe route toward the target"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 5,
+      "request": {
+        "name": "engage_threat",
+        "args": {
+          "aggressive": false
+        }
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 5,
+          "max_steps": 8,
+          "progress": 66,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 66,
+            "target_score": 100,
+            "remaining": 34
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern.",
+            "Threat pressure dropped after the local engagement phase."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": true,
+            "threat_engaged": true,
+            "target_wiped": false,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "last_event": "threat_engaged_cleanly"
+        },
+        "reward": 0.21,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "threat_engaged_cleanly",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "local threat pressure was managed safely"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 66,
+          "target_progress": 100,
+          "score": 1.08,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.0,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": true,
+          "threat_engaged": true,
+          "target_wiped": false,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2",
+            "safe_route_confirmed",
+            "threat_profile:crawler_swarm"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 5,
+          "last_action": {
+            "name": "engage_threat",
+            "args": {
+              "aggressive": false
+            }
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            },
+            {
+              "step": 4,
+              "event": "safe_route_navigated",
+              "reward": 0.23,
+              "progress": 54,
+              "info": {
+                "reason": "navigated along the safe route toward the target"
+              }
+            },
+            {
+              "step": 5,
+              "event": "threat_engaged_cleanly",
+              "reward": 0.21,
+              "progress": 66,
+              "info": {
+                "reason": "local threat pressure was managed safely"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 6,
+      "request": {
+        "name": "wipe_target",
+        "args": {
+          "target_id": "target-archive-core"
+        }
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 6,
+          "max_steps": 8,
+          "progress": 80,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 80,
+            "target_score": 100,
+            "remaining": 20
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped.",
+            "A target wipe was executed; verification is still required."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern.",
+            "Threat pressure dropped after the local engagement phase."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": true,
+            "threat_engaged": true,
+            "target_wiped": true,
+            "cleanup_verified": false,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.88,
+          "verification_score": 0.0,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "last_event": "true_target_wiped"
+        },
+        "reward": 0.26,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "true_target_wiped",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "true corruption target was wiped cleanly"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 80,
+          "target_progress": 100,
+          "score": 1.34,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.88,
+          "verification_score": 0.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": true,
+          "threat_engaged": true,
+          "target_wiped": true,
+          "cleanup_verified": false,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2",
+            "safe_route_confirmed",
+            "threat_profile:crawler_swarm",
+            "true_target_wiped"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 6,
+          "last_action": {
+            "name": "wipe_target",
+            "args": {
+              "target_id": "target-archive-core"
+            }
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            },
+            {
+              "step": 4,
+              "event": "safe_route_navigated",
+              "reward": 0.23,
+              "progress": 54,
+              "info": {
+                "reason": "navigated along the safe route toward the target"
+              }
+            },
+            {
+              "step": 5,
+              "event": "threat_engaged_cleanly",
+              "reward": 0.21,
+              "progress": 66,
+              "info": {
+                "reason": "local threat pressure was managed safely"
+              }
+            },
+            {
+              "step": 6,
+              "event": "true_target_wiped",
+              "reward": 0.26,
+              "progress": 80,
+              "info": {
+                "reason": "true corruption target was wiped cleanly"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 7,
+      "request": {
+        "name": "verify_cleanup",
+        "args": {}
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 7,
+          "max_steps": 8,
+          "progress": 92,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 92,
+            "target_score": 100,
+            "remaining": 8
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped.",
+            "A target wipe was executed; verification is still required.",
+            "Cleanup verification indicates the objective is resolved."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern.",
+            "Threat pressure dropped after the local engagement phase."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": true,
+            "threat_engaged": true,
+            "target_wiped": true,
+            "cleanup_verified": true,
+            "run_submitted": false,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.88,
+          "verification_score": 1.0,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "last_event": "cleanup_verified"
+        },
+        "reward": 0.24,
+        "done": false,
+        "truncated": false,
+        "info": {
+          "event": "cleanup_verified",
+          "success": false,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "verification confirms the objective was fully cleared"
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 92,
+          "target_progress": 100,
+          "score": 1.58,
+          "done": false,
+          "success": false,
+          "final_outcome": "in_progress",
+          "failure_mode": "none",
+          "terminal_reason": "in_progress",
+          "compromise_type": "none",
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.88,
+          "verification_score": 1.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": true,
+          "threat_engaged": true,
+          "target_wiped": true,
+          "cleanup_verified": true,
+          "run_submitted": false,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": null,
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2",
+            "safe_route_confirmed",
+            "threat_profile:crawler_swarm",
+            "true_target_wiped",
+            "cleanup_verified"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 7,
+          "last_action": {
+            "name": "verify_cleanup",
+            "args": {}
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            },
+            {
+              "step": 4,
+              "event": "safe_route_navigated",
+              "reward": 0.23,
+              "progress": 54,
+              "info": {
+                "reason": "navigated along the safe route toward the target"
+              }
+            },
+            {
+              "step": 5,
+              "event": "threat_engaged_cleanly",
+              "reward": 0.21,
+              "progress": 66,
+              "info": {
+                "reason": "local threat pressure was managed safely"
+              }
+            },
+            {
+              "step": 6,
+              "event": "true_target_wiped",
+              "reward": 0.26,
+              "progress": 80,
+              "info": {
+                "reason": "true corruption target was wiped cleanly"
+              }
+            },
+            {
+              "step": 7,
+              "event": "cleanup_verified",
+              "reward": 0.24,
+              "progress": 92,
+              "info": {
+                "reason": "verification confirms the objective was fully cleared"
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    },
+    {
+      "index": 8,
+      "request": {
+        "name": "submit_run",
+        "args": {}
+      },
+      "response": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper",
+        "mission_id": "wikiwiper_game_sample",
+        "observation": {
+          "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "domain": "game",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "scenario_id": "wikiwiper",
+          "step_count": 8,
+          "max_steps": 8,
+          "progress": 100,
+          "target_progress": 100,
+          "progress_view": {
+            "score": 100,
+            "target_score": 100,
+            "remaining": 0
+          },
+          "visible_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "alerts": [
+            "The objective marker was inspected.",
+            "The zone scan exposed plausible routes and decoys.",
+            "A tool loadout is currently equipped.",
+            "A target wipe was executed; verification is still required.",
+            "Cleanup verification indicates the objective is resolved."
+          ],
+          "notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node.",
+            "One visible landmark is a decoy despite being easier to approach.",
+            "Only one tool slot truly matches the corruption pattern.",
+            "Threat pressure dropped after the local engagement phase.",
+            "A final run assessment has already been submitted."
+          ],
+          "available_actions": [
+            "inspect_objective",
+            "scan_zone",
+            "select_tool",
+            "navigate_route",
+            "engage_threat",
+            "wipe_target",
+            "verify_cleanup",
+            "submit_run"
+          ],
+          "status_flags": {
+            "objective_inspected": true,
+            "zone_scanned": true,
+            "tool_selected": true,
+            "route_navigated": true,
+            "threat_engaged": true,
+            "target_wiped": true,
+            "cleanup_verified": true,
+            "run_submitted": true,
+            "premature_submission": false,
+            "wrong_tool_selected": false,
+            "wrong_route_taken": false,
+            "false_target_wiped": false,
+            "unsafe_engagement": false
+          },
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.92,
+          "verification_score": 1.0,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "last_event": "clean_wikiwiper_run_submitted"
+        },
+        "reward": 0.62,
+        "done": true,
+        "truncated": false,
+        "info": {
+          "event": "clean_wikiwiper_run_submitted",
+          "success": true,
+          "domain": "game",
+          "env_name": "omnibench_aegis_env",
+          "env_id": "omnibench_aegis_env:game.wikiwiper",
+          "reason": "clean wikiwiper run submitted with verified cleanup",
+          "failure_mode": "none",
+          "terminal_reason": "clean_wikiwiper_submission",
+          "final_answer": {
+            "selected_tool_slot": "hotbar.2",
+            "target_status": "clean",
+            "damage_taken": 3
+          }
+        },
+        "state": {
+          "domain": "game",
+          "seed": 42,
+          "scenario_id": "wikiwiper",
+          "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+          "task_category": "objective_cleanup",
+          "max_steps": 8,
+          "progress": 100,
+          "target_progress": 100,
+          "score": 2.2,
+          "done": true,
+          "success": true,
+          "final_outcome": "clean_run",
+          "failure_mode": "none",
+          "terminal_reason": "clean_wikiwiper_submission",
+          "compromise_type": "none",
+          "navigation_confidence": 0.78,
+          "tool_readiness": 0.88,
+          "wipe_confidence": 0.92,
+          "verification_score": 1.0,
+          "safety_score": 100,
+          "efficiency_score": 100,
+          "objective_inspected": true,
+          "zone_scanned": true,
+          "tool_selected": true,
+          "route_navigated": true,
+          "threat_engaged": true,
+          "target_wiped": true,
+          "cleanup_verified": true,
+          "run_submitted": true,
+          "premature_submission": false,
+          "wrong_tool_selected": false,
+          "wrong_route_taken": false,
+          "false_target_wiped": false,
+          "unsafe_engagement": false,
+          "damage_taken": 3,
+          "evidence_count": 5,
+          "selected_tool_slot": "hotbar.2",
+          "selected_tool_name": "scraper_blade",
+          "final_answer": {
+            "selected_tool_slot": "hotbar.2",
+            "target_status": "clean",
+            "damage_taken": 3
+          },
+          "public_zone_brief": {
+            "zone_name": "Archive Ruins",
+            "biome_hint": "stone corridors with moss and broken signage",
+            "visible_landmarks": [
+              "Moss Gate",
+              "Dusty Beacon",
+              "Corrupted archive node",
+              "Broken Index Tower"
+            ],
+            "threat_profile_hint": "crawler swarm",
+            "resource_hint": "carry at least 2 purge charges",
+            "candidate_tool_slots": [
+              "hotbar.2",
+              "hotbar.3",
+              "hotbar.4"
+            ]
+          },
+          "visible_notes": [
+            "Verification after the wipe is mandatory.",
+            "Tool choice matters: one loadout matches the target's corruption pattern.",
+            "Zone biome: stone corridors with moss and broken signage.",
+            "A decoy landmark may look closer than the real corruption node."
+          ],
+          "event_log": [
+            "objective_marker_read",
+            "decoy_landmarks_mapped",
+            "route_candidates_revealed",
+            "tool_slot_selected:hotbar.2",
+            "safe_route_confirmed",
+            "threat_profile:crawler_swarm",
+            "true_target_wiped",
+            "cleanup_verified"
+          ],
+          "metadata": {
+            "env_id": "omnibench_aegis_env:game.wikiwiper",
+            "scenario_id": "wikiwiper"
+          },
+          "step_count": 8,
+          "last_action": {
+            "name": "submit_run",
+            "args": {}
+          },
+          "history": [
+            {
+              "step": 1,
+              "event": "objective_inspected",
+              "reward": 0.18,
+              "progress": 12,
+              "info": {
+                "reason": "objective marker inspected"
+              }
+            },
+            {
+              "step": 2,
+              "event": "zone_scanned",
+              "reward": 0.22,
+              "progress": 26,
+              "info": {
+                "reason": "zone scan mapped routes and decoys"
+              }
+            },
+            {
+              "step": 3,
+              "event": "correct_tool_selected",
+              "reward": 0.24,
+              "progress": 40,
+              "info": {
+                "reason": "selected the correct purge tool for the objective"
+              }
+            },
+            {
+              "step": 4,
+              "event": "safe_route_navigated",
+              "reward": 0.23,
+              "progress": 54,
+              "info": {
+                "reason": "navigated along the safe route toward the target"
+              }
+            },
+            {
+              "step": 5,
+              "event": "threat_engaged_cleanly",
+              "reward": 0.21,
+              "progress": 66,
+              "info": {
+                "reason": "local threat pressure was managed safely"
+              }
+            },
+            {
+              "step": 6,
+              "event": "true_target_wiped",
+              "reward": 0.26,
+              "progress": 80,
+              "info": {
+                "reason": "true corruption target was wiped cleanly"
+              }
+            },
+            {
+              "step": 7,
+              "event": "cleanup_verified",
+              "reward": 0.24,
+              "progress": 92,
+              "info": {
+                "reason": "verification confirms the objective was fully cleared"
+              }
+            },
+            {
+              "step": 8,
+              "event": "clean_wikiwiper_run_submitted",
+              "reward": 0.62,
+              "progress": 100,
+              "info": {
+                "reason": "clean wikiwiper run submitted with verified cleanup",
+                "failure_mode": "none",
+                "terminal_reason": "clean_wikiwiper_submission",
+                "final_answer": {
+                  "selected_tool_slot": "hotbar.2",
+                  "target_status": "clean",
+                  "damage_taken": 3
+                }
+              }
+            }
+          ],
+          "target_score": 100
+        },
+        "actions": [
+          "inspect_objective",
+          "scan_zone",
+          "select_tool",
+          "navigate_route",
+          "engage_threat",
+          "wipe_target",
+          "verify_cleanup",
+          "submit_run"
+        ]
+      }
+    }
+  ],
+  "final_state": {
+    "env_id": "omnibench_aegis_env:game.wikiwiper",
+    "scenario_id": "wikiwiper",
+    "mission_id": "wikiwiper_game_sample",
+    "state": {
+      "domain": "game",
+      "seed": 42,
+      "scenario_id": "wikiwiper",
+      "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "task_category": "objective_cleanup",
+      "max_steps": 8,
+      "progress": 100,
+      "target_progress": 100,
+      "score": 2.2,
+      "done": true,
+      "success": true,
+      "final_outcome": "clean_run",
+      "failure_mode": "none",
+      "terminal_reason": "clean_wikiwiper_submission",
+      "compromise_type": "none",
+      "navigation_confidence": 0.78,
+      "tool_readiness": 0.88,
+      "wipe_confidence": 0.92,
+      "verification_score": 1.0,
+      "safety_score": 100,
+      "efficiency_score": 100,
+      "objective_inspected": true,
+      "zone_scanned": true,
+      "tool_selected": true,
+      "route_navigated": true,
+      "threat_engaged": true,
+      "target_wiped": true,
+      "cleanup_verified": true,
+      "run_submitted": true,
+      "premature_submission": false,
+      "wrong_tool_selected": false,
+      "wrong_route_taken": false,
+      "false_target_wiped": false,
+      "unsafe_engagement": false,
+      "damage_taken": 3,
+      "evidence_count": 5,
+      "selected_tool_slot": "hotbar.2",
+      "selected_tool_name": "scraper_blade",
+      "final_answer": {
+        "selected_tool_slot": "hotbar.2",
+        "target_status": "clean",
+        "damage_taken": 3
+      },
+      "public_zone_brief": {
+        "zone_name": "Archive Ruins",
+        "biome_hint": "stone corridors with moss and broken signage",
+        "visible_landmarks": [
+          "Moss Gate",
+          "Dusty Beacon",
+          "Corrupted archive node",
+          "Broken Index Tower"
+        ],
+        "threat_profile_hint": "crawler swarm",
+        "resource_hint": "carry at least 2 purge charges",
+        "candidate_tool_slots": [
+          "hotbar.2",
+          "hotbar.3",
+          "hotbar.4"
+        ]
+      },
+      "visible_notes": [
+        "Verification after the wipe is mandatory.",
+        "Tool choice matters: one loadout matches the target's corruption pattern.",
+        "Zone biome: stone corridors with moss and broken signage.",
+        "A decoy landmark may look closer than the real corruption node."
+      ],
+      "event_log": [
+        "objective_marker_read",
+        "decoy_landmarks_mapped",
+        "route_candidates_revealed",
+        "tool_slot_selected:hotbar.2",
+        "safe_route_confirmed",
+        "threat_profile:crawler_swarm",
+        "true_target_wiped",
+        "cleanup_verified"
+      ],
+      "metadata": {
+        "env_id": "omnibench_aegis_env:game.wikiwiper",
+        "scenario_id": "wikiwiper"
+      },
+      "step_count": 8,
+      "last_action": {
+        "name": "submit_run",
+        "args": {}
+      },
+      "history": [
+        {
+          "step": 1,
+          "event": "objective_inspected",
+          "reward": 0.18,
+          "progress": 12,
+          "info": {
+            "reason": "objective marker inspected"
+          }
+        },
+        {
+          "step": 2,
+          "event": "zone_scanned",
+          "reward": 0.22,
+          "progress": 26,
+          "info": {
+            "reason": "zone scan mapped routes and decoys"
+          }
+        },
+        {
+          "step": 3,
+          "event": "correct_tool_selected",
+          "reward": 0.24,
+          "progress": 40,
+          "info": {
+            "reason": "selected the correct purge tool for the objective"
+          }
+        },
+        {
+          "step": 4,
+          "event": "safe_route_navigated",
+          "reward": 0.23,
+          "progress": 54,
+          "info": {
+            "reason": "navigated along the safe route toward the target"
+          }
+        },
+        {
+          "step": 5,
+          "event": "threat_engaged_cleanly",
+          "reward": 0.21,
+          "progress": 66,
+          "info": {
+            "reason": "local threat pressure was managed safely"
+          }
+        },
+        {
+          "step": 6,
+          "event": "true_target_wiped",
+          "reward": 0.26,
+          "progress": 80,
+          "info": {
+            "reason": "true corruption target was wiped cleanly"
+          }
+        },
+        {
+          "step": 7,
+          "event": "cleanup_verified",
+          "reward": 0.24,
+          "progress": 92,
+          "info": {
+            "reason": "verification confirms the objective was fully cleared"
+          }
+        },
+        {
+          "step": 8,
+          "event": "clean_wikiwiper_run_submitted",
+          "reward": 0.62,
+          "progress": 100,
+          "info": {
+            "reason": "clean wikiwiper run submitted with verified cleanup",
+            "failure_mode": "none",
+            "terminal_reason": "clean_wikiwiper_submission",
+            "final_answer": {
+              "selected_tool_slot": "hotbar.2",
+              "target_status": "clean",
+              "damage_taken": 3
+            }
+          }
+        }
+      ],
+      "target_score": 100
+    },
+    "last_observation": {
+      "text": "Resolve the wikiwiper mission: inspect, scan, choose the right tool, navigate safely, handle the threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "domain": "game",
+      "mission": "Inspect the wikiwiper objective, read the zone, select the correct tool, navigate safely, neutralize the local threat, wipe the true target, verify cleanup, and submit one clean run.",
+      "scenario_id": "wikiwiper",
+      "step_count": 8,
+      "max_steps": 8,
+      "progress": 100,
+      "target_progress": 100,
+      "progress_view": {
+        "score": 100,
+        "target_score": 100,
+        "remaining": 0
+      },
+      "visible_zone_brief": {
+        "zone_name": "Archive Ruins",
+        "biome_hint": "stone corridors with moss and broken signage",
+        "visible_landmarks": [
+          "Moss Gate",
+          "Dusty Beacon",
+          "Corrupted archive node",
+          "Broken Index Tower"
+        ],
+        "threat_profile_hint": "crawler swarm",
+        "resource_hint": "carry at least 2 purge charges",
+        "candidate_tool_slots": [
+          "hotbar.2",
+          "hotbar.3",
+          "hotbar.4"
+        ]
+      },
+      "alerts": [
+        "The objective marker was inspected.",
+        "The zone scan exposed plausible routes and decoys.",
+        "A tool loadout is currently equipped.",
+        "A target wipe was executed; verification is still required.",
+        "Cleanup verification indicates the objective is resolved."
+      ],
+      "notes": [
+        "Verification after the wipe is mandatory.",
+        "Tool choice matters: one loadout matches the target's corruption pattern.",
+        "Zone biome: stone corridors with moss and broken signage.",
+        "A decoy landmark may look closer than the real corruption node.",
+        "One visible landmark is a decoy despite being easier to approach.",
+        "Only one tool slot truly matches the corruption pattern.",
+        "Threat pressure dropped after the local engagement phase.",
+        "A final run assessment has already been submitted."
+      ],
+      "available_actions": [
+        "inspect_objective",
+        "scan_zone",
+        "select_tool",
+        "navigate_route",
+        "engage_threat",
+        "wipe_target",
+        "verify_cleanup",
+        "submit_run"
+      ],
+      "status_flags": {
+        "objective_inspected": true,
+        "zone_scanned": true,
+        "tool_selected": true,
+        "route_navigated": true,
+        "threat_engaged": true,
+        "target_wiped": true,
+        "cleanup_verified": true,
+        "run_submitted": true,
+        "premature_submission": false,
+        "wrong_tool_selected": false,
+        "wrong_route_taken": false,
+        "false_target_wiped": false,
+        "unsafe_engagement": false
+      },
+      "navigation_confidence": 0.78,
+      "tool_readiness": 0.88,
+      "wipe_confidence": 0.92,
+      "verification_score": 1.0,
+      "damage_taken": 3,
+      "evidence_count": 5,
+      "last_event": "clean_wikiwiper_run_submitted"
+    },
+    "last_info": {
+      "event": "clean_wikiwiper_run_submitted",
+      "success": true,
+      "domain": "game",
+      "env_name": "omnibench_aegis_env",
+      "env_id": "omnibench_aegis_env:game.wikiwiper",
+      "reason": "clean wikiwiper run submitted with verified cleanup",
+      "failure_mode": "none",
+      "terminal_reason": "clean_wikiwiper_submission",
+      "final_answer": {
+        "selected_tool_slot": "hotbar.2",
+        "target_status": "clean",
+        "damage_taken": 3
+      }
+    }
+  },
+  "missing": {}
+}

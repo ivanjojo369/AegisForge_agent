@@ -1,0 +1,6 @@
+# Runtime dependencies for the minimal omnibench_aegis_env server.
+# Kept intentionally small so the environment is easy to install inside
+# AegisForge_agent and remains stable while the rest of the files are filled in.
+
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
