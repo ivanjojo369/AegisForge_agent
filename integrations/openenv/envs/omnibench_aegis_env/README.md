@@ -1,3 +1,14 @@
+---
+title: OmniBench Aegis Env
+emoji: ⚔️
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 8000
+base_path: /web
+pinned: false
+short_description: Reproducible multi-domain OpenEnv environment for agent evaluation and post-training.
+---
 # OmniBench Aegis Env
 
 `omnibench_aegis_env` es el entorno OpenEnv principal para `AegisForge_agent`. Su objetivo es exponer una interfaz reproducible, evaluable y multi-dominio para tareas agentic inspiradas en benchmarks reales, sin mezclar la lógica del agente con la del entorno.
