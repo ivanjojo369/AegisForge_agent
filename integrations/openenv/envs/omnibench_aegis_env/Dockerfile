@@ -6,15 +6,15 @@ ENV PIP_NO_CACHE_DIR=1
 
 RUN useradd -m -u 1000 user
 
-WORKDIR /app
+WORKDIR /workspace
 
-COPY --chown=user:user server/requirements.txt /app/server/requirements.txt
-RUN pip install --upgrade pip && pip install -r /app/server/requirements.txt
+COPY --chown=user:user server/requirements.txt /workspace/requirements.txt
+RUN pip install --upgrade pip && pip install -r /workspace/requirements.txt
 
-COPY --chown=user:user . /app
+COPY --chown=user:user . /workspace/omnibench_aegis_env
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/workspace
 
 USER user
 
-CMD ["python", "-m", "uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "omnibench_aegis_env.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
