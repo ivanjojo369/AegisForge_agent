@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ..base import BaseDomain
 from ..domains.business_process import (
@@ -429,9 +429,277 @@ async def type_error_handler(_request: Request, exc: TypeError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-@app.get("/")
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/docs")
+@app.get("/", response_class=HTMLResponse)
+def root() -> str:
+    """Human-friendly landing page for the Hugging Face Space.
+
+    The machine-facing OpenEnv endpoints remain unchanged:
+    /health, /contract, /reset, /step, /state, /actions, /docs, /openapi.json.
+    """
+    return """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>omnibench_aegis_env</title>
+  <style>
+    :root {
+      --bg: #020617;
+      --panel: rgba(15, 23, 42, 0.78);
+      --line: rgba(148, 163, 184, 0.22);
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #60a5fa;
+      --green: #86efac;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.34), transparent 34rem),
+        radial-gradient(circle at top right, rgba(16, 185, 129, 0.22), transparent 30rem),
+        linear-gradient(135deg, #020617 0%, #0f172a 56%, #111827 100%);
+    }
+    a { color: inherit; }
+    .wrap {
+      width: min(1160px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 54px 0 46px;
+    }
+    .hero {
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 32px;
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(15, 23, 42, 0.62));
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.34);
+    }
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.06);
+      color: #cbd5e1;
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .badge.green {
+      color: var(--green);
+      border-color: rgba(34, 197, 94, 0.34);
+      background: rgba(34, 197, 94, 0.10);
+    }
+    h1 {
+      margin: 0;
+      max-width: 920px;
+      font-size: clamp(42px, 7vw, 82px);
+      line-height: 0.92;
+      letter-spacing: -0.07em;
+    }
+    .lead {
+      max-width: 840px;
+      margin: 24px 0 0;
+      color: #cbd5e1;
+      font-size: clamp(17px, 2vw, 20px);
+      line-height: 1.65;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 30px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.07);
+      color: #f8fafc;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .btn.primary {
+      background: #2563eb;
+      border-color: #60a5fa;
+    }
+    .section-title {
+      margin: 34px 0 14px;
+      color: #93c5fd;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 15px;
+    }
+    .card {
+      min-height: 134px;
+      padding: 20px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 18px 54px rgba(0, 0, 0, 0.20);
+    }
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.52;
+      font-size: 14px;
+    }
+    .pill {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.12);
+      color: #bfdbfe;
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .quick {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 15px;
+      margin-top: 15px;
+    }
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      white-space: pre-wrap;
+      color: #dbeafe;
+      background: rgba(2, 6, 23, 0.62);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.55;
+      overflow-x: auto;
+    }
+    footer {
+      margin-top: 30px;
+      color: #64748b;
+      font-size: 13px;
+      text-align: center;
+    }
+    @media (max-width: 880px) {
+      .grid, .quick { grid-template-columns: 1fr; }
+      .hero { padding: 26px; }
+      .wrap { width: min(100% - 28px, 1160px); padding-top: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="badge-row">
+        <span class="badge green">● Running</span>
+        <span class="badge">OpenEnv-compatible</span>
+        <span class="badge">OAS 3.1</span>
+        <span class="badge">AegisForge</span>
+        <span class="badge">Sprint 3 coverage</span>
+      </div>
+
+      <h1>omnibench_aegis_env</h1>
+      <p class="lead">
+        A compact OpenEnv evaluation server for multi-domain agent workflows:
+        research, computer use, finance, multi-agent evaluation, tau2, game,
+        business process, agent safety, cybersecurity, and coding security scenarios.
+      </p>
+
+      <div class="actions">
+        <a class="btn primary" href="/docs">Open API Docs</a>
+        <a class="btn" href="/health">Health</a>
+        <a class="btn" href="/contract">Contract</a>
+        <a class="btn" href="/openapi.json">OpenAPI JSON</a>
+        <a class="btn" href="/state">State</a>
+      </div>
+    </section>
+
+    <div class="section-title">Sprint 3 / AgentX-AgentBeats coverage</div>
+    <section class="grid">
+      <article class="card">
+        <span class="pill">Agent Safety · Pi-Bench</span>
+        <strong>WhistleBlowerWreck</strong>
+        <p>PII leak scenario focused on protected disclosure, safe handling, and policy-grounded response behavior.</p>
+      </article>
+      <article class="card">
+        <span class="pill">Cybersecurity · CyberGym</span>
+        <strong>StaticShipScam</strong>
+        <p>Supply-chain security scenario for identifying unsafe package or static artifact behavior.</p>
+      </article>
+      <article class="card">
+        <span class="pill">Coding Agent · NetArena</span>
+        <strong>DevContainerDoom</strong>
+        <p>Devcontainer supply-chain scenario for safe coding-agent environment and dependency behavior.</p>
+      </article>
+    </section>
+
+    <div class="section-title">Existing scenario suite</div>
+    <section class="grid">
+      <article class="card"><span class="pill">Research</span><strong>InventoryInject</strong><p>Grounded inventory inspection, analysis, quarantine, and safe fact extraction.</p></article>
+      <article class="card"><span class="pill">Computer Use</span><strong>LinkLifter</strong><p>Safe link scanning, grounded navigation, and destination verification.</p></article>
+      <article class="card"><span class="pill">Finance</span><strong>taxwiztrap</strong><p>Tax calculation with careful unit normalization and canonical answer submission.</p></article>
+      <article class="card"><span class="pill">Multi-agent</span><strong>BidBot</strong><p>Roster building, matchup simulation, scoring, and equilibrium assessment.</p></article>
+      <article class="card"><span class="pill">τ²-Bench</span><strong>TicketTwister</strong><p>Task bundle loading, user simulation, conversation execution, and bundle scoring.</p></article>
+      <article class="card"><span class="pill">Game Agent</span><strong>wikiwiper</strong><p>Objective inspection, zone scanning, route navigation, threat engagement, and cleanup verification.</p></article>
+      <article class="card"><span class="pill">Business Process</span><strong>saleforceone</strong><p>Privacy-safe CRM routing, schema checks, context filtering, and policy application.</p></article>
+    </section>
+
+    <div class="section-title">API quick start</div>
+    <section class="quick">
+      <article class="card">
+        <strong>Stable OpenEnv endpoints</strong>
+        <p>
+          The presentation layer only changes this landing page. The machine-facing
+          endpoints remain available for evaluators and scripts: /health, /contract,
+          /reset, /step, /state, /actions, /docs, and /openapi.json.
+        </p>
+      </article>
+      <article class="code">POST /reset
+{
+  "scenario_id": "InventoryInject",
+  "options": {
+    "domain": "research"
+  }
+}
+
+POST /step
+{
+  "name": "inspect_inventory",
+  "args": {}
+}</article>
+    </section>
+
+    <footer>
+      Built for AegisForge · OpenEnv · OmniBench-style local and hosted evaluation workflows.
+    </footer>
+  </main>
+</body>
+</html>
+    """
 
 
 @app.get("/health")

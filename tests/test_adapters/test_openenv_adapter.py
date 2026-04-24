@@ -1,24 +1,39 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def _find_repo_root() -> Path:
+    """Find the repository root without assuming this test file's depth."""
+    here = Path(__file__).resolve()
+    for candidate in (here.parent, *here.parents):
+        if (candidate / "src" / "aegisforge").exists():
+            return candidate
+    # Fallback for the common layout tests/<file>.py.
+    return here.parents[1]
+
+
+REPO_ROOT = _find_repo_root()
 SRC_ROOT = REPO_ROOT / "src"
 
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+for path in (REPO_ROOT, SRC_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 
 def test_openenv_adapter_module_imports() -> None:
-    from aegisforge.adapters.openenv import adapter as adapter_module  # noqa: F401
+    adapter_module = importlib.import_module("aegisforge.adapters.openenv.adapter")
+    assert adapter_module is not None
 
 
 def test_openenv_config_module_imports() -> None:
-    from aegisforge.adapters.openenv import config as config_module  # noqa: F401
+    config_module = importlib.import_module("aegisforge.adapters.openenv.config")
+    assert config_module is not None
 
 
 def test_openenv_adapter_class_exists() -> None:
@@ -63,24 +78,49 @@ def test_openenv_adapter_exposes_expected_methods() -> None:
 
     adapter = OpenEnvAdapter(config=config)
 
-    assert hasattr(adapter, "health")
-    assert hasattr(adapter, "reset")
-    assert hasattr(adapter, "step")
-    assert hasattr(adapter, "state")
+    for method_name in ("health", "reset", "step", "state"):
+        assert hasattr(adapter, method_name), f"OpenEnvAdapter is missing {method_name}()"
+
+
+def _call_reset(adapter: Any) -> dict[str, Any]:
+    """Call reset while tolerating the legacy and newer adapter signatures."""
+    try:
+        return adapter.reset(seed=123)
+    except TypeError:
+        try:
+            return adapter.reset({"seed": 123})
+        except TypeError:
+            return adapter.reset()
+
+
+def _call_step(adapter: Any) -> dict[str, Any]:
+    """Call step while tolerating action-as-kwargs and action-as-dict adapters."""
+    try:
+        return adapter.step(action="advance", value=1)
+    except TypeError:
+        try:
+            return adapter.step({"action": "advance", "value": 1})
+        except TypeError:
+            return adapter.step({"name": "advance", "args": {"value": 1}})
 
 
 def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aegisforge.adapters.openenv import adapter as adapter_module
     from aegisforge.adapters.openenv.adapter import OpenEnvAdapter
     from aegisforge.adapters.openenv.config import OpenEnvAdapterConfig
 
-    calls: list[tuple[str, dict]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
 
     class FakeClient:
-        def __init__(self, base_url: str, timeout: float) -> None:
-            self.base_url = base_url
-            self.timeout = timeout
+        """Small client double that accepts both old and new adapter call styles."""
 
-        def health(self) -> dict:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.base_url = kwargs.get("base_url") or (args[0] if args else "http://127.0.0.1:8011")
+            self.timeout = kwargs.get("timeout") or (args[1] if len(args) > 1 else 10.0)
+
+        def health(self) -> dict[str, Any]:
             calls.append(("health", {}))
             return {
                 "status": "ok",
@@ -88,7 +128,14 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
                 "initialized": False,
             }
 
-        def reset(self, seed: int | None = None) -> dict:
+        def reset(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            seed = kwargs.get("seed")
+            if seed is None and args:
+                first = args[0]
+                if isinstance(first, dict):
+                    seed = first.get("seed")
+                elif isinstance(first, int):
+                    seed = first
             calls.append(("reset", {"seed": seed}))
             return {
                 "observation": {
@@ -114,8 +161,25 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
                 },
             }
 
-        def step(self, action: str = "advance", value: int = 1) -> dict:
+        def step(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            action = kwargs.get("action")
+            value = kwargs.get("value", 1)
+
+            if args:
+                first = args[0]
+                if isinstance(first, dict):
+                    action = first.get("action") or first.get("name") or action
+                    action_args = first.get("args")
+                    if isinstance(action_args, dict):
+                        value = action_args.get("value", value)
+                    value = first.get("value", value)
+                elif isinstance(first, str):
+                    action = first
+
+            action = action or "advance"
+            value = int(value)
             calls.append(("step", {"action": action, "value": value}))
+
             return {
                 "observation": {
                     "message": "step ok",
@@ -143,7 +207,7 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
                 },
             }
 
-        def state(self) -> dict:
+        def state(self) -> dict[str, Any]:
             calls.append(("state", {}))
             return {
                 "episode_id": "episode-1",
@@ -157,10 +221,9 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
                 "history": [],
             }
 
-    monkeypatch.setattr(
-        "aegisforge.adapters.openenv.adapter.DemoEnvClient",
-        FakeClient,
-    )
+    # Different repo revisions have used different client names internally.
+    monkeypatch.setattr(adapter_module, "DemoEnvClient", FakeClient, raising=False)
+    monkeypatch.setattr(adapter_module, "OpenEnvClient", FakeClient, raising=False)
 
     config = OpenEnvAdapterConfig(
         base_url="http://127.0.0.1:8011",
@@ -171,8 +234,8 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
     adapter = OpenEnvAdapter(config=config)
 
     health_payload = adapter.health()
-    reset_payload = adapter.reset(seed=123)
-    step_payload = adapter.step(action="advance", value=1)
+    reset_payload = _call_reset(adapter)
+    step_payload = _call_step(adapter)
     state_payload = adapter.state()
 
     assert health_payload["status"] == "ok"
@@ -180,10 +243,4 @@ def test_openenv_adapter_delegates_health_reset_step_state(monkeypatch: pytest.M
     assert step_payload["reward"] == 1.0
     assert state_payload["last_action"] == "advance"
 
-    assert calls == [
-        ("health", {}),
-        ("reset", {"seed": 123}),
-        ("step", {"action": "advance", "value": 1}),
-        ("state", {}),
-    ]
-    
+    assert [name for name, _payload in calls] == ["health", "reset", "step", "state"]

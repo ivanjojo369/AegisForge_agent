@@ -1,30 +1,56 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Iterator
 
+import pytest
 from fastapi.testclient import TestClient
 
 
-# Permite importar:
-# - server.app
-# - models.py
-#
-# desde integrations/openenv/envs/demo_env/
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    """Find the repository root without assuming this test file's depth."""
+    here = Path(__file__).resolve()
+    for candidate in (here.parent, *here.parents):
+        demo_root = candidate / "integrations" / "openenv" / "envs" / "demo_env"
+        if demo_root.exists():
+            return candidate
+    raise AssertionError("Could not find integrations/openenv/envs/demo_env from this test file.")
+
+
+REPO_ROOT = _find_repo_root()
 DEMO_ENV_ROOT = REPO_ROOT / "integrations" / "openenv" / "envs" / "demo_env"
 
-import importlib
 
-if str(DEMO_ENV_ROOT) not in sys.path:
-    sys.path.insert(0, str(DEMO_ENV_ROOT))
+def _purge_demo_env_modules() -> None:
+    """Reload demo_env between tests so server-level state does not leak."""
+    for module_name in list(sys.modules):
+        if (
+            module_name == "models"
+            or module_name == "server"
+            or module_name.startswith("server.")
+        ):
+            sys.modules.pop(module_name, None)
 
-app = importlib.import_module("server.app").app
 
-client = TestClient(app)
+def _import_demo_app() -> ModuleType:
+    if str(DEMO_ENV_ROOT) not in sys.path:
+        sys.path.insert(0, str(DEMO_ENV_ROOT))
+
+    _purge_demo_env_modules()
+    return importlib.import_module("server.app")
 
 
-def test_openenv_demo_env_health_smoke() -> None:
+@pytest.fixture()
+def client() -> Iterator[TestClient]:
+    app_module = _import_demo_app()
+    with TestClient(app_module.app) as test_client:
+        yield test_client
+
+
+def test_openenv_demo_env_health_smoke(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
 
@@ -34,7 +60,7 @@ def test_openenv_demo_env_health_smoke() -> None:
     assert "initialized" in payload
 
 
-def test_openenv_demo_env_reset_smoke() -> None:
+def test_openenv_demo_env_reset_smoke(client: TestClient) -> None:
     response = client.post("/reset", json={})
     assert response.status_code == 200
 
@@ -53,7 +79,7 @@ def test_openenv_demo_env_reset_smoke() -> None:
     assert state["success"] is False
 
 
-def test_openenv_demo_env_step_smoke() -> None:
+def test_openenv_demo_env_step_smoke(client: TestClient) -> None:
     reset_response = client.post("/reset", json={})
     assert reset_response.status_code == 200
 
@@ -78,17 +104,18 @@ def test_openenv_demo_env_step_smoke() -> None:
     assert payload["state"]["last_action"] == "advance"
 
 
-def test_openenv_demo_env_state_smoke() -> None:
+def test_openenv_demo_env_state_smoke(client: TestClient) -> None:
     reset_response = client.post("/reset", json={})
     assert reset_response.status_code == 200
 
-    client.post(
+    step_response = client.post(
         "/step",
         json={
             "action": "advance",
             "value": 2,
         },
     )
+    assert step_response.status_code == 200
 
     response = client.get("/state")
     assert response.status_code == 200
@@ -102,7 +129,7 @@ def test_openenv_demo_env_state_smoke() -> None:
     assert payload["success"] is False
 
 
-def test_openenv_demo_env_success_path_smoke() -> None:
+def test_openenv_demo_env_success_path_smoke(client: TestClient) -> None:
     reset_response = client.post("/reset", json={})
     assert reset_response.status_code == 200
 
@@ -118,8 +145,8 @@ def test_openenv_demo_env_success_path_smoke() -> None:
     assert payload["done"] is True
     assert payload["state"]["success"] is True
 
-def test_openenv_demo_env_step_before_reset_returns_409() -> None:
 
+def test_openenv_demo_env_step_before_reset_returns_409(client: TestClient) -> None:
     response = client.post(
         "/step",
         json={
@@ -127,5 +154,6 @@ def test_openenv_demo_env_step_before_reset_returns_409() -> None:
             "value": 1,
         },
     )
+
     assert response.status_code == 409
     assert "Call POST /reset first" in response.json()["detail"]
