@@ -17,39 +17,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  docker-smoke:
-    name: Docker smoke test
+  omnibench-space-smoke:
+    name: OmniBench Space Docker smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     env:
+      CONTEXT_DIR: integrations/openenv/envs/omnibench_aegis_env
+      IMAGE_NAME: omnibench-aegis-env-smoke:test
       HOST: 0.0.0.0
       PORT: "8000"
-      AGENT_PORT: "8000"
-      AEGISFORGE_PUBLIC_URL: http://127.0.0.1:8000
+      OPENENV_HOST: 0.0.0.0
+      OPENENV_PORT: "8000"
       HEALTH_URL: http://127.0.0.1:8000/health
-      CARD_URL: http://127.0.0.1:8000/.well-known/agent-card.json
-      IMAGE_NAME: aegisforge-smoke:test
+      CONTRACT_URL: http://127.0.0.1:8000/contract
+      ROOT_URL: http://127.0.0.1:8000/
+      DOCS_URL: http://127.0.0.1:8000/docs
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t "$IMAGE_NAME" .
+      - name: Build OmniBench Space Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "$IMAGE_NAME" "$CONTEXT_DIR"
 
-      - name: Start container
+      - name: Start OmniBench Space container
         shell: bash
         run: |
           set -euo pipefail
 
           docker run -d \
-            --name aegisforge-smoke \
+            --name omnibench-aegis-env-smoke \
             -p 8000:8000 \
             -e HOST="${HOST}" \
             -e PORT="${PORT}" \
-            -e AGENT_PORT="${AGENT_PORT}" \
-            -e AEGISFORGE_PUBLIC_URL="${AEGISFORGE_PUBLIC_URL}" \
+            -e OPENENV_HOST="${OPENENV_HOST}" \
+            -e OPENENV_PORT="${OPENENV_PORT}" \
             "$IMAGE_NAME"
 
       - name: Wait for container to stay up
@@ -58,10 +64,10 @@ jobs:
           set -euo pipefail
 
           sleep 3
-          RUNNING="$(docker inspect -f '{{.State.Running}}' aegisforge-smoke)"
+          RUNNING="$(docker inspect -f '{{.State.Running}}' omnibench-aegis-env-smoke)"
           if [ "$RUNNING" != "true" ]; then
             echo "Container is not running."
-            docker logs aegisforge-smoke || true
+            docker logs omnibench-aegis-env-smoke || true
             exit 1
           fi
 
@@ -70,26 +76,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          for i in {1..30}; do
-            if curl -fsS "$HEALTH_URL" -o /tmp/health.out; then
+          for i in {1..45}; do
+            if curl -fsS "$HEALTH_URL" -o /tmp/health.json; then
               echo "Health endpoint is up."
+              cat /tmp/health.json
               exit 0
             fi
-            echo "Waiting for /health... attempt $i/30"
+            echo "Waiting for /health... attempt $i/45"
+            docker ps || true
             sleep 2
           done
 
           echo "Health endpoint did not become ready in time."
-          docker logs aegisforge-smoke || true
+          docker logs omnibench-aegis-env-smoke || true
           exit 1
 
-      - name: Probe agent card
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS "$CARD_URL" -o /tmp/agent-card.json
-
-      - name: Validate agent card JSON
+      - name: Validate /health JSON
         shell: bash
         run: |
           set -euo pipefail
@@ -97,56 +99,70 @@ jobs:
           import json
           from pathlib import Path
 
-          card_path = Path("/tmp/agent-card.json")
-          raw = card_path.read_text(encoding="utf-8")
-          data = json.loads(raw)
-
-          assert isinstance(data, dict), "Agent card must be a JSON object."
-          assert data, "Agent card JSON is empty."
-
-          expected_any = {"name", "id", "version", "url", "capabilities", "description"}
-          if not any(key in data for key in expected_any):
-              raise AssertionError(
-                  f"Agent card is valid JSON but missing expected top-level keys. "
-                  f"Found keys: {sorted(data.keys())}"
-              )
-
-          print("Agent card JSON looks valid.")
+          data = json.loads(Path("/tmp/health.json").read_text(encoding="utf-8"))
+          assert data["status"] == "ok"
+          assert data["env"] == "omnibench_aegis_env"
+          print("Health JSON looks valid.")
           PY
 
-      - name: Optional pytest smoke tests
-        if: ${{ hashFiles('tests/test_smoke/*.py') != '' }}
+      - name: Probe /contract
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements-dev.txt ]; then
-            python -m pip install -r requirements-dev.txt
-          elif [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          fi
-          python -m pip install -e .
-          pytest tests/test_smoke -q
+          curl -fsS "$CONTRACT_URL" -o /tmp/contract.json
+          cat /tmp/contract.json
+
+      - name: Validate /contract JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/tmp/contract.json").read_text(encoding="utf-8"))
+          assert data["name"] == "omnibench_aegis_env"
+          assert "supported_domains" in data
+          assert "supported_env_ids" in data
+          assert "primary_scenarios" in data
+          print("Contract JSON looks valid.")
+          PY
+
+      - name: Probe landing page
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$ROOT_URL" -o /tmp/root.html
+          grep -q "omnibench_aegis_env" /tmp/root.html
+          grep -q "Sprint 3 coverage" /tmp/root.html
+          echo "Landing page looks valid."
+
+      - name: Probe /docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$DOCS_URL" -o /tmp/docs.html
+          grep -qi "swagger" /tmp/docs.html
+          echo "Docs endpoint looks valid."
 
       - name: Print container logs on failure
         if: failure()
         shell: bash
         run: |
           mkdir -p .github-artifacts
-          docker logs aegisforge-smoke > .github-artifacts/docker-smoke.log 2>&1 || true
-          cat .github-artifacts/docker-smoke.log || true
+          docker logs omnibench-aegis-env-smoke > .github-artifacts/omnibench-space-smoke.log 2>&1 || true
+          cat .github-artifacts/omnibench-space-smoke.log || true
 
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: docker-smoke-logs
-          path: .github-artifacts/docker-smoke.log
+          name: omnibench-space-smoke-logs
+          path: .github-artifacts/omnibench-space-smoke.log
           if-no-files-found: ignore
 
       - name: Cleanup
         if: always()
         shell: bash
         run: |
-          docker rm -f aegisforge-smoke || true
-          
+          docker rm -f omnibench-aegis-env-smoke || true
