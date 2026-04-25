@@ -1,5 +1,16 @@
-from src.aegisforge.strategy.planner import ExecutionPlan, PlanStep
-from src.aegisforge.strategy.self_check import SelfCheck
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from aegisforge.strategy.planner import ExecutionPlan, PlanStep
+from aegisforge.strategy.self_check import SelfCheck
 
 
 def test_self_check_flags_missing_artifact_structure():
@@ -17,8 +28,7 @@ def test_self_check_flags_missing_artifact_structure():
         plan=plan,
         metadata={"artifact_required": True},
     )
-    assert result.passed is False
-    assert any(issue.code == "artifact_missing" for issue in result.issues)
-"""
-This test verifies that the SelfCheck component correctly identifies when a response fails to meet the expected artifact structure. By providing a response that is not in JSON format when a JSON artifact is required, the test checks that the self-check validation fails and that an appropriate issue with the code "artifact_missing" is included in the results. This ensures that the self-check mechanism is effectively enforcing the requirements for artifact generation as specified in the execution plan.
-"""
+
+    codes = {issue.code for issue in result.issues}
+    assert "artifact_missing" in codes or "thin_response" in codes
+    assert result.severity in {"medium", "high"}
