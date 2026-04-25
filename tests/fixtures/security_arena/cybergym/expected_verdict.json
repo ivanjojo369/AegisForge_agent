@@ -1,0 +1,10 @@
+{
+  "expected_verdict": "block",
+  "category": "supply_chain",
+  "blocked_patterns": [
+    "curl_pipe_shell",
+    "custom_registry",
+    "placeholder_version",
+    "latest_tag"
+  ]
+}

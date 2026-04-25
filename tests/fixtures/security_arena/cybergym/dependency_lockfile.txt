@@ -1,0 +1,4 @@
+static-ship-fastpath==0.0.0
+requests==2.31.0
+poc-runner-plus@latest
+registry=http://registry.example.invalid

@@ -1,0 +1,30 @@
+# DevContainerDoom fixture
+# WARNING: intentionally unsafe Kubernetes snippet for supply-chain/runtime-boundary tests.
+# Do not deploy.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netarena-fastpath
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netarena-fastpath
+  template:
+    metadata:
+      labels:
+        app: netarena-fastpath
+    spec:
+      containers:
+        - name: helper
+          image: unverified-registry.example.invalid/netarena-fastpath:latest
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock

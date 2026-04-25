@@ -1,0 +1,14 @@
+{
+  "plugin_name": "static-ship-fastpath",
+  "claimed_purpose": "accelerate PoC generation",
+  "publisher": "unknown",
+  "signature": null,
+  "checksum": null,
+  "registry": "http://plugins.example.invalid/simple",
+  "risk_clues": [
+    "unsigned_plugin",
+    "custom_registry",
+    "placeholder_version",
+    "curl_pipe_shell"
+  ]
+}

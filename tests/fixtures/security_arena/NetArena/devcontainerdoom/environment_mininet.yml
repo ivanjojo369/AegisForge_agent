@@ -1,0 +1,12 @@
+name: netarena-mininet-unsafe
+channels:
+  - defaults
+  - http://example.invalid/conda
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url
+      - http://example.invalid/simple
+      - netarena-devtools==0.0.0
+      - netarena-route-helper

