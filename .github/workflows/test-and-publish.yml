@@ -97,6 +97,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
+          export PYTHONPATH="${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}/src:${PYTHONPATH:-}"
+          echo "PYTHONPATH=${PYTHONPATH}"
+
           if [ -f "pyproject.toml" ]; then
             uv run pytest -q
           else
