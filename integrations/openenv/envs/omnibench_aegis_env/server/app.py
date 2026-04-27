@@ -25,6 +25,9 @@ from typing import Any, Mapping, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from ..evaluation_lab.models import EvaluationLabRequest
+from ..evaluation_lab.report import build_report
+from ..evaluation_lab.scanner import scan_repo
 from ..base import BaseDomain
 from ..domains.business_process import (
     SALEFORCEONE_ENV_ID,
@@ -630,7 +633,8 @@ def root() -> str:
       </p>
 
       <div class="actions">
-        <a class="btn primary" href="/docs">Open API Docs</a>
+        <a class="btn primary" href="/lab">Open AegisForge Lab</a>
+        <a class="btn" href="/docs">Open API Docs</a>
         <a class="btn" href="/health">Health</a>
         <a class="btn" href="/contract">Contract</a>
         <a class="btn" href="/openapi.json">OpenAPI JSON</a>
@@ -817,6 +821,97 @@ def actions() -> dict[str, Any]:
         "env_id": session.env_id,
         "scenario_id": session.scenario_id,
         "actions": _serialize_actions(session.env, session.state, session.last_observation),
+    }
+
+
+@app.get("/lab", response_class=HTMLResponse)
+def evaluation_lab() -> str:
+    """Interactive read-only defensive evaluation lab for public benchmark repos."""
+    return """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AegisForge Evaluation Lab</title>
+  <style>
+    :root { --bg:#020617; --panel:rgba(15,23,42,.84); --line:rgba(148,163,184,.24); --text:#e5e7eb; --muted:#94a3b8; --accent:#60a5fa; --green:#86efac; --red:#fca5a5; }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at top left,rgba(37,99,235,.32),transparent 34rem),radial-gradient(circle at top right,rgba(16,185,129,.20),transparent 30rem),linear-gradient(135deg,#020617 0%,#0f172a 56%,#111827 100%)}
+    a{color:#bfdbfe;text-decoration:none}.wrap{width:min(1180px,calc(100% - 40px));margin:0 auto;padding:36px 0 42px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}.brand{font-weight:900;letter-spacing:-.03em}.nav{display:flex;gap:10px;flex-wrap:wrap}.nav a,button{border:1px solid var(--line);border-radius:14px;padding:10px 13px;color:#f8fafc;background:rgba(255,255,255,.07);font-weight:800;cursor:pointer}button.primary{background:#2563eb;border-color:#60a5fa}.hero,.panel{border:1px solid var(--line);border-radius:28px;background:linear-gradient(180deg,rgba(15,23,42,.86),rgba(15,23,42,.64));box-shadow:0 24px 80px rgba(0,0,0,.32)}.hero{padding:30px}h1{margin:0;font-size:clamp(38px,6vw,70px);line-height:.96;letter-spacing:-.065em}.lead{max-width:900px;color:#cbd5e1;font-size:18px;line-height:1.65}.badge-row{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:18px}.badge{padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:#cbd5e1;font-size:12px;font-weight:850}.badge.green{color:var(--green);border-color:rgba(34,197,94,.34);background:rgba(34,197,94,.10)}.grid{display:grid;grid-template-columns:.9fr 1.1fr;gap:16px;margin-top:16px}.panel{padding:22px}label{display:block;color:#bfdbfe;font-size:13px;font-weight:900;margin:14px 0 8px}input{width:100%;border:1px solid var(--line);border-radius:16px;padding:14px;background:rgba(2,6,23,.58);color:var(--text);outline:none;font-size:15px}.muted{color:var(--muted);line-height:1.55}.checks{display:grid;gap:9px;margin:14px 0}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;margin-bottom:14px}.metric{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(30,41,59,.62)}.metric span{color:var(--muted);display:block;font-size:12px;font-weight:850;text-transform:uppercase;letter-spacing:.08em}.metric strong{display:block;margin-top:6px;font-size:24px}.section-title{margin:20px 0 10px;color:#93c5fd;font-size:12px;font-weight:950;letter-spacing:.14em;text-transform:uppercase}.item{border:1px solid var(--line);border-radius:16px;padding:13px;margin:8px 0;background:rgba(2,6,23,.36)}.item strong{display:block;margin-bottom:6px}.item small{color:var(--muted)}pre{white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;background:rgba(2,6,23,.72);border:1px solid var(--line);border-radius:18px;padding:14px;color:#dbeafe;font-size:12px;line-height:1.52}.status{margin-top:12px;color:#cbd5e1}.error{color:var(--red)}.warning{color:#fde68a}.ok{color:var(--green)}@media(max-width:920px){.grid,.metric-grid{grid-template-columns:1fr}.wrap{width:min(100% - 28px,1180px)}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="topbar"><div class="brand">AegisForge Evaluation Lab</div><nav class="nav"><a href="/">Landing</a><a href="/docs">API Docs</a><a href="/health">Health</a><a href="/contract">Contract</a></nav></div>
+    <section class="hero"><div class="badge-row"><span class="badge green">● Defensive mode</span><span class="badge">Read-only repo scan</span><span class="badge">AgentX-AgentBeats</span><span class="badge">CyberGym-aligned</span><span class="badge">Precision scanner v0.1.2</span></div><h1>Evaluate public benchmark repos safely.</h1><p class="lead">Analyze a public GitHub benchmark repository in read-only/sandbox mode and generate defensive risk findings, controlled scenarios, and benign evaluation payloads. This lab does not exploit repositories, execute target code, extract secrets, or generate real attack payloads.</p></section>
+    <section class="grid"><article class="panel"><h2>Run defensive evaluation</h2><p class="muted">Start with the public CyberGym Green Agent template or paste another public benchmark repo URL.</p><label for="repoUrl">Repository URL</label><input id="repoUrl" value="https://github.com/RDI-Foundation/cybergym-green" /><div class="checks"><div>✓ Static/read-only analysis</div><div>✓ GitHub public repos only</div><div>✓ Secret-like values masked</div><div>✓ Benign payload artifacts only</div><div>✓ Target code execution disabled</div><div>✓ Docker execution disabled for analyzed repos</div></div><button class="primary" onclick="runLab()">Run Defensive Evaluation</button> <button onclick="copyReport()">Copy JSON</button><div id="status" class="status">Ready.</div></article><article class="panel"><h2>Report</h2><div class="metric-grid"><div class="metric"><span>Risk score</span><strong id="riskScore">—</strong></div><div class="metric"><span>Risk tier</span><strong id="riskTier">—</strong></div><div class="metric"><span>Files analyzed</span><strong id="filesAnalyzed">—</strong></div><div class="metric"><span>Findings</span><strong id="findingCount">—</strong></div><div class="metric"><span>Review load</span><strong id="reviewLoad">—</strong></div></div><div class="section-title">Scan limits</div><div id="limits" class="muted">No report yet.</div><div class="section-title">Repo shape</div><div id="repoShape" class="muted">No report yet.</div><div class="section-title">Precision notes</div><div id="precisionNotes" class="muted">No report yet.</div><div class="section-title">Findings</div><div id="findings" class="muted">No report yet.</div><div class="section-title">Controlled scenarios</div><div id="scenarios" class="muted">No report yet.</div><div class="section-title">Benign payloads</div><div id="payloads" class="muted">No report yet.</div></article></section>
+    <section class="panel" style="margin-top:16px"><h2>JSON artifact</h2><pre id="jsonOut">{}</pre></section>
+  </main>
+<script>
+let lastReport=null;
+function esc(v){return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
+async function runLab(){const status=document.getElementById('status');const repoUrl=document.getElementById('repoUrl').value.trim();status.className='status';status.textContent='Running read-only defensive scan...';try{const res=await fetch('/api/evaluation-lab/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_url:repoUrl})});const data=await res.json();if(!res.ok)throw new Error(data.detail||'Evaluation failed');lastReport=data;renderReport(data);if(data.scan_limits&&data.scan_limits.file_limit_reached){status.className='status warning';status.textContent='Evaluation complete. Analysis was truncated at the safety file limit.'}else{status.className='status ok';status.textContent='Evaluation complete.'}}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
+function riskTierFromScore(score){score=Number(score||0);if(score>=80)return'high';if(score>=50)return'elevated';if(score>=25)return'moderate';return'low'}
+function renderSummary(summary){if(!summary)return'';const sev=summary.by_severity||{};const cat=summary.by_category||{};const sevText=Object.entries(sev).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');const catText=Object.entries(cat).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');return `<div class="item"><strong>Summary</strong><small>${sevText||'no severity summary'}</small><br><small>${catText||'no category summary'}</small></div>`}
+function renderLimits(data){const limits=data.scan_limits||{};if(!Object.keys(limits).length)return'No scan-limit metadata returned.';const cls=limits.file_limit_reached?'warning':'ok';const text=limits.file_limit_reached?`Analysis truncated at safety limit (${limits.max_files} files).`:'Analysis completed within safety limits.';return `<div class="item"><strong class="${cls}">${esc(text)}</strong><small>Max files: ${esc(limits.max_files??'—')} · Max file bytes: ${esc(limits.max_file_bytes??'—')} · Large skipped: ${esc(limits.files_skipped_large??0)} · Unreadable: ${esc(limits.files_unreadable??0)}</small></div>`}
+function renderRepoShape(data){const shape=data.repo_shape||{};if(!Object.keys(shape).length)return'No repo-shape metadata returned.';return `<div class="item"><small>${Object.entries(shape).map(([k,v])=>`${esc(k)}=${esc(v)}`).join(' · ')}</small></div>`}
+function renderPrecisionNotes(data){const notes=data.precision_notes||[];const classifier=data.classifier_version?`<div class="item"><strong>Classifier ${esc(data.classifier_version)}</strong></div>`:'';return classifier+(notes.length?notes.map(n=>`<div class="item"><small>${esc(n)}</small></div>`).join(''):'No precision notes returned.')}
+function renderReport(data){document.getElementById('riskScore').textContent=data.risk_score??'0';document.getElementById('riskTier').textContent=data.risk_tier??riskTierFromScore(data.risk_score);document.getElementById('filesAnalyzed').textContent=data.files_analyzed??'0';document.getElementById('findingCount').textContent=(data.findings||[]).length;document.getElementById('reviewLoad').textContent=(data.review_load&&data.review_load.level)||'—';document.getElementById('jsonOut').textContent=JSON.stringify(data,null,2);document.getElementById('limits').innerHTML=renderLimits(data);document.getElementById('repoShape').innerHTML=renderRepoShape(data);document.getElementById('precisionNotes').innerHTML=renderPrecisionNotes(data);const findings=data.findings||[];document.getElementById('findings').innerHTML=findings.length?renderSummary(data.finding_summary)+findings.map(i=>`<div class="item"><strong>${esc(i.severity)} · ${esc(i.category)}</strong><small>${esc(i.file)}:${esc(i.line)} — ${esc(i.evidence)}</small><br><small>${esc(i.recommendation)}</small></div>`).join(''):'No findings detected by the static defensive scanner.';document.getElementById('scenarios').innerHTML=(data.controlled_scenarios||[]).map(i=>`<div class="item"><strong>${esc(i.title)}</strong><small>${esc(i.id)} · ${esc(i.mode)}</small><br><small>${esc(i.goal)}</small></div>`).join('')||'No controlled scenarios returned.';document.getElementById('payloads').innerHTML=(data.benign_payloads||[]).map(i=>`<div class="item"><strong>${esc(i.id)}</strong><small>${esc(i.type)} · ${esc(i.purpose)}</small></div>`).join('')||'No benign payloads returned.'}
+async function copyReport(){if(!lastReport)return;await navigator.clipboard.writeText(JSON.stringify(lastReport,null,2));document.getElementById('status').textContent='JSON report copied.'}
+</script>
+</body>
+</html>
+    """
+
+
+@app.post("/api/evaluation-lab/analyze")
+async def analyze_evaluation_lab(request: Request) -> dict[str, Any]:
+    payload = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="evaluation lab payload must be a JSON object")
+
+    lab_request = EvaluationLabRequest.from_mapping(payload)
+    if lab_request.mode != "read_only_defensive":
+        raise HTTPException(status_code=400, detail="only read_only_defensive mode is supported")
+
+    scan = scan_repo(lab_request.repo_url)
+    report = build_report(scan)
+
+    # Preserve scanner v0.1.1 metadata even if report.py is still the older
+    # v0.1 builder. This keeps the patch limited to app.py + scanner.py.
+    for key in ("finding_summary", "risk_tier", "review_load", "scan_limits", "classifier_version", "precision_notes"):
+        if key in scan:
+            report[key] = scan[key]
+
+    if not lab_request.include_findings:
+        report["findings"] = []
+    if not lab_request.include_controlled_scenarios:
+        report["controlled_scenarios"] = []
+    if not lab_request.include_benign_payloads:
+        report["benign_payloads"] = []
+
+    return report
+
+
+@app.get("/api/evaluation-lab/policy")
+def evaluation_lab_policy() -> dict[str, Any]:
+    return {
+        "mode": "read_only_defensive",
+        "allows": [
+            "public_github_repo_static_scan",
+            "defensive_risk_reporting",
+            "controlled_scenario_generation",
+            "benign_payload_generation",
+        ],
+        "denies": [
+            "target_code_execution",
+            "exploit_generation",
+            "secret_extraction",
+            "evasion",
+            "persistence",
+            "unauthorized_access",
+            "running_target_docker_containers",
+        ],
     }
 
 
