@@ -1,190 +1,358 @@
-# AegisForge Agent (QuipuLoop) — AgentX–AgentBeats Phase 2 (Purple)
+# AegisForge Agent — Unified Purple Agent for AgentX-AgentBeats Phase 2
 
-**AegisForge** is a Phase 2 (**Purple**) AgentX–AgentBeats entry that consolidates real, runnable capabilities inspired by:
-- **τ²-Bench**: multi-turn organizational-agent patterns, domain/tool interfaces, and a custom domain (`quipu_lab`)
-- **OpenEnv**: environment-server interaction patterns (agent ↔ env via HTTP)
-- **Agent Security / Security Arena**: defense-in-depth (injection resistance, sanitization, safe output formatting)
+**AegisForge Agent** is an A2A-compatible **Purple Agent** for AgentX-AgentBeats Phase 2. It is designed as one unified runtime, not as separate benchmark-specific bots. The agent combines a clean A2A server, selected-opponent routing, benchmark-aware track profiles, safety/self-check logic, and reproducible local validation.
 
-This repository is intentionally organized so judges can clearly see the **Purple Agent core** vs. **integration evidence** vs. **local harness/tooling**.
+The current runtime is aligned around two complementary capabilities:
+
+1. **AegisForge Unified Purple Agent v1.0** — the submission-facing A2A Purple Agent runtime under `src/aegisforge/`.
+2. **AegisForge Evaluation Lab v0.1.2** — a defensive read-only benchmark-repo analyzer under `integrations/openenv/envs/omnibench_aegis_env/evaluation_lab/`.
+
+The submitted product is the **Purple Agent runtime**. The Evaluation Lab is supporting evidence and tooling, not a replacement for the A2A agent.
+
+---
+
+## What this repo submits
+
+The submission-facing product is:
+
+```text
+Dockerfile -> run.sh -> src/aegisforge/a2a_server.py -> Executor -> AegisForgeAgent
+```
+
+Core files:
+
+```text
+src/aegisforge/a2a_server.py
+src/aegisforge/agent.py
+src/aegisforge/executor.py
+src/aegisforge/agent_card.py
+src/aegisforge/runner.py
+src/aegisforge/role_policy.py
+src/aegisforge/strategy/
+src/aegisforge/adapters/
+```
+
+The runtime exposes:
+
+```text
+GET /health
+GET /.well-known/agent-card.json
+GET /.well-known/agent.json
+A2A JSON-RPC endpoints mounted by the A2A SDK
+```
+
+---
+
+## Selected opponent matrix
+
+AegisForge is configured as a unified Purple Agent for one selected opponent per category.
+
+| Category | Selected opponent | Canonical track | Reference repo |
+|---|---:|---|---|
+| Game Agent | Minecraft Benchmark / MCU-AgentBeats | `mcu` | `KWSMooBang/MCU-AgentBeats` |
+| Finance Agent | OfficeQA | `officeqa` | `arnavsinghvi11/officeqa_agentbeats` |
+| Business Process Agent | Entropic CRMArenaPro | `crmarena` | `rkstu/entropic-crmarenapro` |
+| Research Agent | FieldWorkArena | `fieldworkarena` | `ast-fri/FieldWorkArena-GreenAgent` |
+| Multi-agent Evaluation | MAizeBargAIn | `maizebargain` | `gsmithline/tutorial-agent-beats-comp` |
+| τ²-Bench | τ²-Bench | `tau2` | `RDI-Foundation/tau2-agentbeats` |
+| Computer Use & Web Agent | OSWorld-Verified | `osworld` | `RDI-Foundation/osworld-green` |
+| Agent Safety | Pi-Bench | `pibench` | Pi-Bench green agent |
+| Cybersecurity Agent | CyberGym | `cybergym` | CyberGym green agent |
+| Coding Agent | NetArena | `netarena` | NetArena green agent |
+
+Important alias rule:
+
+```text
+mcu, mcu-minecraft, and mcu_minecraft are the same selected Game Agent opponent.
+The canonical runtime track is always: mcu
+```
 
 ---
 
 ## Repository structure
 
-```
+```text
 AegisForge_agent/
-  .github/workflows/
-    test-and-publish.yml              # CI + container publish
-
-  src/aegisforge/                     # ✅ Purple Agent core (A2A)
-    __init__.py
-    a2a_server.py                     # A2A server entrypoint
-    agent.py                          # agent router/orchestrator
+  src/aegisforge/                         # Submission-facing Purple Agent runtime
+    a2a_server.py                         # A2A server entrypoint
+    agent.py                              # Unified Purple Agent core
+    agent_card.py                         # Internal card payload helpers
+    executor.py                           # A2A Executor -> AegisForgeAgent bridge
+    runner.py                             # serve/card/doctor runtime helper
+    role_policy.py                        # Track/mode posture selection
+    strategy/
+      router.py
+      task_classifier.py
+      planner.py
+      self_check.py
+      track_profiles/
+        crmarenapro.toml
+        officeqa.toml
+        mcu_minecraft.toml
+        fieldworkarena.toml
+        maizebargain.toml
+        tau2_agentbeats.toml
+        osworld.toml
+        pibench.toml
+        cybergym.toml
+        netarena.toml
     adapters/
-      openenv/                        # OpenEnv adapter(s)
-      security/                       # Security adapter(s) / policies
-      tau2/                           # τ² adapter(s)
+      openenv/
+      security/
+      tau2/
 
-  integrations/                       # ✅ Minimal evidence + integration assets (thin copies)
-    openenv/
+  integrations/
+    openenv/envs/omnibench_aegis_env/
+      evaluation_lab/                     # Defensive read-only repo analyzer
+      server/                             # Space / local server app
+      tests/
     security_arena/
     tau2/
 
-  harness/                            # 🟨 Optional local harness/scenarios (NOT the A2A product)
-    AegisForge_scenarios/
-      debate/
-      security_arena/
+  tests/                                  # Main repo tests
+  scripts/                                # Local validation and packaging scripts
+  tooling/                                # Optional submission/evaluation tooling
+  harness/                                # Optional local harness and scenarios
+  assets/                                 # Example card/health/schema assets
+  docs/                                   # Submission, architecture, and abstract docs
 
-  tooling/                            # 🟨 Optional developer tooling
-    A3_evaluator/app/server.py
-
-  tests/
-  scripts/
-    regen_requirements.ps1            # regenerate requirements*.txt via uv -> TEMP (Windows-safe)
-  docs/
-  assets/
-
-  pyproject.toml                      # source-of-truth dependencies
-  uv.lock                             # (if used)
-  requirements.txt                    # auto-generated compatibility (from pyproject)
-  requirements-dev.txt                # auto-generated compatibility (from pyproject --extra test)
   Dockerfile
+  run.sh
+  pyproject.toml
+  requirements.txt
+  requirements-dev.txt
   README.md
+  SUBMISSION.md
 ```
 
-**Key principle:** `src/aegisforge/` is the product submitted/registered as the **Purple Agent**.
-`integrations/` proves capability with minimal, runnable assets.
-`harness/` and `tooling/` are optional and exist for local iteration only.
+`src/aegisforge/` is the product. `integrations/`, `harness/`, and `tooling/` are support/evidence layers.
 
 ---
 
 ## Requirements
 
-- Python **3.11+** recommended
-- Windows / PowerShell supported
-- **uv** recommended (but `requirements*.txt` are provided as compatibility)
+Recommended:
+
+```text
+Python 3.11+
+PowerShell on Windows or Bash on Linux/macOS
+uv for dependency management
+Docker for deployment parity
+```
 
 ---
 
 ## Setup
 
-### Option A (recommended): uv
+### Option A — uv
 
 ```powershell
 cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
 uv sync --extra test
 ```
 
-### Option B: pip (compatibility)
+### Option B — pip
 
 ```powershell
 cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -U pip
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 ---
 
-## Run the Purple Agent (A2A server)
+## Run the A2A Purple Agent
+
+Recommended runtime entrypoint:
 
 ```powershell
-uv run python -m aegisforge.a2a_server
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m aegisforge.runner --mode serve --host 127.0.0.1 --port 8001
 ```
 
-If your server supports host/port configuration, set env vars (example):
+Health check:
 
 ```powershell
-$env:HOST="127.0.0.1"
-$env:PORT="9009"
-uv run python -m aegisforge.a2a_server
+Invoke-RestMethod http://127.0.0.1:8001/health
 ```
 
-> Notes:
-> - The **Agent Card** and A2A endpoints should be served by `a2a_server.py`.
-> - Keep the runtime deterministic where possible (timeouts, bounded memory/logging).
+Agent card:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/.well-known/agent-card.json | ConvertTo-Json -Depth 20
+```
+
+Compatibility alias endpoint:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/.well-known/agent.json | ConvertTo-Json -Depth 20
+```
 
 ---
 
-## Regenerate `requirements*.txt` (Windows-safe)
+## Runtime doctor and card checks
 
-`pyproject.toml` is the source of truth. `requirements*.txt` are generated for compatibility.
+Doctor mode validates the runtime wiring without starting a long-running server:
 
 ```powershell
-.\scripts\regen_requirements.ps1
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m aegisforge.runner --mode doctor --host 127.0.0.1 --port 8001 --pretty
 ```
+
+Expected top-level result:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+Print the card directly:
+
+```powershell
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m aegisforge.runner --mode card --host 127.0.0.1 --port 8001 --pretty
+```
+
+The card should advertise `AegisForge Unified Purple Agent` and the selected opponent tracks.
 
 ---
 
-## Capability demos (runnable evidence)
+## AegisForge Evaluation Lab
 
-These demos are meant to be **small, reproducible, and honest**. They do not include private/held-out evaluation tasks.
+The Evaluation Lab is a support tool for defensive read-only review of public benchmark repositories. It accepts public GitHub repo URLs, performs static/sandbox-safe analysis, masks secret-like values, reports risk/review-load, and generates controlled scenarios plus benign evaluation payloads.
 
-### Demo A — τ²-style domain/tooling
-- Demonstrates multi-turn handling and a minimal public sample using τ²-like interfaces.
-- Includes custom domain evidence under `integrations/tau2/` (e.g., `quipu_lab`).
+Run locally:
 
-Run (placeholder—wire to your demo entrypoints):
 ```powershell
-uv run python -c "from aegisforge.adapters.tau2 import demo; demo.run()"
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m uvicorn integrations.openenv.envs.omnibench_aegis_env.server.app:app --host 127.0.0.1 --port 8001
 ```
 
-### Demo B — OpenEnv environment interaction
-- Demonstrates connecting to an environment server and executing one short episode.
-- Assets/config under `integrations/openenv/`.
+Open:
 
-Run:
-```powershell
-uv run python -c "from aegisforge.adapters.openenv import demo; demo.run()"
+```text
+http://127.0.0.1:8001/lab
 ```
 
-### Demo C — Security layer (defense-in-depth)
-- Demonstrates prompt-injection detection, sanitization, and safe output formatting.
-- Policy assets under `integrations/security_arena/`.
+Safety constraints:
 
-Run:
-```powershell
-uv run python -c "from aegisforge.adapters.security import demo; demo.run()"
+```text
+read-only static analysis
+public GitHub repositories only
+secret-like values masked
+benign payload artifacts only
+no target code execution
+no Docker execution from analyzed repositories
 ```
 
 ---
 
 ## Tests
 
+Run the main test suite:
+
 ```powershell
-uv run pytest -q
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m pytest tests -q
+```
+
+Useful focused checks:
+
+```powershell
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m pytest tests\test_core tests\test_strategy tests\test_plugins tests\test_smoke -q
+python -m pytest tests\test_adapters -q
+python -m pytest tests\scripts tests\test_ci -q
+python -m pytest tests\test_evaluation_lab_precision.py -q
+```
+
+Optional integration env checks:
+
+```powershell
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m pytest integrations\openenv\envs\omnibench_aegis_env\tests -q
+```
+
+Compile the core agent:
+
+```powershell
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+python -m py_compile .\src\aegisforge\agent.py
 ```
 
 ---
 
 ## Docker
 
-Build (recommended for CI/runner parity):
+Build:
 
 ```powershell
-docker build --platform linux/amd64 -t ghcr.io/<owner>/<repo>:latest .
+cd C:\Users\PC\Documents\AGI-Prototipo\AegisForge_agent
+docker build --platform linux/amd64 -t aegisforge-agent:latest .
 ```
 
-Run locally:
+Run locally on port 8001:
 
 ```powershell
-docker run --rm -p 9009:9009 ghcr.io/<owner>/<repo>:latest
+docker run --rm -p 8001:8001 aegisforge-agent:latest
+```
+
+Verify:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/health
+Invoke-RestMethod http://127.0.0.1:8001/.well-known/agent-card.json | ConvertTo-Json -Depth 20
 ```
 
 ---
 
-## Competition / fairness notes
+## Fair play and integrity
 
-- No hard-coded benchmark answers.
-- No exploitation of evaluation harness or platform vulnerabilities.
-- No secrets committed (no `.env`, no API keys).
-- Generated outputs are not versioned (`results/`, `output/`, caches).
+AegisForge is intended to operate within the AgentX-AgentBeats rules and A2A benchmark contract:
+
+```text
+no hardcoded benchmark answer tables
+no task-specific lookup tables pretending to be reasoning
+no platform or benchmark exploit attempts
+no secret extraction from real systems
+no unauthorized access
+no hidden evaluation leakage
+no committed API keys or private secrets
+```
+
+The agent can operate in attacker/defender assessment modes **inside the benchmark contract**, but it is not designed to attack real systems.
 
 ---
 
-## Team / Contact
+## Submission status checklist
 
-- Team / Project: **QuipuLoop Labs – AegisForge**
-- Handle: **ivanjojo369**
+Before final platform registration:
+
+```text
+[ ] GitHub repository is public and up to date
+[ ] README.md is updated
+[ ] SUBMISSION.md is updated
+[ ] Agent card endpoint is reachable
+[ ] /health endpoint is reachable
+[ ] Docker image builds
+[ ] Runtime doctor returns status=ok
+[ ] Main tests pass
+[ ] Public endpoint verification passes
+[ ] Abstract/description is ready for registration form
+[ ] Agent is registered on AgentBeats
+[ ] Leaderboard runs are launched or documented
+```
+
+---
+
+## Team / contact
+
+```text
+Project: AegisForge Agent / QuipuLoop
+Handle: ivanjojo369
+Repository: github.com/ivanjojo369/AegisForge_agent
+```
