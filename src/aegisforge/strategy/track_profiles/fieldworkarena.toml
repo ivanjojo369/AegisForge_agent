@@ -1,0 +1,17 @@
+# AegisForge unified opponent profile
+track = "fieldworkarena"
+category = "research_agent"
+benchmark = "FieldWorkArena"
+selected_opponent = "FieldWorkArena GreenAgent"
+repo = "https://github.com/ast-fri/FieldWorkArena-GreenAgent"
+adapter = "openenv"
+mode = "research_fieldwork"
+default_assessment_mode = "defender"
+prompt_profile = "fieldworkarena_purple"
+policy_profile = "fieldworkarena"
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "multimodal_field_research_a2a_file_handling"
+keywords = ["fieldworkarena", "field work", "research", "observation", "a2a", "filewithbytes", "multimodal"]
+output_contract = ["extract task goal", "handle file or multimodal references conservatively", "ground answer in available observations", "maintain A2A output discipline"]

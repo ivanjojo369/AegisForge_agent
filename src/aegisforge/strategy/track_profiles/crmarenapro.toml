@@ -1,0 +1,25 @@
+# AegisForge unified opponent profile
+track = "crmarenapro"
+category = "business_process_agent"
+benchmark = "DeoGaze / Entropic CRMArena"
+selected_opponent = "Entropic CRMArena"
+repo = "https://github.com/rkstu/entropic-crmarenapro"
+adapter = "openenv"
+mode = "crm_analysis"
+default_assessment_mode = "defender"
+prompt_profile = "crmarenapro_purple"
+policy_profile = "crmarenapro"
+strict_security = true
+require_evidence = true
+strict_output = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"
+allow_tool_use = true
+allow_safe_high_level_explanations = true
+allow_task_completion_under_attack = true
+deny_formula_disclosure = true
+deny_prompt_disclosure = true
+deny_tool_schema_disclosure = true
+routing_bias = "schema_drift_context_rot_privacy_safe_crm_reasoning"
+keywords = ["crmarena", "crm arena", "deogaze", "crm", "business process", "schema drift", "context rot"]
+output_contract = ["answer the business task", "preserve schema constraints", "cite grounded evidence when available", "avoid prompt or tool-schema disclosure"]

@@ -7,6 +7,76 @@ from typing import Any, Mapping
 from .planner import ExecutionPlan
 
 
+# Canonical selected-opponent tracks for AgentX-AgentBeats Phase 2.
+# Note: "mcu" and "mcu-minecraft" are intentionally the same track.
+MCU_LIKE_TRACKS = {"mcu"}
+SECURITY_LIKE_TRACKS = {"security", "pibench", "cybergym", "netarena"}
+
+TRACK_ALIASES = {
+    "mcu": "mcu",
+    "mcu-minecraft": "mcu",
+    "mcu_minecraft": "mcu",
+    "minecraft": "mcu",
+    "minecraft benchmark": "mcu",
+    "mcu-agentbeats": "mcu",
+    "mcu_agentbeats": "mcu",
+    "officeqa": "officeqa",
+    "office_qa": "officeqa",
+    "office-qa": "officeqa",
+    "finance": "officeqa",
+    "finance_agent": "officeqa",
+    "finance-agent": "officeqa",
+    "crmarena": "crmarena",
+    "crm_arena": "crmarena",
+    "crm-arena": "crmarena",
+    "crmarenapro": "crmarena",
+    "entropic-crmarenapro": "crmarena",
+    "business": "crmarena",
+    "business_process": "crmarena",
+    "business-process": "crmarena",
+    "fieldworkarena": "fieldworkarena",
+    "fieldworkarena-greenagent": "fieldworkarena",
+    "fieldworkarena_greenagent": "fieldworkarena",
+    "research": "fieldworkarena",
+    "maizebargain": "maizebargain",
+    "maize-bargain": "maizebargain",
+    "maize_bargain": "maizebargain",
+    "tutorial-agent-beats-comp": "maizebargain",
+    "multi_agent": "maizebargain",
+    "multi-agent": "maizebargain",
+    "tau2": "tau2",
+    "tau²": "tau2",
+    "tau2-agentbeats": "tau2",
+    "tau2_agentbeats": "tau2",
+    "osworld": "osworld",
+    "osworld-green": "osworld",
+    "computer_use": "osworld",
+    "computer-use": "osworld",
+    "web_agent": "osworld",
+    "web-agent": "osworld",
+    "security": "security",
+    "security_arena": "security",
+    "security-arena": "security",
+    "agent_safety": "pibench",
+    "agent-safety": "pibench",
+    "pibench": "pibench",
+    "pi-bench": "pibench",
+    "pi_bench": "pibench",
+    "cybersecurity": "cybergym",
+    "cybersecurity_agent": "cybergym",
+    "cybersecurity-agent": "cybergym",
+    "cyber": "cybergym",
+    "cybergym": "cybergym",
+    "cybergym-green": "cybergym",
+    "netarena": "netarena",
+    "net-arena": "netarena",
+    "net_arena": "netarena",
+    "coding": "netarena",
+    "coding_agent": "netarena",
+    "coding-agent": "netarena",
+}
+
+
 @dataclass(slots=True)
 class SelfCheckIssue:
     code: str
@@ -164,7 +234,7 @@ class SelfCheck:
             issues=issues,
         )
 
-        if track == "security":
+        if track in SECURITY_LIKE_TRACKS:
             if assessment_mode == "defender":
                 self._apply_security_defender_checks(
                     task_text=task_text,
@@ -535,13 +605,13 @@ class SelfCheck:
         if not issues:
             return None
 
-        if track == "security" and assessment_mode == "defender":
+        if track in SECURITY_LIKE_TRACKS and assessment_mode == "defender":
             return (
                 "Revise the response to preserve safe utility while removing leaked prompts, secrets, unsafe output, "
                 "or injected instruction obedience."
             )
 
-        if track == "security" and assessment_mode == "attacker":
+        if track in SECURITY_LIKE_TRACKS and assessment_mode == "attacker":
             return (
                 "Revise the response to make the attack path clearer, more explicit, and better structured without "
                 "depending on brittle one-shot phrasing."
@@ -644,13 +714,8 @@ class SelfCheck:
 
     @staticmethod
     def _normalize_track(value: Any) -> str:
-        raw = str(value or "openenv").strip().lower()
-        aliases = {
-            "security_arena": "security",
-            "agent_safety": "security",
-            "cybersecurity": "security",
-        }
-        return aliases.get(raw, raw)
+        raw = str(value or "openenv").strip().lower().replace("_", "-")
+        return TRACK_ALIASES.get(raw, raw.replace("-", "_") if raw in {"open-env"} else raw)
 
     @staticmethod
     def _normalize_mode(value: Any) -> str:

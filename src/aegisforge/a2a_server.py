@@ -27,6 +27,56 @@ from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from .executor import Executor
 
 
+RUNTIME_VERSION = "1.1.0"
+
+# One selected opponent per AgentX-AgentBeats category.
+# "mcu" covers the MCU/Minecraft benchmark; we do not treat mcu-minecraft as a separate track.
+SELECTED_OPPONENT_TRACKS = (
+    "mcu",
+    "officeqa",
+    "crmarena",
+    "fieldworkarena",
+    "maizebargain",
+    "tau2",
+    "osworld",
+    "pibench",
+    "cybergym",
+    "netarena",
+)
+
+SELECTED_OPPONENT_REPOS = {
+    "mcu": "https://github.com/KWSMooBang/MCU-AgentBeats",
+    "officeqa": "https://github.com/arnavsinghvi11/officeqa_agentbeats",
+    "crmarena": "https://github.com/rkstu/entropic-crmarenapro",
+    "fieldworkarena": "https://github.com/ast-fri/FieldWorkArena-GreenAgent",
+    "maizebargain": "https://github.com/gsmithline/tutorial-agent-beats-comp",
+    "tau2": "https://github.com/RDI-Foundation/tau2-agentbeats",
+    "osworld": "https://github.com/RDI-Foundation/osworld-green",
+    "pibench": "Pi-Bench",
+    "cybergym": "CyberGym",
+    "netarena": "NetArena",
+}
+
+AGENT_CARD_TAGS = (
+    "agentx-agentbeats",
+    "phase2-purple",
+    "unified-purple-agent",
+    "selected-opponent-profiles",
+    "a2a",
+    "mcu",
+    "minecraft-benchmark",
+    "officeqa",
+    "crmarena",
+    "fieldworkarena",
+    "maizebargain",
+    "tau2",
+    "osworld",
+    "pibench",
+    "cybergym",
+    "netarena",
+)
+
+
 def _normalize_base_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -58,24 +108,18 @@ def _card_to_dict(card: AgentCard) -> dict:
 def build_agent_card(*, url: str) -> AgentCard:
     skills = [
         AgentSkill(
-            id="quipuloop.aegisforge.purple",
-            name="AegisForge Purple Agent",
+            id="quipuloop.aegisforge.unified_purple",
+            name="AegisForge Unified Purple Agent",
             description=(
-                "Generalist Purple Agent with τ²-style tool-use patterns, "
-                "OpenEnv-style environment interaction, and a security hardening layer."
+                "A2A-compatible Purple Agent for the selected AgentX-AgentBeats opponents. "
+                "MCU/Minecraft is represented by the canonical mcu track; mcu-minecraft is treated as an alias, not a separate track."
             ),
-            tags=[
-                "agentx-agentbeats",
-                "phase2-purple",
-                "tau2",
-                "openenv",
-                "agent-safety",
-                "cybersecurity",
-            ],
+            tags=list(AGENT_CARD_TAGS),
             examples=[
-                "Run a small τ²-style multi-turn task using the quipu_lab domain.",
-                "Connect to an OpenEnv environment server and execute an episode.",
-                "Apply defense-in-depth to prompt injection attempts.",
+                "Route an MCU/Minecraft benchmark task through the mcu profile.",
+                "Answer an OfficeQA finance task with evidence-aware document handling.",
+                "Handle a CRMArena business-process task without exposing protected formulas.",
+                "Process FieldWorkArena, MAizeBargAIn, tau2, OSWorld, Pi-Bench, CyberGym, or NetArena tasks through their selected profiles.",
             ],
         )
     ]
@@ -83,11 +127,11 @@ def build_agent_card(*, url: str) -> AgentCard:
     return AgentCard(
         name="AegisForge (QuipuLoop)",
         description=(
-            "A2A Purple Agent for AgentX–AgentBeats Phase 2. "
-            "Implements a clean core + adapters for τ²/OpenEnv/Security."
+            "Unified A2A Purple Agent for AgentX-AgentBeats Phase 2. "
+            "Supports the selected opponent matrix across Game, Finance, Business Process, Research, Multi-agent, tau2, Computer Use/Web, Agent Safety, Cybersecurity, and Coding."
         ),
         url=_normalize_base_url(url),
-        version="1.0.0",
+        version=RUNTIME_VERSION,
         default_input_modes=["text"],
         default_output_modes=["text"],
         capabilities=AgentCapabilities(streaming=True),

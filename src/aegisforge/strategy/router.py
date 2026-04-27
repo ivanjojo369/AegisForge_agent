@@ -35,13 +35,46 @@ class RouteDecision:
 
 
 class TaskRouter:
-    """Choose the execution route for a classified task."""
+    """Choose the execution route for a classified task.
+
+    The public competition matrix selects one green-agent opponent per
+    category. These selected profiles route to the existing coarse adapters
+    while preserving a more specific track name for reporting and strategy.
+    """
+
+    MCU_TRACKS = {"mcu", "mcu_minecraft"}
+    SECURITY_TRACKS = {"security", "pibench", "cybergym", "netarena"}
 
     ADAPTERS = {
         "openenv": "openenv",
+        "officeqa": "openenv",
+        "crmarenapro": "openenv",
+        "crmarena": "openenv",
+        "fieldworkarena": "openenv",
+        "maizebargain": "openenv",
+        "osworld": "openenv",
         "security": "security",
+        "pibench": "security",
+        "cybergym": "security",
+        "netarena": "security",
         "tau2": "tau2",
+        "tau2_agentbeats": "tau2",
         "mcu": "mcu",
+        "mcu_minecraft": "mcu",
+    }
+
+    PROFILE_FALLBACKS = {
+        "officeqa": "openenv",
+        "crmarenapro": "openenv",
+        "crmarena": "openenv",
+        "fieldworkarena": "openenv",
+        "maizebargain": "openenv",
+        "osworld": "openenv",
+        "pibench": "security",
+        "cybergym": "security",
+        "netarena": "security",
+        "tau2_agentbeats": "tau2",
+        "mcu_minecraft": "mcu",
     }
 
     def decide(
@@ -99,8 +132,9 @@ class TaskRouter:
 
         reasons: list[str] = []
 
-        if track == "mcu":
+        if track in self.MCU_TRACKS:
             return self._route_mcu(
+                track=track,
                 classification=classification,
                 assessment_mode=assessment_mode,
                 scenario_family=scenario_family,
@@ -114,8 +148,9 @@ class TaskRouter:
                 reasons=reasons,
             )
 
-        if track == "security":
+        if track in self.SECURITY_TRACKS:
             return self._route_security(
+                track=track,
                 classification=classification,
                 assessment_mode=assessment_mode,
                 scenario_family=scenario_family,
@@ -146,6 +181,7 @@ class TaskRouter:
     def _route_mcu(
         self,
         *,
+        track: str,
         classification: TaskClassification,
         assessment_mode: str,
         scenario_family: str,
@@ -197,7 +233,7 @@ class TaskRouter:
             reasons.append("Budget near limit; reduce extra probing.")
 
         return RouteDecision(
-            track="mcu",
+            track=track,
             adapter_name=adapter_name,
             prompt_profile=prompt_profile,
             policy_profile=policy_profile,
@@ -211,6 +247,7 @@ class TaskRouter:
     def _route_security(
         self,
         *,
+        track: str,
         classification: TaskClassification,
         assessment_mode: str,
         scenario_family: str,
@@ -227,13 +264,23 @@ class TaskRouter:
         adapter_name = "security"
         prompt_profile = str(
             metadata.get("prompt_profile")
-            or ("security_attacker" if assessment_mode == "attacker" else "security_defender")
+            or (
+                f"{track}_attacker"
+                if assessment_mode == "attacker" and track != "security"
+                else f"{track}_defender"
+                if track != "security"
+                else ("security_attacker" if assessment_mode == "attacker" else "security_defender")
+            )
         )
         policy_profile = str(
             metadata.get("policy_profile")
-            or self._security_policy_profile(
-                assessment_mode=assessment_mode,
-                scenario_family=scenario_family,
+            or (
+                track
+                if track != "security"
+                else self._security_policy_profile(
+                    assessment_mode=assessment_mode,
+                    scenario_family=scenario_family,
+                )
             )
         )
         tool_mode = self._security_tool_mode(
@@ -279,7 +326,7 @@ class TaskRouter:
             reasons.append("Budget near limit; prefer concise tactics and short finalization.")
 
         return RouteDecision(
-            track="security",
+            track=track,
             adapter_name=adapter_name,
             prompt_profile=prompt_profile,
             policy_profile=policy_profile,
@@ -304,10 +351,13 @@ class TaskRouter:
         metadata: Mapping[str, object],
         reasons: list[str],
     ) -> RouteDecision:
-        profile = track_profile or get_track_profile(track)
+        profile = track_profile or get_track_profile(self._profile_lookup_key(track))
         adapter_name = self.ADAPTERS.get(track, "openenv")
-        prompt_profile = str(metadata.get("prompt_profile") or profile.default_prompt)
-        policy_profile = str(metadata.get("policy_profile") or profile.name)
+        prompt_profile = str(
+            metadata.get("prompt_profile")
+            or (f"{track}_purple" if track not in {"openenv", "tau2"} else profile.default_prompt)
+        )
+        policy_profile = str(metadata.get("policy_profile") or (track if track != "openenv" else profile.name))
         tool_mode = "allow"
 
         reasons.append(f"Selected track profile: {profile.name}.")
@@ -401,6 +451,9 @@ class TaskRouter:
             return "guided"
         return "minimal"
 
+    def _profile_lookup_key(self, track: str) -> str:
+        return self.PROFILE_FALLBACKS.get(track, track)
+
     @staticmethod
     def _to_dict(value: Any) -> dict[str, Any]:
         if isinstance(value, Mapping):
@@ -431,13 +484,44 @@ class TaskRouter:
     def _normalize_track(track: object) -> str:
         normalized = str(track or "openenv").lower().strip()
         aliases = {
-            "minecraft": "mcu",
-            "minecraft benchmark": "mcu",
-            "mcu-agentbeats": "mcu",
+            "game": "mcu_minecraft",
+            "game_agent": "mcu_minecraft",
+            "minecraft": "mcu_minecraft",
+            "minecraft benchmark": "mcu_minecraft",
+            "mcu-agentbeats": "mcu_minecraft",
+            "mcu_agentbeats": "mcu_minecraft",
+            "finance": "officeqa",
+            "finance_agent": "officeqa",
+            "office qa": "officeqa",
+            "officeqa_agentbeats": "officeqa",
+            "business": "crmarenapro",
+            "business_process": "crmarenapro",
+            "business_process_agent": "crmarenapro",
+            "crmarena": "crmarenapro",
+            "entropic-crmarenapro": "crmarenapro",
+            "research": "fieldworkarena",
+            "research_agent": "fieldworkarena",
+            "fieldworkarena-greenagent": "fieldworkarena",
+            "multi_agent": "maizebargain",
+            "multi-agent": "maizebargain",
+            "multi_agent_evaluation": "maizebargain",
+            "maize bargain": "maizebargain",
+            "maizebargain": "maizebargain",
+            "tutorial-agent-beats-comp": "maizebargain",
+            "tau²": "tau2_agentbeats",
+            "tau2-agentbeats": "tau2_agentbeats",
+            "computer_use": "osworld",
+            "computer_use_web": "osworld",
+            "computer_use_web_agent": "osworld",
+            "osworld-green": "osworld",
+            "osworld-verified": "osworld",
             "security_arena": "security",
-            "agent_safety": "security",
-            "cybersecurity": "security",
-            "tau²": "tau2",
+            "agent_safety": "pibench",
+            "pi-bench": "pibench",
+            "cybersecurity": "cybergym",
+            "cybersecurity_agent": "cybergym",
+            "coding": "netarena",
+            "coding_agent": "netarena",
         }
         return aliases.get(normalized, normalized)
 

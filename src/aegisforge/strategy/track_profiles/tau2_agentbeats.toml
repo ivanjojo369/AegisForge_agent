@@ -1,0 +1,17 @@
+# AegisForge unified opponent profile
+track = "tau2_agentbeats"
+category = "tau2_bench"
+benchmark = "tau2-Bench"
+selected_opponent = "tau2-agentbeats"
+repo = "https://github.com/RDI-Foundation/tau2-agentbeats"
+adapter = "tau2"
+mode = "trajectory_task_execution"
+default_assessment_mode = "defender"
+prompt_profile = "tau2_agentbeats_purple"
+policy_profile = "tau2"
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "trajectory_consistency_tool_call_contract"
+keywords = ["tau2-agentbeats", "tau2", "trajectory", "tool call", "action check", "task bundle"]
+output_contract = ["preserve action consistency", "respect task state", "avoid unnecessary branching", "finish with expected format"]

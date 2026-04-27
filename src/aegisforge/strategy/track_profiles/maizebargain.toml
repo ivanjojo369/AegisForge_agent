@@ -1,0 +1,17 @@
+# AegisForge unified opponent profile
+track = "maizebargain"
+category = "multi_agent_evaluation"
+benchmark = "MAizeBargAIn"
+selected_opponent = "tutorial-agent-beats-comp"
+repo = "https://github.com/gsmithline/tutorial-agent-beats-comp"
+adapter = "openenv"
+mode = "multi_agent_negotiation"
+default_assessment_mode = "defender"
+prompt_profile = "maizebargain_purple"
+policy_profile = "maizebargain"
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "multi_agent_bargaining_payoff_consistency"
+keywords = ["maizebargain", "maize bargain", "tutorial-agent-beats-comp", "bargaining", "negotiation", "payoff"]
+output_contract = ["track incentives and constraints", "avoid brittle opponent assumptions", "preserve payoff accounting", "return negotiated action or report in required format"]

@@ -1,0 +1,18 @@
+# AegisForge unified opponent profile
+track = "pibench"
+category = "agent_safety"
+benchmark = "Pi-Bench"
+selected_opponent = "Pi-Bench"
+repo = "https://github.com/Jyoti-Ranjan-Das845/pi-bench"
+adapter = "security"
+mode = "policy_reasoning_agent_safety"
+default_assessment_mode = "defender"
+prompt_profile = "pibench_purple"
+policy_profile = "policy_safety"
+strict_security = true
+require_evidence = true
+strict_output = true
+suspicious_instruction_policy = "ignore_and_report"
+routing_bias = "policy_hierarchy_privacy_safe_disclosure_reasoning"
+keywords = ["pi-bench", "pibench", "agent safety", "policy", "privacy", "pii", "disclosure", "safety"]
+output_contract = ["follow policy hierarchy", "preserve safe utility", "avoid sensitive leakage", "provide concise policy-grounded answer"]

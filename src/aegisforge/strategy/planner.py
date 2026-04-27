@@ -49,6 +49,22 @@ class ExecutionPlan:
 class TaskPlanner:
     """Create a compact but track-aware execution plan before response generation."""
 
+    MCU_TRACKS = {"mcu", "mcu_minecraft"}
+    SECURITY_TRACKS = {"security", "pibench", "cybergym", "netarena"}
+    PROFILE_FALLBACKS = {
+        "officeqa": "openenv",
+        "crmarenapro": "openenv",
+        "crmarena": "openenv",
+        "fieldworkarena": "openenv",
+        "maizebargain": "openenv",
+        "osworld": "openenv",
+        "pibench": "security",
+        "cybergym": "security",
+        "netarena": "security",
+        "tau2_agentbeats": "tau2",
+        "mcu_minecraft": "mcu",
+    }
+
     def __init__(self, budget_guard: BudgetGuard | None = None) -> None:
         self.budget_guard = budget_guard or BudgetGuard()
 
@@ -64,7 +80,12 @@ class TaskPlanner:
         metadata_dict = dict(metadata or {})
         scenario = self._to_dict(metadata_dict.get("scenario"))
         signals = self._to_dict(metadata_dict.get("signals"))
-        profile = track_profile or get_track_profile(classification.track_guess)
+        initial_track = self._normalize_track(
+            metadata_dict.get("track")
+            or metadata_dict.get("track_hint")
+            or classification.track_guess
+        )
+        profile = track_profile or get_track_profile(self.PROFILE_FALLBACKS.get(initial_track, initial_track))
 
         track = self._normalize_track(
             metadata_dict.get("track")
@@ -106,7 +127,7 @@ class TaskPlanner:
             self._normalize_risk(metadata_dict.get("expected_risk", signals.get("expected_risk"))),
         )
 
-        if track == "security":
+        if track in self.SECURITY_TRACKS:
             steps = self._build_security_steps(
                 classification=classification,
                 assessment_mode=assessment_mode,
@@ -128,7 +149,7 @@ class TaskPlanner:
                 effective_risk=effective_risk,
                 heldout_like=heldout_like,
             )
-        elif track == "mcu":
+        elif track in self.MCU_TRACKS:
             steps = self._build_mcu_steps(
                 classification=classification,
                 assessment_mode=assessment_mode,
@@ -142,7 +163,7 @@ class TaskPlanner:
                 effective_risk=effective_risk,
                 heldout_like=heldout_like,
             )
-            notes.append(f"MCU plan activated for mode={assessment_mode}.")
+            notes.append(f"MCU plan activated for track={track}, mode={assessment_mode}.")
         else:
             steps = self._build_generic_steps(
                 classification=classification,
@@ -545,7 +566,7 @@ class TaskPlanner:
         max_turns: int,
         requires_artifact: bool,
     ) -> str:
-        if track == "security":
+        if track in self.SECURITY_TRACKS:
             if strict_mode and effective_risk in {"high", "critical"}:
                 return "minimal"
             if assessment_mode == "attacker":
@@ -632,12 +653,43 @@ class TaskPlanner:
     def _normalize_track(value: Any) -> str:
         raw = str(value or "openenv").strip().lower()
         aliases = {
+            "game": "mcu_minecraft",
+            "game_agent": "mcu_minecraft",
+            "minecraft": "mcu_minecraft",
+            "minecraft benchmark": "mcu_minecraft",
+            "mcu-agentbeats": "mcu_minecraft",
+            "mcu_agentbeats": "mcu_minecraft",
+            "finance": "officeqa",
+            "finance_agent": "officeqa",
+            "office qa": "officeqa",
+            "officeqa_agentbeats": "officeqa",
+            "business": "crmarenapro",
+            "business_process": "crmarenapro",
+            "business_process_agent": "crmarenapro",
+            "crmarena": "crmarenapro",
+            "entropic-crmarenapro": "crmarenapro",
+            "research": "fieldworkarena",
+            "research_agent": "fieldworkarena",
+            "fieldworkarena-greenagent": "fieldworkarena",
+            "multi_agent": "maizebargain",
+            "multi-agent": "maizebargain",
+            "multi_agent_evaluation": "maizebargain",
+            "maize bargain": "maizebargain",
+            "tutorial-agent-beats-comp": "maizebargain",
+            "tau²": "tau2_agentbeats",
+            "tau2-agentbeats": "tau2_agentbeats",
+            "computer_use": "osworld",
+            "computer_use_web": "osworld",
+            "computer_use_web_agent": "osworld",
+            "osworld-green": "osworld",
+            "osworld-verified": "osworld",
             "security_arena": "security",
-            "agent_safety": "security",
-            "cybersecurity": "security",
-            "minecraft": "mcu",
-            "minecraft benchmark": "mcu",
-            "mcu-agentbeats": "mcu",
+            "agent_safety": "pibench",
+            "pi-bench": "pibench",
+            "cybersecurity": "cybergym",
+            "cybersecurity_agent": "cybergym",
+            "coding": "netarena",
+            "coding_agent": "netarena",
         }
         return aliases.get(raw, raw)
 

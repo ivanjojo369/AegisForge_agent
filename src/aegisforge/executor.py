@@ -23,6 +23,64 @@ from a2a.utils.errors import ServerError
 
 from .agent import AegisForgeAgent
 
+
+SELECTED_OPPONENT_TRACKS = (
+    "mcu",
+    "officeqa",
+    "crmarena",
+    "fieldworkarena",
+    "maizebargain",
+    "tau2",
+    "osworld",
+    "pibench",
+    "cybergym",
+    "netarena",
+)
+
+TRACK_ALIASES = {
+    "mcu-minecraft": "mcu",
+    "mcu_minecraft": "mcu",
+    "minecraft": "mcu",
+    "minecraft benchmark": "mcu",
+    "minecraft-benchmark": "mcu",
+    "mcu-agentbeats": "mcu",
+    "mcu_agentbeats": "mcu",
+    "office-qa": "officeqa",
+    "office_qa": "officeqa",
+    "finance": "officeqa",
+    "crmarenapro": "crmarena",
+    "entropic-crmarenapro": "crmarena",
+    "business-process": "crmarena",
+    "business_process": "crmarena",
+    "fieldworkarena-greenagent": "fieldworkarena",
+    "fieldworkarena_greenagent": "fieldworkarena",
+    "research": "fieldworkarena",
+    "maize-bargain": "maizebargain",
+    "maize_bargain": "maizebargain",
+    "tutorial-agent-beats-comp": "maizebargain",
+    "multi-agent": "maizebargain",
+    "multi_agent": "maizebargain",
+    "tau2-agentbeats": "tau2",
+    "tau2_agentbeats": "tau2",
+    "tau²": "tau2",
+    "osworld-green": "osworld",
+    "computer-use": "osworld",
+    "computer_use": "osworld",
+    "pi-bench": "pibench",
+    "pi_bench": "pibench",
+    "agent-safety": "pibench",
+    "agent_safety": "pibench",
+    "cybergym-green": "cybergym",
+    "cybersecurity": "cybergym",
+    "cybersecurity-agent": "cybergym",
+    "cybersecurity_agent": "cybergym",
+    "net-arena": "netarena",
+    "net_arena": "netarena",
+    "coding-agent": "netarena",
+    "coding_agent": "netarena",
+}
+
+
 TERMINAL_STATES = {
     TaskState.completed,
     TaskState.canceled,
@@ -82,6 +140,8 @@ class Executor(AgentExecutor):
             "max_cached_agents": self._max_cached_agents,
             "cached_agents": len(self._agents),
             "executions": self._executions,
+            "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
+            "track_alias_note": "mcu-minecraft is normalized to mcu.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -129,7 +189,7 @@ class Executor(AgentExecutor):
 
     def _build_cache_key(self, context_id: str, metadata: Any) -> str:
         metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
-        track = self._normalize(metadata.get("track_hint") or metadata.get("track") or metadata.get("arena"))
+        track = self._normalize_track(metadata.get("track_hint") or metadata.get("track") or metadata.get("arena"))
         mode = self._normalize(metadata.get("assessment_mode") or metadata.get("mode") or metadata.get("role"))
         family = self._normalize(metadata.get("scenario_family") or metadata.get("scenario") or metadata.get("family"))
         payload = metadata.get("mcu_payload") or metadata.get("payload") or metadata.get("scenario_payload")
@@ -155,6 +215,13 @@ class Executor(AgentExecutor):
     def _safe_error_message(exc: Exception) -> str:
         text = str(exc).strip() or exc.__class__.__name__
         return f"Agent error: {text[:500]}"
+
+    @staticmethod
+    def _normalize_track(value: Any) -> str:
+        if value is None:
+            return ""
+        raw = str(value).strip().lower().replace("_", "-")
+        return TRACK_ALIASES.get(raw, raw)
 
     @staticmethod
     def _normalize(value: Any) -> str:

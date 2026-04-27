@@ -1,0 +1,17 @@
+# AegisForge unified opponent profile
+track = "osworld"
+category = "computer_use_web_agent"
+benchmark = "OSWorld-Verified"
+selected_opponent = "osworld-green"
+repo = "https://github.com/RDI-Foundation/osworld-green"
+adapter = "openenv"
+mode = "computer_use_web_task"
+default_assessment_mode = "defender"
+prompt_profile = "osworld_purple"
+policy_profile = "osworld"
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "computer_use_stateful_ui_web_grounding"
+keywords = ["osworld", "osworld-green", "osworld-verified", "computer use", "web agent", "desktop", "browser"]
+output_contract = ["observe state before acting", "prefer minimal reversible actions", "avoid hidden assumptions", "return final status in required format"]

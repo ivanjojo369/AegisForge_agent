@@ -7,6 +7,60 @@ from .models import RuntimeSummary
 from .utils.validation import require_int_in_range, require_non_empty_string, validate_http_url
 
 
+SELECTED_OPPONENT_TRACKS = [
+    "mcu",
+    "officeqa",
+    "crmarena",
+    "fieldworkarena",
+    "maizebargain",
+    "tau2",
+    "osworld",
+    "pibench",
+    "cybergym",
+    "netarena",
+]
+
+TRACK_ALIASES = {
+    "mcu-minecraft": "mcu",
+    "mcu_minecraft": "mcu",
+    "minecraft": "mcu",
+    "minecraft-benchmark": "mcu",
+    "minecraft_benchmark": "mcu",
+    "mcu-agentbeats": "mcu",
+    "mcu_agentbeats": "mcu",
+    "office-qa": "officeqa",
+    "office_qa": "officeqa",
+    "finance": "officeqa",
+    "crmarenapro": "crmarena",
+    "entropic-crmarenapro": "crmarena",
+    "business-process": "crmarena",
+    "fieldworkarena-greenagent": "fieldworkarena",
+    "fieldworkarena_greenagent": "fieldworkarena",
+    "research": "fieldworkarena",
+    "maize-bargain": "maizebargain",
+    "maize_bargain": "maizebargain",
+    "tutorial-agent-beats-comp": "maizebargain",
+    "multi-agent": "maizebargain",
+    "tau2-agentbeats": "tau2",
+    "tau2_agentbeats": "tau2",
+    "tau²": "tau2",
+    "osworld-green": "osworld",
+    "computer-use": "osworld",
+    "computer_use": "osworld",
+    "pi-bench": "pibench",
+    "pi_bench": "pibench",
+    "agent-safety": "pibench",
+    "agent_safety": "pibench",
+    "cybergym-green": "cybergym",
+    "cybersecurity": "cybergym",
+    "cybersecurity-agent": "cybergym",
+    "net-arena": "netarena",
+    "net_arena": "netarena",
+    "coding-agent": "netarena",
+    "coding_agent": "netarena",
+}
+
+
 def _read_bool_env(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -145,6 +199,21 @@ class AppConfig:
         if self.enable_crmarena:
             integrations.append("crmarena")
         return integrations
+
+    def selected_opponent_tracks(self) -> list[str]:
+        """Return the canonical one-opponent-per-category matrix.
+
+        mcu is the canonical Game Agent track. mcu-minecraft is an alias, not
+        a separate selected opponent.
+        """
+        return list(SELECTED_OPPONENT_TRACKS)
+
+    def track_aliases(self) -> dict[str, str]:
+        return dict(TRACK_ALIASES)
+
+    def normalize_track(self, value: str | None) -> str:
+        raw = str(value or self.track or "purple").strip().lower().replace("_", "-")
+        return TRACK_ALIASES.get(raw, raw)
 
     def health_url(self) -> str:
         return f"{self.public_url}{self.health_path}"

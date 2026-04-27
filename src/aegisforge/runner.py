@@ -29,15 +29,41 @@ from .executor import Executor
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8001
 
+SELECTED_OPPONENT_TRACKS = (
+    "mcu",
+    "officeqa",
+    "crmarena",
+    "fieldworkarena",
+    "maizebargain",
+    "tau2",
+    "osworld",
+    "pibench",
+    "cybergym",
+    "netarena",
+)
+
 TRACK_TAGS = (
     "mcu",
-    "tau2",
-    "openenv",
-    "security",
+    "minecraft-benchmark",
     "officeqa",
     "finance",
     "crmarena",
     "business-process",
+    "fieldworkarena",
+    "research",
+    "maizebargain",
+    "multi-agent",
+    "tau2",
+    "osworld",
+    "computer-use",
+    "pibench",
+    "agent-safety",
+    "cybergym",
+    "cybersecurity",
+    "netarena",
+    "coding-agent",
+    "openenv",
+    "security",
 )
 
 SUPPORTED_MODES = (
@@ -117,6 +143,8 @@ def _build_runtime_snapshot(*, host: str, port: int, card_url: str, mode: str) -
         "officeqa_enabled": _env_bool("AEGISFORGE_ENABLE_OFFICEQA", False),
         "crmarena_enabled": _env_bool("AEGISFORGE_ENABLE_CRMARENA", False),
         "tags": list(TRACK_TAGS),
+        "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
+        "track_alias_note": "mcu and mcu-minecraft are the same selected Game Agent opponent.",
         "supported_assessment_modes": list(SUPPORTED_MODES),
     }
 

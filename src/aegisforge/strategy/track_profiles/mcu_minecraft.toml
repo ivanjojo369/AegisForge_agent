@@ -1,0 +1,17 @@
+# AegisForge unified opponent profile
+track = "mcu_minecraft"
+category = "game_agent"
+benchmark = "Minecraft Benchmark"
+selected_opponent = "MCU-AgentBeats"
+repo = "https://github.com/KWSMooBang/MCU-AgentBeats"
+adapter = "mcu"
+mode = "minecraft_reasoning"
+default_assessment_mode = "attacker"
+prompt_profile = "mcu_minecraft_purple"
+policy_profile = "bounded_minecraft_benchmark_play"
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "minecraft_world_state_recipe_source_consistency"
+keywords = ["mcu-agentbeats", "minecraft", "craft", "recipe", "mine", "smelt", "redstone", "pickaxe", "potion", "wiki"]
+output_contract = ["infer the required minecraft action", "prefer benchmark-visible state", "avoid platform exploit assumptions", "preserve required answer format"]

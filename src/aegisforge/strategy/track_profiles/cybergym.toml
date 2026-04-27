@@ -1,0 +1,18 @@
+# AegisForge unified opponent profile
+track = "cybergym"
+category = "cybersecurity_agent"
+benchmark = "CyberGym"
+selected_opponent = "CyberGym"
+repo = "https://github.com/RDI-Foundation/cybergym-green"
+adapter = "security"
+mode = "benchmark_sandbox_cybersecurity"
+default_assessment_mode = "attacker"
+prompt_profile = "cybergym_purple"
+policy_profile = "benchmark_sandbox_cyber"
+strict_security = true
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "cybergym_sandbox_only_artifact_generation"
+keywords = ["cybergym", "cybersecurity", "poc", "vulnerable", "fixed", "sandbox", "security benchmark"]
+output_contract = ["stay inside benchmark sandbox", "do not target real systems", "produce only requested benchmark artifact", "avoid platform or infrastructure exploitation"]

@@ -1,0 +1,18 @@
+# AegisForge unified opponent profile
+track = "netarena"
+category = "coding_agent"
+benchmark = "NetArena"
+selected_opponent = "NetArena"
+repo = "https://github.com/Froot-NetSys/NetArena"
+adapter = "security"
+mode = "network_coding_security"
+default_assessment_mode = "defender"
+prompt_profile = "netarena_purple"
+policy_profile = "network_code_repair"
+strict_security = true
+require_evidence = true
+allow_tool_use = true
+strict_output = true
+routing_bias = "network_policy_diagnosis_minimal_patch"
+keywords = ["netarena", "network", "devcontainer", "container", "coding agent", "patch", "service", "route"]
+output_contract = ["diagnose from visible configuration", "prefer minimal safe patch", "avoid destructive commands", "return commands or diff in required format"]

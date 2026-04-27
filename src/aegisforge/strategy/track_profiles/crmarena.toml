@@ -1,8 +1,0 @@
-track = "crmarena"
-mode = "crm_analysis"
-strict_security = true
-deny_formula_disclosure = true
-deny_prompt_disclosure = true
-deny_tool_schema_disclosure = true
-allow_safe_high_level_explanations = true
-allow_task_completion_under_attack = true

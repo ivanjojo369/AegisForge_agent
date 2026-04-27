@@ -6,15 +6,36 @@ from typing import Any, Mapping
 
 
 TRACK_ALIASES = {
-    'mcu': 'mcu',
-    'minecraft': 'mcu',
-    'minecraft benchmark': 'mcu',
-    'mcu-agentbeats': 'mcu',
-    'security': 'security',
-    'security_arena': 'security',
-    'tau2': 'tau2',
-    'tau²': 'tau2',
-    'openenv': 'openenv',
+    "mcu": "mcu_minecraft",
+    "minecraft": "mcu_minecraft",
+    "minecraft benchmark": "mcu_minecraft",
+    "mcu-agentbeats": "mcu_minecraft",
+    "mcu_agentbeats": "mcu_minecraft",
+    "officeqa": "officeqa",
+    "office qa": "officeqa",
+    "officeqa_agentbeats": "officeqa",
+    "crmarena": "crmarenapro",
+    "crmarenapro": "crmarenapro",
+    "entropic-crmarenapro": "crmarenapro",
+    "fieldworkarena": "fieldworkarena",
+    "fieldworkarena-greenagent": "fieldworkarena",
+    "maizebargain": "maizebargain",
+    "tutorial-agent-beats-comp": "maizebargain",
+    "tau2": "tau2_agentbeats",
+    "tau²": "tau2_agentbeats",
+    "tau2-agentbeats": "tau2_agentbeats",
+    "osworld": "osworld",
+    "osworld-green": "osworld",
+    "osworld-verified": "osworld",
+    "pibench": "pibench",
+    "pi-bench": "pibench",
+    "agent_safety": "pibench",
+    "cybergym": "cybergym",
+    "cybersecurity": "cybergym",
+    "netarena": "netarena",
+    "coding_agent": "netarena",
+    "openenv": "openenv",
+    "security": "security",
 }
 
 
@@ -58,6 +79,18 @@ class TaskClassifier:
         'smelt', 'mine', 'redstone', 'tool', 'pickaxe', 'wiki', 'simulator',
         'animal care', 'navigation', 'mcu',
     }
+    SELECTED_TRACK_KEYWORDS = {
+        'mcu_minecraft': {'mcu-agentbeats', 'minecraft benchmark', 'minecraft', 'craft', 'recipe', 'redstone'},
+        'officeqa': {'officeqa', 'office qa', 'officeqa_agentbeats', 'document qa', 'finance', 'spreadsheet'},
+        'crmarenapro': {'crmarena', 'crm arena', 'entropic-crmarenapro', 'deogaze', 'business process', 'schema drift', 'context rot'},
+        'fieldworkarena': {'fieldworkarena', 'fieldworkarena-greenagent', 'field work', 'research agent', 'multimodal'},
+        'maizebargain': {'maizebargain', 'maize bargain', 'tutorial-agent-beats-comp', 'bargaining', 'negotiation', 'payoff'},
+        'tau2_agentbeats': {'tau2-agentbeats', 'tau2', 'trajectory', 'action check', 'task bundle'},
+        'osworld': {'osworld', 'osworld-green', 'osworld-verified', 'computer use', 'web agent', 'desktop', 'browser'},
+        'pibench': {'pi-bench', 'pibench', 'agent safety', 'policy', 'privacy', 'pii'},
+        'cybergym': {'cybergym', 'cybersecurity', 'vulnerable', 'fixed', 'sandbox'},
+        'netarena': {'netarena', 'network', 'devcontainer', 'coding agent', 'patch', 'container'},
+    }
     ARTIFACT_KEYWORDS = {
         'json', 'yaml', 'artifact', 'report', 'table', 'file', 'schema', 'card',
     }
@@ -97,8 +130,8 @@ class TaskClassifier:
         complexity = self._guess_complexity(normalized)
         risk = self._guess_risk(normalized)
         artifact_expected = self._contains_any(normalized, self.ARTIFACT_KEYWORDS)
-        tool_use_likely = self._contains_any(normalized, self.TOOL_KEYWORDS) or track_guess == 'mcu'
-        multi_step = self._looks_multi_step(normalized) or track_guess == 'mcu'
+        tool_use_likely = self._contains_any(normalized, self.TOOL_KEYWORDS) or track_guess in {'mcu', 'mcu_minecraft'}
+        multi_step = self._looks_multi_step(normalized) or track_guess in {'mcu', 'mcu_minecraft'}
         heldout_like = self._looks_heldout_like(normalized, metadata)
 
         if artifact_expected:
@@ -113,7 +146,7 @@ class TaskClassifier:
         if heldout_like:
             tags.append('heldout-like')
             reasons.append('Task resembles a non-templated or unusual prompt.')
-        if track_guess == 'mcu':
+        if track_guess in {'mcu', 'mcu_minecraft'}:
             tags.append('minecraft')
             reasons.append('Detected Minecraft / MCU benchmark language.')
         if risk in {'medium', 'high'}:
@@ -137,6 +170,14 @@ class TaskClassifier:
         if track_hint:
             return TRACK_ALIASES.get(track_hint.lower().strip(), track_hint.lower().strip())
 
+        selected_scores = {
+            track: self._count_hits(text, keywords)
+            for track, keywords in self.SELECTED_TRACK_KEYWORDS.items()
+        }
+        selected_track, selected_hits = max(selected_scores.items(), key=lambda item: item[1])
+        if selected_hits > 0:
+            return selected_track
+
         security_hits = self._count_hits(text, self.SECURITY_KEYWORDS)
         openenv_hits = self._count_hits(text, self.OPENENV_KEYWORDS)
         tau2_hits = self._count_hits(text, self.TAU2_KEYWORDS)
@@ -146,7 +187,7 @@ class TaskClassifier:
         if best <= 0:
             return 'openenv'
         if mcu_hits == best:
-            return 'mcu'
+            return 'mcu_minecraft'
         if security_hits == best:
             return 'security'
         if openenv_hits == best:
@@ -154,7 +195,7 @@ class TaskClassifier:
         return 'tau2'
 
     def _guess_task_type(self, text: str, track_guess: str) -> str:
-        if track_guess == 'mcu':
+        if track_guess in {'mcu', 'mcu_minecraft'}:
             if 'artifact' in text or 'json' in text or 'report' in text:
                 return 'artifact_generation'
             if 'craft' in text or 'mine' in text or 'navigate' in text or 'potion' in text:
