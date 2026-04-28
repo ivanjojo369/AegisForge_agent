@@ -19,6 +19,10 @@ Key goals:
 """
 
 import os
+import platform
+import shutil
+import sys
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
@@ -70,6 +74,8 @@ DEFAULT_ENV_ID = RESEARCH_ENV_ID
 DEFAULT_SCENARIO_ID = RESEARCH_SCENARIO_ID
 DEFAULT_DOMAIN = "research"
 DEBUG_STATE_ENV_VAR = "OPENENV_DEBUG_STATE"
+DEBUG_ERROR_ENV_VAR = "OPENENV_DEBUG_ERRORS"
+EVAL_LAB_GIT_ENV_VAR = "OPENENV_EVAL_LAB_GIT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +176,114 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _prepend_to_path(directory: str | os.PathLike[str] | None) -> None:
+    """Prepend an existing directory to PATH once.
+
+    The Evaluation Lab scanner calls `git` through subprocess. On Windows
+    terminals launched from VS Code or Conda, Git can be installed but absent
+    from PATH, so the static scan fails with a hidden 500. This helper makes
+    the server resilient without executing any analyzed repository code.
+    """
+
+    if not directory:
+        return
+    path = os.fspath(directory)
+    if not os.path.isdir(path):
+        return
+
+    current = os.environ.get("PATH", "")
+    parts = [item for item in current.split(os.pathsep) if item]
+    normalized = {os.path.normcase(os.path.abspath(item)) for item in parts}
+    key = os.path.normcase(os.path.abspath(path))
+    if key not in normalized:
+        os.environ["PATH"] = path + (os.pathsep + current if current else "")
+
+
+def _candidate_git_directories() -> list[str]:
+    candidates: list[str] = []
+
+    configured = os.getenv(EVAL_LAB_GIT_ENV_VAR)
+    if configured:
+        configured = os.path.expandvars(os.path.expanduser(configured.strip().strip('"')))
+        if configured.lower().endswith(("git.exe", "/git")):
+            candidates.append(os.path.dirname(configured))
+        else:
+            candidates.append(configured)
+
+    if platform.system().lower() == "windows":
+        for root in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+        ):
+            if not root:
+                continue
+            candidates.extend(
+                [
+                    os.path.join(root, "Git", "cmd"),
+                    os.path.join(root, "Git", "bin"),
+                    os.path.join(root, "Git", "mingw64", "bin"),
+                ]
+            )
+
+    # Keep normal Unix/Homebrew locations as harmless fallbacks for hosted Spaces.
+    candidates.extend(["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"])
+    return candidates
+
+
+def _ensure_git_available_for_evaluation_lab() -> str:
+    """Ensure `git` is discoverable before the read-only repo scanner runs."""
+
+    git_path = shutil.which("git")
+    if git_path:
+        return git_path
+
+    for directory in _candidate_git_directories():
+        _prepend_to_path(directory)
+        git_path = shutil.which("git")
+        if git_path:
+            return git_path
+
+    raise RuntimeError(
+        "Git executable was not found on PATH. Install Git, add it to PATH, or set "
+        f"{EVAL_LAB_GIT_ENV_VAR} to the Git executable or Git directory."
+    )
+
+
+def _public_error_detail(stage: str) -> str:
+    if stage == "scan":
+        return "The Evaluation Lab failed while running the static read-only scan. Check Space logs for the server traceback."
+    if stage == "report":
+        return "The Evaluation Lab scanned the repository but failed while building the report artifact. Check Space logs for the server traceback."
+    return "The Evaluation Lab failed while analyzing this repository. Check Space logs for the server traceback."
+
+
+def _evaluation_lab_error_response(
+    exc: Exception,
+    *,
+    stage: str,
+    status_code: int = 500,
+) -> JSONResponse:
+    """Return stable JSON errors while always logging the real traceback."""
+
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+
+    debug = _env_flag(DEBUG_ERROR_ENV_VAR, default=False)
+    detail = f"{type(exc).__name__}: {exc}" if debug else _public_error_detail(stage)
+    content: dict[str, Any] = {
+        "error": "evaluation_lab_internal_error",
+        "detail": detail,
+        "message": "The Evaluation Lab failed while analyzing this repository.",
+        "stage": stage,
+        "debug_hint": f"Set {DEBUG_ERROR_ENV_VAR}=1 locally to include exception details in this JSON response.",
+    }
+    if debug:
+        content["exception_type"] = type(exc).__name__
+        content["exception_message"] = str(exc)
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def _jsonable(value: Any) -> Any:
@@ -866,6 +980,7 @@ async function copyReport(){if(!lastReport)return;await navigator.clipboard.writ
 
 @app.post("/api/evaluation-lab/analyze")
 async def analyze_evaluation_lab(request: Request) -> JSONResponse:
+    payload: dict[str, Any] = {}
     try:
         payload = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
         if not isinstance(payload, dict):
@@ -875,8 +990,22 @@ async def analyze_evaluation_lab(request: Request) -> JSONResponse:
         if lab_request.mode != "read_only_defensive":
             raise HTTPException(status_code=400, detail="only read_only_defensive mode is supported")
 
-        scan = scan_repo(lab_request.repo_url)
-        report = build_report(scan)
+        # scanner.py shells out to `git clone` in read-only mode. Make the runtime
+        # robust on Windows/Conda/VS Code terminals where Git is installed but not
+        # visible on PATH.
+        _ensure_git_available_for_evaluation_lab()
+
+        try:
+            scan = scan_repo(lab_request.repo_url)
+        except ValueError:
+            raise
+        except Exception as exc:
+            return _evaluation_lab_error_response(exc, stage="scan")
+
+        try:
+            report = build_report(scan)
+        except Exception as exc:
+            return _evaluation_lab_error_response(exc, stage="report")
 
         # Preserve scanner v0.1.2 metadata even if report.py is still older.
         # This keeps UI/API output consistent across local and hosted builds.
@@ -899,29 +1028,41 @@ async def analyze_evaluation_lab(request: Request) -> JSONResponse:
         if not lab_request.include_benign_payloads:
             report["benign_payloads"] = []
 
+        report.setdefault("runtime", {})
+        if isinstance(report["runtime"], dict):
+            report["runtime"].update(
+                {
+                    "git_available": True,
+                    "git_path": shutil.which("git"),
+                    "server_version": DEFAULT_VERSION,
+                }
+            )
+
         return JSONResponse(status_code=200, content=_jsonable(report))
     except HTTPException:
         raise
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return JSONResponse(status_code=400, content={"detail": str(exc), "stage": "request"})
     except Exception as exc:
-        detail = str(exc) or exc.__class__.__name__
-        if not _env_flag("OPENENV_DEBUG_ERRORS", default=False):
-            detail = "The Evaluation Lab failed while running the static read-only scan. Check Space logs for the server traceback."
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "evaluation_lab_internal_error",
-                "detail": detail,
-                "message": "The Evaluation Lab failed while analyzing this repository.",
-            },
-        )
+        return _evaluation_lab_error_response(exc, stage="request")
 
 
 @app.get("/api/evaluation-lab/policy")
 def evaluation_lab_policy() -> dict[str, Any]:
+    git_path = shutil.which("git")
+    if not git_path:
+        for directory in _candidate_git_directories():
+            _prepend_to_path(directory)
+            git_path = shutil.which("git")
+            if git_path:
+                break
     return {
         "mode": "read_only_defensive",
+        "runtime": {
+            "git_available": bool(git_path),
+            "git_path": git_path,
+            "git_env_var": EVAL_LAB_GIT_ENV_VAR,
+        },
         "allows": [
             "public_github_repo_static_scan",
             "defensive_risk_reporting",
