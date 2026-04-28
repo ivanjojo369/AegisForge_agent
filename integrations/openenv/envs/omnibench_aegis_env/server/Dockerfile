@@ -3,12 +3,19 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    OPENENV_EVAL_LAB_GIT=/usr/bin/git
 
 WORKDIR /app
 
+# System dependencies:
+# - curl: healthcheck
+# - git: Evaluation Lab read-only public GitHub static scans
+# - ca-certificates: HTTPS certificate validation for GitHub clones
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY integrations/openenv/envs/omnibench_aegis_env/server/requirements.txt /tmp/requirements.txt
