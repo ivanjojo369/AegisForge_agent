@@ -1,3 +1,5 @@
+AegisForge is a unified A2A-compatible Purple Agent for AgentX-AgentBeats Phase 2. It integrates a single runtime for the selected opponent matrix across Game, Finance, Business Process, Research, Multi-agent, τ²-Bench, Computer Use/Web, Agent Safety, Cybersecurity, and Coding tracks. The agent normalizes MCU/Minecraft into the canonical mcu profile and supports OfficeQA, CRMArenaPro, FieldWorkArena, MAizeBargAIn, tau2, OSWorld, Pi-Bench, CyberGym, and NetArena through shared classification, routing, policy, planning, self-check, and artifact controls. The design emphasizes generalization over hardcoded benchmark answers, preserves attacker/defender mode, exposes standard A2A health and Agent Card endpoints, and includes a defensive read-only Evaluation Lab for public benchmark repository analysis.
+
 # SUBMISSION.md — AegisForge Agent / QuipuLoop
 
 AgentX-AgentBeats Phase 2 · Purple Agent
