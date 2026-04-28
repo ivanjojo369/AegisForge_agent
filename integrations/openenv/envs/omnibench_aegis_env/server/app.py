@@ -65,7 +65,7 @@ from ..domains.tau2 import (
     Tau2Domain,
 )
 
-DEFAULT_VERSION = "0.1.0"
+DEFAULT_VERSION = "0.1.2"
 DEFAULT_ENV_ID = RESEARCH_ENV_ID
 DEFAULT_SCENARIO_ID = RESEARCH_SCENARIO_ID
 DEFAULT_DOMAIN = "research"
@@ -850,7 +850,7 @@ def evaluation_lab() -> str:
 <script>
 let lastReport=null;
 function esc(v){return String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
-async function runLab(){const status=document.getElementById('status');const repoUrl=document.getElementById('repoUrl').value.trim();status.className='status';status.textContent='Running read-only defensive scan...';try{const res=await fetch('/api/evaluation-lab/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_url:repoUrl})});const data=await res.json();if(!res.ok)throw new Error(data.detail||'Evaluation failed');lastReport=data;renderReport(data);if(data.scan_limits&&data.scan_limits.file_limit_reached){status.className='status warning';status.textContent='Evaluation complete. Analysis was truncated at the safety file limit.'}else{status.className='status ok';status.textContent='Evaluation complete.'}}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
+async function runLab(){const status=document.getElementById('status');const repoUrl=document.getElementById('repoUrl').value.trim();status.className='status';status.textContent='Running read-only defensive scan...';try{const res=await fetch('/api/evaluation-lab/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_url:repoUrl})});const raw=await res.text();let data={};try{data=raw?JSON.parse(raw):{}}catch(parseErr){throw new Error(raw?raw.slice(0,500):`HTTP ${res.status}`)}if(!res.ok){let detail=data.detail||data.message||data.error||`HTTP ${res.status}`;if(typeof detail==='object')detail=detail.message||JSON.stringify(detail);throw new Error(detail||'Evaluation failed')}lastReport=data;renderReport(data);if(data.scan_limits&&data.scan_limits.file_limit_reached){status.className='status warning';status.textContent='Evaluation complete. Analysis was truncated at the safety file limit.'}else{status.className='status ok';status.textContent='Evaluation complete.'}}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
 function riskTierFromScore(score){score=Number(score||0);if(score>=80)return'high';if(score>=50)return'elevated';if(score>=25)return'moderate';return'low'}
 function renderSummary(summary){if(!summary)return'';const sev=summary.by_severity||{};const cat=summary.by_category||{};const sevText=Object.entries(sev).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');const catText=Object.entries(cat).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');return `<div class="item"><strong>Summary</strong><small>${sevText||'no severity summary'}</small><br><small>${catText||'no category summary'}</small></div>`}
 function renderLimits(data){const limits=data.scan_limits||{};if(!Object.keys(limits).length)return'No scan-limit metadata returned.';const cls=limits.file_limit_reached?'warning':'ok';const text=limits.file_limit_reached?`Analysis truncated at safety limit (${limits.max_files} files).`:'Analysis completed within safety limits.';return `<div class="item"><strong class="${cls}">${esc(text)}</strong><small>Max files: ${esc(limits.max_files??'—')} · Max file bytes: ${esc(limits.max_file_bytes??'—')} · Large skipped: ${esc(limits.files_skipped_large??0)} · Unreadable: ${esc(limits.files_unreadable??0)}</small></div>`}
@@ -865,32 +865,57 @@ async function copyReport(){if(!lastReport)return;await navigator.clipboard.writ
 
 
 @app.post("/api/evaluation-lab/analyze")
-async def analyze_evaluation_lab(request: Request) -> dict[str, Any]:
-    payload = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="evaluation lab payload must be a JSON object")
+async def analyze_evaluation_lab(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="evaluation lab payload must be a JSON object")
 
-    lab_request = EvaluationLabRequest.from_mapping(payload)
-    if lab_request.mode != "read_only_defensive":
-        raise HTTPException(status_code=400, detail="only read_only_defensive mode is supported")
+        lab_request = EvaluationLabRequest.from_mapping(payload)
+        if lab_request.mode != "read_only_defensive":
+            raise HTTPException(status_code=400, detail="only read_only_defensive mode is supported")
 
-    scan = scan_repo(lab_request.repo_url)
-    report = build_report(scan)
+        scan = scan_repo(lab_request.repo_url)
+        report = build_report(scan)
 
-    # Preserve scanner v0.1.1 metadata even if report.py is still the older
-    # v0.1 builder. This keeps the patch limited to app.py + scanner.py.
-    for key in ("finding_summary", "risk_tier", "review_load", "scan_limits", "classifier_version", "precision_notes"):
-        if key in scan:
-            report[key] = scan[key]
+        # Preserve scanner v0.1.2 metadata even if report.py is still older.
+        # This keeps UI/API output consistent across local and hosted builds.
+        for key in (
+            "finding_summary",
+            "risk_tier",
+            "review_load",
+            "scan_limits",
+            "repo_shape",
+            "classifier_version",
+            "precision_notes",
+        ):
+            if key in scan:
+                report[key] = scan[key]
 
-    if not lab_request.include_findings:
-        report["findings"] = []
-    if not lab_request.include_controlled_scenarios:
-        report["controlled_scenarios"] = []
-    if not lab_request.include_benign_payloads:
-        report["benign_payloads"] = []
+        if not lab_request.include_findings:
+            report["findings"] = []
+        if not lab_request.include_controlled_scenarios:
+            report["controlled_scenarios"] = []
+        if not lab_request.include_benign_payloads:
+            report["benign_payloads"] = []
 
-    return report
+        return JSONResponse(status_code=200, content=_jsonable(report))
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except Exception as exc:
+        detail = str(exc) or exc.__class__.__name__
+        if not _env_flag("OPENENV_DEBUG_ERRORS", default=False):
+            detail = "The Evaluation Lab failed while running the static read-only scan. Check Space logs for the server traceback."
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "evaluation_lab_internal_error",
+                "detail": detail,
+                "message": "The Evaluation Lab failed while analyzing this repository.",
+            },
+        )
 
 
 @app.get("/api/evaluation-lab/policy")
