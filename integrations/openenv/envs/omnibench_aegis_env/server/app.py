@@ -69,7 +69,7 @@ from ..domains.tau2 import (
     Tau2Domain,
 )
 
-DEFAULT_VERSION = "0.2.0"
+DEFAULT_VERSION = "0.2.1"
 DEFAULT_ENV_ID = RESEARCH_ENV_ID
 DEFAULT_SCENARIO_ID = RESEARCH_SCENARIO_ID
 DEFAULT_DOMAIN = "research"
@@ -1042,6 +1042,94 @@ def _canonicalize_purple_track(value: Any) -> str:
     return PURPLE_TRACK_ALIASES.get(normalized, normalized)
 
 
+def _classify_purple_agent_reference(value: Any) -> dict[str, Any]:
+    """Classify a Purple agent reference without claiming live validation.
+
+    AgentBeats public pages, AgentBeats IDs, and direct A2A Agent Card URLs are
+    all useful references, but only a direct Agent Card URL can later be
+    validated as an A2A discovery endpoint. This helper keeps the preview honest:
+    it never marks A2A as ready merely because some reference was pasted.
+    """
+
+    reference = _safe_ui_text(value, default="", max_len=500)
+    if not reference:
+        return {
+            "value": None,
+            "type": "missing",
+            "reference_status": "manual_required",
+            "a2a_agent_card_url": None,
+            "agentbeats_agent_page": None,
+            "agentbeats_id": None,
+            "a2a_agent_card_status": "manual_required",
+            "agentbeats_registration_status": "manual_required",
+            "detail": "No Purple agent reference was provided.",
+        }
+
+    lower = reference.lower()
+    is_http_url = lower.startswith(("http://", "https://"))
+    is_agent_card_url = is_http_url and (
+        "/.well-known/agent-card.json" in lower or "/.well-known/agent.json" in lower
+    )
+    is_agentbeats_page = is_http_url and "agentbeats.dev/" in lower
+    compact = reference.replace("-", "")
+    is_uuid_like = (
+        len(compact) == 32
+        and all(char in "0123456789abcdefABCDEF" for char in compact)
+        and (len(reference) == 32 or (len(reference) == 36 and reference.count("-") == 4))
+    )
+
+    if is_agent_card_url:
+        return {
+            "value": reference,
+            "type": "a2a_agent_card_url",
+            "reference_status": "reference_present",
+            "a2a_agent_card_url": reference,
+            "agentbeats_agent_page": None,
+            "agentbeats_id": None,
+            "a2a_agent_card_status": "candidate_unvalidated",
+            "agentbeats_registration_status": "manual_required",
+            "detail": "A direct Agent Card URL candidate was provided; validate it before official runs.",
+        }
+
+    if is_agentbeats_page:
+        return {
+            "value": reference,
+            "type": "agentbeats_page",
+            "reference_status": "reference_present",
+            "a2a_agent_card_url": None,
+            "agentbeats_agent_page": reference,
+            "agentbeats_id": None,
+            "a2a_agent_card_status": "manual_required",
+            "agentbeats_registration_status": "reference_present",
+            "detail": "A registered AgentBeats page was provided; it is a useful reference but not a direct Agent Card URL.",
+        }
+
+    if is_uuid_like:
+        return {
+            "value": reference,
+            "type": "agentbeats_id",
+            "reference_status": "reference_present",
+            "a2a_agent_card_url": None,
+            "agentbeats_agent_page": None,
+            "agentbeats_id": reference,
+            "a2a_agent_card_status": "manual_required",
+            "agentbeats_registration_status": "reference_present",
+            "detail": "An AgentBeats-style ID was provided; it is a registered-agent reference, not a direct Agent Card URL.",
+        }
+
+    return {
+        "value": reference,
+        "type": "generic_reference",
+        "reference_status": "reference_present",
+        "a2a_agent_card_url": reference if is_http_url else None,
+        "agentbeats_agent_page": None,
+        "agentbeats_id": None,
+        "a2a_agent_card_status": "candidate_unvalidated" if is_http_url else "manual_required",
+        "agentbeats_registration_status": "manual_required",
+        "detail": "A Purple agent reference was provided, but its type requires manual verification.",
+    }
+
+
 def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Build a safe Phase 2 Purple preview artifact.
 
@@ -1084,14 +1172,13 @@ def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any
         default="https://github.com/RDI-Foundation/cybergym-green",
         max_len=500,
     )
-    purple_agent_url = _safe_ui_text(
-        payload.get("purple_agent_url"),
-        default="",
-        max_len=500,
+    purple_agent_reference_info = _classify_purple_agent_reference(
+        payload.get("purple_agent_reference") or payload.get("purple_agent_url")
     )
+    purple_agent_reference = purple_agent_reference_info["value"]
 
-    a2a_status = "ready" if purple_agent_url else "manual_required"
-    registration_status = "manual_required"
+    a2a_status = purple_agent_reference_info["a2a_agent_card_status"]
+    registration_status = purple_agent_reference_info["agentbeats_registration_status"]
     leaderboard_status = "preview_only"
 
     return {
@@ -1107,7 +1194,13 @@ def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any
         "role": role,
         "opponent_profile": opponent,
         "green_agent_reference": opponent_url,
-        "purple_agent_reference": purple_agent_url or None,
+        "purple_agent_reference": purple_agent_reference,
+        "purple_agent_reference_type": purple_agent_reference_info["type"],
+        "purple_agent_reference_status": purple_agent_reference_info["reference_status"],
+        "a2a_agent_card_url": purple_agent_reference_info["a2a_agent_card_url"],
+        "a2a_agent_card_status": a2a_status,
+        "agentbeats_agent_page": purple_agent_reference_info["agentbeats_agent_page"],
+        "agentbeats_id": purple_agent_reference_info["agentbeats_id"],
         "a2a_compatible_focus": True,
         "leaderboard_ready": False,
         "leaderboard_status": leaderboard_status,
@@ -1128,14 +1221,19 @@ def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any
                 "detail": "Run is constrained to authorized benchmark or simulated environments only.",
             },
             {
+                "id": "purple_agent_reference",
+                "status": purple_agent_reference_info["reference_status"],
+                "detail": purple_agent_reference_info["detail"],
+            },
+            {
                 "id": "a2a_agent_card",
                 "status": a2a_status,
-                "detail": "Provide and validate the purple agent A2A endpoint / Agent Card before official runs.",
+                "detail": "Direct A2A Agent Card validation is still required before marking the run official.",
             },
             {
                 "id": "agentbeats_registration",
                 "status": registration_status,
-                "detail": "Register the purple agent on agentbeats.dev before leaderboard assessment.",
+                "detail": "Use the registered AgentBeats agent page or ID for platform submissions; verify it belongs to the intended Purple agent before leaderboard assessment.",
             },
             {
                 "id": "opponent_profile",
@@ -1165,6 +1263,9 @@ def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any
             "track": track,
             "role": role,
             "opponent_profile": opponent,
+            "purple_agent_reference_type": purple_agent_reference_info["type"],
+            "a2a_agent_card_status": a2a_status,
+            "agentbeats_registration_status": registration_status,
             "cost_tracking": True,
             "latency_tracking": True,
             "retry_tracking": True,
@@ -1179,10 +1280,11 @@ def _build_purple_benchmark_preview(payload: Mapping[str, Any]) -> dict[str, Any
             "Summarize strengths, weaknesses, and next routing/profile updates.",
         ],
         "recommended_next_steps": [
-            "Expose the actual A2A purple agent endpoint and validate its Agent Card.",
+            "Provide a direct A2A Agent Card URL, an AgentBeats ID, or a registered AgentBeats page for the intended Purple agent.",
+            "Validate direct Agent Card URLs before marking A2A status as ready.",
             "Add CI tests for /api/evaluation-lab/purple-preview.",
             "Connect this preview metadata to src/aegisforge/agent.py routing once the UI contract is stable.",
-            "Register the purple agent on agentbeats.dev for official leaderboard runs.",
+            "Register or confirm the AegisForge Purple agent on agentbeats.dev before official leaderboard runs.",
         ],
     }
 
@@ -1279,7 +1381,7 @@ def evaluation_lab() -> str:
 <body>
   <main class="wrap">
     <div class="topbar">
-      <div class="brand">AegisForge Evaluation Lab <span class="muted">v0.2.0</span></div>
+      <div class="brand">AegisForge Evaluation Lab <span class="muted">v0.2.1</span></div>
       <nav class="nav"><a href="/">Landing</a><a href="/docs">API Docs</a><a href="/health">Health</a><a href="/contract">Contract</a></nav>
     </div>
 
@@ -1348,8 +1450,9 @@ def evaluation_lab() -> str:
         <input id="opponentProfile" value="cybergym-green" />
         <label for="opponentUrl">Green agent / benchmark reference</label>
         <input id="opponentUrl" value="https://github.com/RDI-Foundation/cybergym-green" />
-        <label for="purpleAgentUrl">Purple A2A endpoint / Agent Card URL</label>
-        <input id="purpleAgentUrl" placeholder="Optional until registered on agentbeats.dev" />
+        <label for="purpleAgentUrl">Purple agent reference</label>
+        <input id="purpleAgentUrl" placeholder="Agent Card URL, AgentBeats ID, or registered AgentBeats page" />
+        <div class="hint">Accepted references: direct A2A Agent Card URL, AgentBeats agent ID, or registered AgentBeats page. Public AgentBeats pages are references, not automatically validated Agent Cards.</div>
         <div class="checks">
           <div>✓ Benchmark-only attacker/defender roles</div>
           <div>✓ Opponent-aware routing metadata</div>
@@ -1408,7 +1511,7 @@ let lastArtifact=null;
 function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
 async function parseJsonResponse(res){const raw=await res.text();let data={};try{data=raw?JSON.parse(raw):{}}catch(parseErr){throw new Error(raw?raw.slice(0,500):`HTTP ${res.status}`)}if(!res.ok){let detail=data.detail||data.message||data.error||`HTTP ${res.status}`;if(typeof detail==='object')detail=detail.message||JSON.stringify(detail);throw new Error(detail||'Request failed')}return data}
 async function runLab(){const status=document.getElementById('status');const repoUrl=document.getElementById('repoUrl').value.trim();status.className='status';status.textContent='Running read-only defensive scan...';try{const res=await fetch('/api/evaluation-lab/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_url:repoUrl})});const data=await parseJsonResponse(res);lastArtifact=data;renderReport(data);document.getElementById('jsonOut').textContent=JSON.stringify(data,null,2);if(data.scan_limits&&data.scan_limits.file_limit_reached){status.className='status warning';status.textContent='Evaluation complete. Analysis was truncated at the safety file limit.'}else{status.className='status ok';status.textContent='Evaluation complete.'}}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
-async function runPurplePreview(){const status=document.getElementById('purpleStatus');status.className='status';status.textContent='Building benchmark-safe Purple preview...';const payload={track:document.getElementById('purpleTrack').value,role:document.getElementById('purpleRole').value,opponent_profile:document.getElementById('opponentProfile').value.trim(),opponent_url:document.getElementById('opponentUrl').value.trim(),purple_agent_url:document.getElementById('purpleAgentUrl').value.trim()};try{const res=await fetch('/api/evaluation-lab/purple-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await parseJsonResponse(res);lastArtifact=data;renderPurplePreview(data);document.getElementById('jsonOut').textContent=JSON.stringify(data,null,2);status.className='status ok';status.textContent='Purple preview generated. No target code was executed.'}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
+async function runPurplePreview(){const status=document.getElementById('purpleStatus');status.className='status';status.textContent='Building benchmark-safe Purple preview...';const payload={track:document.getElementById('purpleTrack').value,role:document.getElementById('purpleRole').value,opponent_profile:document.getElementById('opponentProfile').value.trim(),opponent_url:document.getElementById('opponentUrl').value.trim(),purple_agent_reference:document.getElementById('purpleAgentUrl').value.trim()};try{const res=await fetch('/api/evaluation-lab/purple-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await parseJsonResponse(res);lastArtifact=data;renderPurplePreview(data);document.getElementById('jsonOut').textContent=JSON.stringify(data,null,2);status.className='status ok';status.textContent='Purple preview generated. No target code was executed.'}catch(err){status.className='status error';status.textContent=String(err.message||err)}}
 function riskTierFromScore(score){score=Number(score||0);if(score>=80)return'high';if(score>=50)return'elevated';if(score>=25)return'moderate';return'low'}
 function renderSummary(summary){if(!summary)return'';const sev=summary.by_severity||{};const cat=summary.by_category||{};const sevText=Object.entries(sev).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');const catText=Object.entries(cat).map(([k,v])=>`${esc(k)}:${esc(v)}`).join(' · ');return `<div class="item"><strong>Summary</strong><small>${sevText||'no severity summary'}</small><br><small>${catText||'no category summary'}</small></div>`}
 function renderLimits(data){const limits=data.scan_limits||{};if(!Object.keys(limits).length)return'No scan-limit metadata returned.';const cls=limits.file_limit_reached?'warning':'ok';const text=limits.file_limit_reached?`Analysis truncated at safety limit (${limits.max_files} files).`:'Analysis completed within safety limits.';return `<div class="item"><strong class="${cls}">${esc(text)}</strong><small>Max files: ${esc(limits.max_files??'—')} · Max file bytes: ${esc(limits.max_file_bytes??'—')} · Large skipped: ${esc(limits.files_skipped_large??0)} · Unreadable: ${esc(limits.files_unreadable??0)}</small></div>`}
@@ -1417,7 +1520,7 @@ function renderPrecisionNotes(data){const notes=data.precision_notes||[];const c
 function renderReport(data){document.getElementById('riskScore').textContent=data.risk_score??'0';document.getElementById('riskTier').textContent=data.risk_tier??riskTierFromScore(data.risk_score);document.getElementById('filesAnalyzed').textContent=data.files_analyzed??'0';document.getElementById('findingCount').textContent=(data.findings||[]).length;document.getElementById('reviewLoad').textContent=(data.review_load&&data.review_load.level)||'—';document.getElementById('limits').innerHTML=renderLimits(data);document.getElementById('repoShape').innerHTML=renderRepoShape(data);document.getElementById('precisionNotes').innerHTML=renderPrecisionNotes(data);const findings=data.findings||[];document.getElementById('findings').innerHTML=findings.length?renderSummary(data.finding_summary)+findings.map(i=>`<div class="item"><strong>${esc(i.severity)} · ${esc(i.category)}</strong><small>${esc(i.file)}:${esc(i.line)} — ${esc(i.evidence)}</small><br><small>${esc(i.recommendation)}</small></div>`).join(''):'No findings detected by the static defensive scanner.';document.getElementById('scenarios').innerHTML=(data.controlled_scenarios||[]).map(i=>`<div class="item"><strong>${esc(i.title)}</strong><small>${esc(i.id)} · ${esc(i.mode)}</small><br><small>${esc(i.goal)}</small></div>`).join('')||'No controlled scenarios returned.';document.getElementById('payloads').innerHTML=(data.benign_payloads||[]).map(i=>`<div class="item"><strong>${esc(i.id)}</strong><small>${esc(i.type)} · ${esc(i.purpose)}</small></div>`).join('')||'No benign payloads returned.'}
 function renderList(items){return (items||[]).map(i=>`<div class="item"><small>${esc(i)}</small></div>`).join('')||'No items returned.'}
 function renderObj(obj){obj=obj||{};return Object.keys(obj).length?`<div class="item"><small>${Object.entries(obj).map(([k,v])=>`${esc(k)}=${esc(typeof v==='object'?JSON.stringify(v):v)}`).join(' · ')}</small></div>`:'No metadata returned.'}
-function renderPurplePreview(data){document.getElementById('purpleMode').textContent='preview';document.getElementById('purpleTrackOut').textContent=data.track||'—';document.getElementById('purpleRoleOut').textContent=data.role||'—';document.getElementById('purpleA2A').textContent=data.a2a_compatible_focus?'focus':'—';document.getElementById('purpleLeaderboard').textContent=data.leaderboard_status||'—';document.getElementById('purplePolicy').innerHTML=renderObj(data.safety_policy);document.getElementById('purpleChecks').innerHTML=(data.pre_run_self_check||[]).map(i=>`<div class="item"><strong>${esc(i.id)} · ${esc(i.status)}</strong><small>${esc(i.detail)}</small></div>`).join('')||'No checks returned.';document.getElementById('purpleStrategy').innerHTML=renderList(data.strategy_outline);document.getElementById('purpleMetadata').innerHTML=renderObj(data.run_metadata_contract);document.getElementById('purpleNextSteps').innerHTML=renderList(data.recommended_next_steps)}
+function renderPurplePreview(data){document.getElementById('purpleMode').textContent='preview';document.getElementById('purpleTrackOut').textContent=data.track||'—';document.getElementById('purpleRoleOut').textContent=data.role||'—';document.getElementById('purpleA2A').textContent=data.a2a_agent_card_status|| (data.a2a_compatible_focus?'focus':'—');document.getElementById('purpleLeaderboard').textContent=data.leaderboard_status||'—';document.getElementById('purplePolicy').innerHTML=renderObj(data.safety_policy);document.getElementById('purpleChecks').innerHTML=(data.pre_run_self_check||[]).map(i=>`<div class="item"><strong>${esc(i.id)} · ${esc(i.status)}</strong><small>${esc(i.detail)}</small></div>`).join('')||'No checks returned.';document.getElementById('purpleStrategy').innerHTML=renderList(data.strategy_outline);document.getElementById('purpleMetadata').innerHTML=renderObj(data.run_metadata_contract);document.getElementById('purpleNextSteps').innerHTML=renderList(data.recommended_next_steps)}
 async function copyArtifact(){if(!lastArtifact)return;await navigator.clipboard.writeText(JSON.stringify(lastArtifact,null,2));document.getElementById('status').textContent='JSON artifact copied.';document.getElementById('purpleStatus').textContent='JSON artifact copied.'}
 </script>
 </body>
