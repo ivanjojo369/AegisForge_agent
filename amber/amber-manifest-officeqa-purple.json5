@@ -1,5 +1,5 @@
 {
-  manifest_version: "0.2.0",
+  manifest_version: "0.1.0",
 
   metadata: {
     name: "AegisForge OfficeQA Purple",
@@ -47,4 +47,5 @@
     a2a: "a2a"
   }
 }
+
 
