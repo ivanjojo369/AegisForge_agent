@@ -42,7 +42,7 @@ def setup_function() -> None:
 def _build_reset_payload(seed: int = 7) -> dict:
     return {
         "seed": seed,
-        "scenario_id": "saleforceone",
+        "scenario_id": "SaleForceOneSpy",
         "mission_id": "saleforceone_stub_test",
         "options": {
             "env_id": "omnibench_aegis_env:business_process.saleforceone",
@@ -58,7 +58,7 @@ def test_client_can_reset_saleforceone_and_expose_public_contract() -> None:
 
     reset = client.reset(_build_reset_payload())
     assert reset["env_id"] == "omnibench_aegis_env:business_process.saleforceone"
-    assert reset["scenario_id"] == "saleforceone"
+    assert reset["scenario_id"] == "SaleForceOneSpy"
     assert reset["state"]["failure_mode"] == "none"
     assert "hidden_record_truth" not in reset["state"]
     assert "hidden_canonical_answer" not in reset["state"]
@@ -84,7 +84,7 @@ def test_stub_run_reaches_clean_terminal_state_for_saleforceone() -> None:
     assert result.success is True
     assert result.done is True
     assert result.domain == "business_process"
-    assert result.scenario_id == "saleforceone"
+    assert result.scenario_id == "SaleForceOneSpy"
 
     actions = [turn.action["name"] for turn in result.turns]
     assert actions == [

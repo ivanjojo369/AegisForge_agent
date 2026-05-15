@@ -51,13 +51,22 @@ REQUIRED_PUBLIC_STATE_KEYS = {
     "history",
 }
 EXPECTED_SUPPORTED_DOMAINS = {
+    "agent_safety",
+    "agent_security",
     "business_process",
+    "coding",
     "computer_use",
+    "cybersecurity",
+    "defi",
     "finance",
     "game",
+    "healthcare",
+    "legal_domain",
     "multi_agent",
     "research",
+    "software_testing",
     "tau2",
+    "web",
 }
 
 
@@ -213,10 +222,12 @@ class OmniBenchAegisEnvContractTests(unittest.TestCase):
         self.assertEqual(payload["name"], "omnibench_aegis_env")
         self.assertIn("supported_domains", payload)
         self.assertEqual(set(payload["supported_domains"]), EXPECTED_SUPPORTED_DOMAINS)
-        self.assertNotIn("web", payload["supported_domains"])
+        self.assertIn("web", payload["supported_domains"])
         self.assertIn(DEFAULT_ENV_ID, payload["supported_env_ids"])
         self.assertIn(DEFAULT_SCENARIO_ID, payload["primary_scenarios"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+

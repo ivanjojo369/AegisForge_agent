@@ -1,5 +1,271 @@
+# ============================================================================
+# AegisForge OpenEnv / OmniBench Adapter Config Template
+# ============================================================================
+# Compatibility note:
+# The original template exposed these top-level keys:
+#   enabled, base_url, environment_name, timeout_seconds, strict_mode
+# They are preserved below for older loaders, while the structured sections add
+# Sprint 4 / AgentBeats identity metadata for newer runners and telemetry.
+# ============================================================================
+
 enabled = false
 base_url = "http://127.0.0.1:8010"
 environment_name = "openenv-default"
 timeout_seconds = 30
 strict_mode = false
+
+[adapter]
+name = "openenv_adapter"
+provider = "openenv"
+track = "openenv"
+enabled = false
+strict_mode = false
+timeout_seconds = 30
+base_url = "http://127.0.0.1:8010"
+environment_name = "openenv-default"
+
+[benchmark]
+name = "AgentX-AgentBeats Phase 2 Sprint 4"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+leaderboard_ready = false
+benchmark_scope = "controlled_only"
+
+[identity]
+# These are defaults/placeholders for generated configs. Scenario-specific
+# payload builders should override them with one of the 16 Sprint 4 scenarios.
+domain = "openenv"
+scenario_id = "openenv-default"
+scenario_name = "OpenEnvDefault"
+upstream_track = "openenv"
+category = "general"
+adapter = "openenv"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+benchmark = "AgentX-AgentBeats Phase 2 Sprint 4"
+selected_opponent = "openenv"
+source_url = ""
+
+[service]
+base_url = "http://127.0.0.1:8010"
+health_path = "/health"
+reset_path = "/reset"
+step_path = "/step"
+state_path = "/state"
+timeout_seconds = 30
+transport = "http"
+
+[defaults]
+live_check = true
+require_success = false
+strict_sprint4 = true
+action = "advance"
+value = 1
+max_steps = 1
+
+[telemetry]
+emit_events = true
+write_traces = true
+write_scorecards = true
+preserve_identity = true
+include_track_result_metadata = true
+
+[validation]
+min_timeout_seconds = 1
+max_timeout_seconds = 300
+require_http_url = true
+require_identity = true
+require_domain = true
+require_scenario_id = true
+require_upstream_track = true
+require_assessment_mode = true
+require_scenario_family = true
+
+[sprint4]
+supported_domains = [
+  "business_process",
+  "game",
+  "tau2",
+  "multi_agent",
+  "finance",
+  "computer_use",
+  "agent_safety",
+  "coding",
+  "cybersecurity",
+  "research",
+  "healthcare",
+  "web",
+  "agent_security",
+  "software_testing",
+  "defi",
+  "legal_domain",
+]
+supported_categories = [
+  "indirect_injection",
+  "prompt_extraction",
+  "pii_leak",
+  "jailbreak",
+  "insecure_output",
+  "supply_chain",
+  "secret_leak",
+]
+preserve_upstream_tracks = [
+  "officeqa",
+  "crmarena",
+  "crmarenapro",
+  "fieldworkarena",
+  "maizebargain",
+  "osworld",
+  "pibench",
+  "cybergym",
+  "netarena",
+  "tau2_agentbeats",
+  "mcu_minecraft",
+  "fhir_agent",
+  "comtrade",
+  "lambda_agent_security",
+  "logomesh",
+  "ethernaut",
+  "agentify_bench",
+]
+
+[sprint4.scenarios.saleforceonespy]
+domain = "business_process"
+scenario_name = "SaleForceOneSpy"
+upstream_track = "crmarena"
+category = "prompt_extraction"
+selected_opponent = "crmarena"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/saleforceonespy/index.html"
+
+[sprint4.scenarios.wikiwiper]
+domain = "game"
+scenario_name = "WikiWiper"
+upstream_track = "mcu_minecraft"
+category = "indirect_injection"
+selected_opponent = "mcu_minecraft"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/wikiwiper/index.html"
+
+[sprint4.scenarios.tickettwister]
+domain = "tau2"
+scenario_name = "TicketTwister"
+upstream_track = "tau2_agentbeats"
+category = "jailbreak"
+selected_opponent = "tau2_agentbeats"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/tickettwister/index.html"
+
+[sprint4.scenarios.bidbot]
+domain = "multi_agent"
+scenario_name = "BidBot"
+upstream_track = "maizebargain"
+category = "pii_leak"
+selected_opponent = "maizebargain"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/bidbot/index.html"
+
+[sprint4.scenarios.taxwiztrap]
+domain = "finance"
+scenario_name = "TaxWizTrap"
+upstream_track = "officeqa"
+category = "indirect_injection"
+selected_opponent = "officeqa"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/taxwiztrap/index.html"
+
+[sprint4.scenarios.lnklifter]
+domain = "computer_use"
+scenario_name = "LnkLifter"
+upstream_track = "osworld"
+category = "insecure_output"
+selected_opponent = "osworld"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/lnklifter/index.html"
+
+[sprint4.scenarios.inventoryinject]
+domain = "agent_safety"
+scenario_name = "InventoryInject"
+upstream_track = "pibench"
+category = "indirect_injection"
+selected_opponent = "pibench"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/inventoryinject/index.html"
+
+[sprint4.scenarios.devcontainerdoom]
+domain = "coding"
+scenario_name = "DevContainerDoom"
+upstream_track = "netarena"
+category = "supply_chain"
+selected_opponent = "netarena"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/devcontainerdoom/index.html"
+
+[sprint4.scenarios.staticshipscam]
+domain = "cybersecurity"
+scenario_name = "StaticShipScam"
+upstream_track = "cybergym"
+category = "supply_chain"
+selected_opponent = "cybergym"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/staticshipscam/index.html"
+
+[sprint4.scenarios.whistleblowerwreck]
+domain = "research"
+scenario_name = "WhistleBlowerWreck"
+upstream_track = "fieldworkarena"
+category = "pii_leak"
+selected_opponent = "fieldworkarena"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/whistleblowerwreck/index.html"
+
+[sprint4.scenarios.docudoctor]
+domain = "healthcare"
+scenario_name = "DocuDoctor"
+upstream_track = "fhir_agent"
+category = "pii_leak"
+selected_opponent = "fhir_agent"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/docudoctor/index.html"
+
+[sprint4.scenarios.searchglitch]
+domain = "web"
+scenario_name = "SearchGlitch"
+upstream_track = "comtrade"
+category = "jailbreak"
+selected_opponent = "comtrade"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/searchglitch/index.html"
+
+[sprint4.scenarios.gymjailbreak]
+domain = "agent_security"
+scenario_name = "GymJailbreak"
+upstream_track = "lambda_agent_security"
+category = "insecure_output"
+selected_opponent = "lambda_agent_security"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/gymjailbreak/index.html"
+
+[sprint4.scenarios.codereviewruse]
+domain = "software_testing"
+scenario_name = "CodeReviewRuse"
+upstream_track = "logomesh"
+category = "indirect_injection"
+selected_opponent = "logomesh"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/codereviewruse/index.html"
+
+[sprint4.scenarios.cryptocrash]
+domain = "defi"
+scenario_name = "CryptoCrash"
+upstream_track = "ethernaut"
+category = "secret_leak"
+selected_opponent = "ethernaut"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/cryptocrash/index.html"
+
+[sprint4.scenarios.lawfirmleak]
+domain = "legal_domain"
+scenario_name = "LawFirmLeak"
+upstream_track = "agentify_bench"
+category = "prompt_extraction"
+selected_opponent = "agentify_bench"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/lawfirmleak/index.html"
+
+[env]
+AEGISFORGE_ENABLE_OPENENV = "false"
+OPENENV_BASE_URL = "http://127.0.0.1:8010"
+OPENENV_ENVIRONMENT_NAME = "openenv-default"
+OPENENV_TIMEOUT_SECONDS = "30"
+OPENENV_STRICT_MODE = "false"
+OPENENV_ASSESSMENT_MODE = "purple_benchmark"
+
+[notes]
+summary = "Template config for the AegisForge OpenEnv / OmniBench adapter with Sprint 4 identity preservation."
+expected_adapter = "openenv"
+expected_track = "openenv"

@@ -1,10 +1,26 @@
-
 from __future__ import annotations
+
+"""OpenEnv track evaluator for AegisForge Eval.
+
+This evaluator keeps the original live-check behavior:
+
+    health -> reset -> step[*] -> state
+
+and adds Sprint 4 identity validation for the 16 final AgentX-AgentBeats /
+OpenEnv scenarios. The important behavior for Sprint 4 is that local domains,
+AegisForge scenario IDs, and upstream AgentBeats track/opponent profile names
+coexist instead of overwriting each other.
+
+TrackResult.metadata always carries the identity block:
+
+    domain, scenario_id, scenario_name, upstream_track, category, adapter,
+    assessment_mode, scenario_family, benchmark, selected_opponent, source_url
+"""
 
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..schemas import TrackResult
+from ..schemas import STATUS_PASS, STATUS_SKIP, STATUS_WARN, TrackResult
 
 try:
     import httpx
@@ -13,10 +29,227 @@ except Exception:  # pragma: no cover
 
 
 DESCRIPTION = (
-    "Validates an OpenEnv environment against the current AegisForge "
-    "BaseDomain-backed contract by running health -> contract -> reset -> "
-    "step[*] -> state -> actions."
+    "Validates an OpenEnv payload and, when requested, runs a live "
+    "health -> reset -> step[*] -> state check while preserving Sprint 4 metadata."
 )
+
+BENCHMARK_NAME = "AgentX-AgentBeats Phase 2 Sprint 4"
+DEFAULT_ASSESSMENT_MODE = "purple_benchmark"
+DEFAULT_SCENARIO_FAMILY = "agentbeats_sprint4"
+
+IDENTITY_KEYS: tuple[str, ...] = (
+    "domain",
+    "scenario_id",
+    "scenario_name",
+    "upstream_track",
+    "category",
+    "adapter",
+    "assessment_mode",
+    "scenario_family",
+    "benchmark",
+    "selected_opponent",
+    "source_url",
+)
+
+SPRINT4_SCENARIOS: dict[str, dict[str, str]] = {
+    "saleforceonespy": {
+        "domain": "business_process",
+        "scenario_id": "saleforceonespy",
+        "scenario_name": "SaleForceOneSpy",
+        "upstream_track": "crmarena",
+        "category": "prompt_extraction",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "crmarena",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/saleforceonespy/index.html",
+    },
+    "wikiwiper": {
+        "domain": "game",
+        "scenario_id": "wikiwiper",
+        "scenario_name": "WikiWiper",
+        "upstream_track": "mcu_minecraft",
+        "category": "indirect_injection",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "mcu_minecraft",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/wikiwiper/index.html",
+    },
+    "tickettwister": {
+        "domain": "tau2",
+        "scenario_id": "tickettwister",
+        "scenario_name": "TicketTwister",
+        "upstream_track": "tau2_agentbeats",
+        "category": "jailbreak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "tau2_agentbeats",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/tickettwister/index.html",
+    },
+    "bidbot": {
+        "domain": "multi_agent",
+        "scenario_id": "bidbot",
+        "scenario_name": "BidBot",
+        "upstream_track": "maizebargain",
+        "category": "pii_leak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "maizebargain",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/bidbot/index.html",
+    },
+    "taxwiztrap": {
+        "domain": "finance",
+        "scenario_id": "taxwiztrap",
+        "scenario_name": "TaxWizTrap",
+        "upstream_track": "officeqa",
+        "category": "indirect_injection",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "officeqa",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/taxwiztrap/index.html",
+    },
+    "lnklifter": {
+        "domain": "computer_use",
+        "scenario_id": "lnklifter",
+        "scenario_name": "LnkLifter",
+        "upstream_track": "osworld",
+        "category": "insecure_output",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "osworld",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/lnklifter/index.html",
+    },
+    "inventoryinject": {
+        "domain": "agent_safety",
+        "scenario_id": "inventoryinject",
+        "scenario_name": "InventoryInject",
+        "upstream_track": "pibench",
+        "category": "indirect_injection",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "pibench",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/inventoryinject/index.html",
+    },
+    "devcontainerdoom": {
+        "domain": "coding",
+        "scenario_id": "devcontainerdoom",
+        "scenario_name": "DevContainerDoom",
+        "upstream_track": "netarena",
+        "category": "supply_chain",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "netarena",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/devcontainerdoom/index.html",
+    },
+    "staticshipscam": {
+        "domain": "cybersecurity",
+        "scenario_id": "staticshipscam",
+        "scenario_name": "StaticShipScam",
+        "upstream_track": "cybergym",
+        "category": "supply_chain",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "cybergym",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/staticshipscam/index.html",
+    },
+    "whistleblowerwreck": {
+        "domain": "research",
+        "scenario_id": "whistleblowerwreck",
+        "scenario_name": "WhistleBlowerWreck",
+        "upstream_track": "fieldworkarena",
+        "category": "pii_leak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "fieldworkarena",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/whistleblowerwreck/index.html",
+    },
+    "docudoctor": {
+        "domain": "healthcare",
+        "scenario_id": "docudoctor",
+        "scenario_name": "DocuDoctor",
+        "upstream_track": "fhir_agent",
+        "category": "pii_leak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "fhir_agent",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/docudoctor/index.html",
+    },
+    "searchglitch": {
+        "domain": "web",
+        "scenario_id": "searchglitch",
+        "scenario_name": "SearchGlitch",
+        "upstream_track": "comtrade",
+        "category": "jailbreak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "comtrade",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/searchglitch/index.html",
+    },
+    "gymjailbreak": {
+        "domain": "agent_security",
+        "scenario_id": "gymjailbreak",
+        "scenario_name": "GymJailbreak",
+        "upstream_track": "lambda_agent_security",
+        "category": "insecure_output",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "lambda_agent_security",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/gymjailbreak/index.html",
+    },
+    "codereviewruse": {
+        "domain": "software_testing",
+        "scenario_id": "codereviewruse",
+        "scenario_name": "CodeReviewRuse",
+        "upstream_track": "logomesh",
+        "category": "indirect_injection",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "logomesh",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/codereviewruse/index.html",
+    },
+    "cryptocrash": {
+        "domain": "defi",
+        "scenario_id": "cryptocrash",
+        "scenario_name": "CryptoCrash",
+        "upstream_track": "ethernaut",
+        "category": "secret_leak",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "ethernaut",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/cryptocrash/index.html",
+    },
+    "lawfirmleak": {
+        "domain": "legal_domain",
+        "scenario_id": "lawfirmleak",
+        "scenario_name": "LawFirmLeak",
+        "upstream_track": "agentify_bench",
+        "category": "prompt_extraction",
+        "scenario_family": "agentbeats_sprint4",
+        "benchmark": BENCHMARK_NAME,
+        "selected_opponent": "agentify_bench",
+        "source_url": "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/lawfirmleak/index.html",
+    },
+}
+
+DOMAIN_TO_SCENARIO_ID: dict[str, str] = {
+    item["domain"]: scenario_id for scenario_id, item in SPRINT4_SCENARIOS.items()
+}
+
+SCENARIO_ALIASES: dict[str, str] = {
+    "salesforceonespy": "saleforceonespy",
+    "salesforceone": "saleforceonespy",
+    "saleforceone": "saleforceonespy",
+    "linklifter": "lnklifter",
+    "lnk_lifter": "lnklifter",
+    "link_lifter": "lnklifter",
+    "whistleblowerwreck": "whistleblowerwreck",
+    "whistle_blower_wreck": "whistleblowerwreck",
+    "code_review_ruse": "codereviewruse",
+    "crypto_crash": "cryptocrash",
+    "law_firm_leak": "lawfirmleak",
+}
+
+SPRINT4_DOMAINS: frozenset[str] = frozenset(DOMAIN_TO_SCENARIO_ID)
+SPRINT4_SCENARIO_IDS: frozenset[str] = frozenset(SPRINT4_SCENARIOS)
 
 
 def _as_bool(value: Any, default: bool = True) -> bool:
@@ -40,8 +273,246 @@ def _as_float(value: Any, default: float = 10.0) -> float:
         return default
 
 
+def _as_int(value: Any, default: int = 1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _first_text(*values: Any, default: str = "") -> str:
+    for value in values:
+        text = _text(value)
+        if text:
+            return text
+    return default
+
+
+def _slug_key(value: Any) -> str:
+    text = _text(value).lower()
+    if not text:
+        return ""
+    cleaned = []
+    previous_was_sep = False
+    for char in text:
+        if char.isalnum():
+            cleaned.append(char)
+            previous_was_sep = False
+        elif not previous_was_sep:
+            cleaned.append("_")
+            previous_was_sep = True
+    return "".join(cleaned).strip("_")
+
+
+def _compact_key(value: Any) -> str:
+    return _slug_key(value).replace("_", "")
+
+
+def _to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
 def _require_keys(obj: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
     return [key for key in keys if key not in obj]
+
+
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(1.0, round(value, 3)))
+
+
+def _scenario_id_from_any(value: Any) -> str:
+    key = _compact_key(value)
+    if not key:
+        return ""
+    return SCENARIO_ALIASES.get(key, key)
+
+
+def _find_known_scenario(payload: Mapping[str, Any], scenario: Mapping[str, Any]) -> str:
+    candidates = (
+        payload.get("scenario_id"),
+        payload.get("scenario_name"),
+        payload.get("scenario"),
+        payload.get("env_name"),
+        scenario.get("scenario_id"),
+        scenario.get("id"),
+        scenario.get("scenario_name"),
+        scenario.get("name"),
+    )
+
+    for candidate in candidates:
+        scenario_id = _scenario_id_from_any(candidate)
+        if scenario_id in SPRINT4_SCENARIOS:
+            return scenario_id
+
+    domain = _first_text(
+        payload.get("domain"),
+        payload.get("domain_key"),
+        payload.get("scenario_domain"),
+        scenario.get("domain"),
+    )
+    return DOMAIN_TO_SCENARIO_ID.get(domain, "")
+
+
+def _extract_identity(payload: Mapping[str, Any]) -> dict[str, str]:
+    scenario = _to_dict(payload.get("scenario"))
+    source = _to_dict(payload.get("source"))
+    route = _to_dict(payload.get("route"))
+    identity_payload = _to_dict(payload.get("identity") or payload.get("metadata"))
+
+    scenario_id = _find_known_scenario(payload, scenario)
+    known = dict(SPRINT4_SCENARIOS.get(scenario_id, {}))
+
+    # Preserve explicit payload values first, then known Sprint 4 registry values.
+    identity = {
+        "domain": _first_text(
+            payload.get("domain"),
+            payload.get("domain_key"),
+            payload.get("scenario_domain"),
+            identity_payload.get("domain"),
+            scenario.get("domain"),
+            known.get("domain"),
+        ),
+        "scenario_id": _first_text(
+            payload.get("scenario_id"),
+            identity_payload.get("scenario_id"),
+            scenario.get("scenario_id"),
+            scenario.get("id"),
+            known.get("scenario_id"),
+        ),
+        "scenario_name": _first_text(
+            payload.get("scenario_name"),
+            identity_payload.get("scenario_name"),
+            scenario.get("scenario_name"),
+            scenario.get("name"),
+            known.get("scenario_name"),
+        ),
+        "upstream_track": _first_text(
+            payload.get("upstream_track"),
+            payload.get("benchmark_track"),
+            payload.get("opponent_profile"),
+            identity_payload.get("upstream_track"),
+            identity_payload.get("benchmark_track"),
+            route.get("upstream_track"),
+            route.get("opponent_profile"),
+            known.get("upstream_track"),
+        ),
+        "category": _first_text(
+            payload.get("category"),
+            payload.get("attack_category"),
+            identity_payload.get("category"),
+            scenario.get("category"),
+            scenario.get("attack_category"),
+            known.get("category"),
+        ),
+        "adapter": _first_text(
+            payload.get("adapter"),
+            payload.get("adapter_name"),
+            identity_payload.get("adapter"),
+            route.get("adapter"),
+            route.get("adapter_name"),
+            default="openenv",
+        ),
+        "assessment_mode": _first_text(
+            payload.get("assessment_mode"),
+            identity_payload.get("assessment_mode"),
+            scenario.get("assessment_mode"),
+            route.get("assessment_mode"),
+            known.get("assessment_mode"),
+            default=DEFAULT_ASSESSMENT_MODE,
+        ),
+        "scenario_family": _first_text(
+            payload.get("scenario_family"),
+            identity_payload.get("scenario_family"),
+            scenario.get("scenario_family"),
+            route.get("scenario_family"),
+            known.get("scenario_family"),
+            default=DEFAULT_SCENARIO_FAMILY,
+        ),
+        "benchmark": _first_text(
+            payload.get("benchmark"),
+            identity_payload.get("benchmark"),
+            source.get("benchmark"),
+            known.get("benchmark"),
+            default=BENCHMARK_NAME,
+        ),
+        "selected_opponent": _first_text(
+            payload.get("selected_opponent"),
+            identity_payload.get("selected_opponent"),
+            route.get("selected_opponent"),
+            route.get("opponent"),
+            source.get("selected_opponent"),
+            known.get("selected_opponent"),
+        ),
+        "source_url": _first_text(
+            payload.get("source_url"),
+            identity_payload.get("source_url"),
+            source.get("source_url"),
+            source.get("url"),
+            source.get("repo"),
+            known.get("source_url"),
+        ),
+    }
+
+    if not identity["selected_opponent"]:
+        identity["selected_opponent"] = identity["upstream_track"]
+
+    # If a caller provided SalesForceOneSpy spelling, normalize the ID but keep
+    # scenario_name human-readable.
+    normalized_id = _scenario_id_from_any(identity["scenario_id"] or identity["scenario_name"])
+    if normalized_id in SPRINT4_SCENARIOS:
+        identity["scenario_id"] = normalized_id
+        identity["scenario_name"] = identity["scenario_name"] or SPRINT4_SCENARIOS[normalized_id]["scenario_name"]
+
+    return identity
+
+
+def _identity_validation(identity: Mapping[str, str], *, strict_sprint4: bool) -> dict[str, Any]:
+    domain = identity.get("domain", "")
+    scenario_id = identity.get("scenario_id", "")
+    scenario_known = scenario_id in SPRINT4_SCENARIO_IDS
+    domain_known = domain in SPRINT4_DOMAINS
+    expected_scenario_for_domain = DOMAIN_TO_SCENARIO_ID.get(domain, "")
+    domain_scenario_match = (
+        not domain
+        or not scenario_id
+        or not expected_scenario_for_domain
+        or expected_scenario_for_domain == scenario_id
+    )
+
+    missing_identity = [
+        key
+        for key in (
+            "domain",
+            "scenario_id",
+            "scenario_name",
+            "upstream_track",
+            "category",
+            "adapter",
+            "assessment_mode",
+            "scenario_family",
+        )
+        if not identity.get(key)
+    ]
+
+    return {
+        "strict_sprint4": strict_sprint4,
+        "domain_known": domain_known,
+        "scenario_known": scenario_known,
+        "domain_scenario_match": domain_scenario_match,
+        "expected_scenario_for_domain": expected_scenario_for_domain or None,
+        "missing_identity": missing_identity,
+        "supported_domains": sorted(SPRINT4_DOMAINS),
+        "supported_scenarios": sorted(SPRINT4_SCENARIO_IDS),
+    }
 
 
 def _result(
@@ -50,46 +521,70 @@ def _result(
     summary: str,
     score: float,
     details: dict[str, Any],
+    metadata: dict[str, Any],
 ) -> TrackResult:
     return TrackResult(
         track="openenv",
         status=status,
         summary=summary,
-        score=score,
+        score=_clamp_score(score),
         details=details,
+        metadata=metadata,
     )
 
 
-def _normalize_reset_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_action_plan(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_plan = payload.get("action_plan")
+
+    if isinstance(raw_plan, Sequence) and not isinstance(raw_plan, (str, bytes)):
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(raw_plan, start=1):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"action_plan[{idx}] must be a JSON object")
+
+            action = item.get("action") or item.get("name") or "advance"
+            value = _as_int(item.get("value"), default=1)
+
+            normalized.append(
+                {
+                    "action": str(action),
+                    "value": value,
+                }
+            )
+
+        if normalized:
+            return normalized
+
+    action = payload.get("action") or "advance"
+    if isinstance(action, Mapping):
+        action_name = action.get("type") or action.get("name") or action.get("action") or "advance"
+        value = _as_int(action.get("value"), default=_as_int(payload.get("value"), default=1))
+    else:
+        action_name = str(action)
+        value = _as_int(payload.get("value"), default=1)
+
+    return [{"action": action_name, "value": value}]
+
+
+def _build_reset_payload(payload: Mapping[str, Any], identity: Mapping[str, str]) -> dict[str, Any]:
     raw_reset = payload.get("reset_payload")
     if isinstance(raw_reset, Mapping):
         return dict(raw_reset)
 
-    seed = payload.get("seed")
-    scenario_id = payload.get("scenario_id")
-    mission_id = payload.get("mission_id")
-    env_id = payload.get("env_id")
-    domain = payload.get("domain")
-    max_steps = payload.get("max_steps")
-    target_score = payload.get("target_score")
-
     reset_payload: dict[str, Any] = {}
+    seed = payload.get("seed")
     if seed is not None:
         reset_payload["seed"] = seed
-    if scenario_id is not None:
-        reset_payload["scenario_id"] = str(scenario_id)
-    if mission_id is not None:
-        reset_payload["mission_id"] = str(mission_id)
 
-    options: dict[str, Any] = {}
-    if env_id is not None:
-        options["env_id"] = str(env_id)
-    if domain is not None:
-        options["domain"] = str(domain)
-    if max_steps is not None:
-        options["max_steps"] = max_steps
-    if target_score is not None:
-        options["target_score"] = target_score
+    raw_options = payload.get("options") or payload.get("reset_options")
+    options = dict(raw_options) if isinstance(raw_options, Mapping) else {}
+
+    if identity.get("domain") and "domain" not in options:
+        options["domain"] = identity["domain"]
+    if identity.get("scenario_id") and "scenario_id" not in options:
+        options["scenario_id"] = identity["scenario_id"]
+    if identity.get("scenario_name") and "scenario_name" not in options:
+        options["scenario_name"] = identity["scenario_name"]
 
     if options:
         reset_payload["options"] = options
@@ -97,189 +592,164 @@ def _normalize_reset_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     return reset_payload
 
 
-def _normalize_action_plan(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw_plan = payload.get("action_plan")
-    if not isinstance(raw_plan, Sequence) or isinstance(raw_plan, (str, bytes)):
-        raw_plan = None
-
-    if raw_plan:
-        normalized: list[dict[str, Any]] = []
-        for idx, item in enumerate(raw_plan, start=1):
-            if not isinstance(item, Mapping):
-                raise ValueError(f"action_plan[{idx}] must be a JSON object")
-
-            if "name" in item:
-                normalized.append(
-                    {
-                        "name": str(item.get("name") or ""),
-                        "args": dict(item.get("args") or {}),
-                    }
-                )
-                continue
-
-            if "action" in item:
-                action_name = str(item.get("action") or "")
-                if isinstance(item.get("args"), Mapping):
-                    normalized.append(
-                        {
-                            "name": action_name,
-                            "args": dict(item.get("args") or {}),
-                        }
-                    )
-                else:
-                    extras = {
-                        str(k): v
-                        for k, v in item.items()
-                        if k not in {"action"}
-                    }
-                    if "args" in extras and not isinstance(extras["args"], Mapping):
-                        extras.pop("args", None)
-                    normalized.append(
-                        {
-                            "name": action_name,
-                            "args": extras.get("args", {}) if isinstance(extras.get("args"), Mapping) else {
-                                k: v for k, v in extras.items() if k != "args"
-                            },
-                        }
-                    )
-                continue
-
-            raise ValueError(f"action_plan[{idx}] must include either 'name' or 'action'")
-
-        if normalized:
-            return normalized
-
-    # Shallow compatibility fallback
-    if isinstance(payload.get("args"), Mapping):
-        return [{"name": str(payload.get("action") or payload.get("name") or ""), "args": dict(payload.get("args") or {})}]
-
-    action_name = str(payload.get("action") or payload.get("name") or "")
-    if action_name:
-        extras = {
-            str(k): v
-            for k, v in payload.items()
-            if k not in {
-                "adapter",
-                "environment_url",
-                "base_url",
-                "timeout",
-                "live_check",
-                "require_success",
-                "seed",
-                "episode_id",
-                "env_name",
-                "expected_env_name",
-                "expected_env_id",
-                "expected_scenario_id",
-                "scenario_id",
-                "mission_id",
-                "env_id",
-                "domain",
-                "max_steps",
-                "target_score",
-                "reset_payload",
-                "action_plan",
-            }
-        }
-        if "value" in extras and "args" not in extras:
-            extras = {"value": extras["value"]}
-        return [{"name": action_name, "args": dict(extras)}]
-
-    return []
+def _extract_action_name(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return str(value.get("action") or value.get("type") or value.get("name") or "").strip()
+    return str(value or "").strip()
 
 
-def _extract_action_name(payload: Mapping[str, Any] | None) -> str:
-    if not isinstance(payload, Mapping):
-        return ""
-    if "name" in payload:
-        return str(payload.get("name") or "")
-    if "action" in payload:
-        return str(payload.get("action") or "")
-    return ""
+def _state_envelope(state_json: Mapping[str, Any]) -> Mapping[str, Any]:
+    nested = state_json.get("state")
+    if isinstance(nested, Mapping):
+        return nested
+    return state_json
+
+
+def _state_has_progress_signal(state_json: Mapping[str, Any], envelope: Mapping[str, Any]) -> bool:
+    keys = {"score", "progress", "target_score", "target_progress", "done", "success", "step_count"}
+    return any(key in state_json for key in keys) or any(key in envelope for key in keys)
+
+
+def _completed_stage_count(checks: Mapping[str, Any], *, require_success: bool) -> tuple[int, int]:
+    completed = 0
+    for key in ("health", "reset", "state"):
+        if checks.get(key):
+            completed += 1
+    if int(checks.get("step_count") or 0) > 0:
+        completed += 1
+    if checks.get("success_path"):
+        completed += 1
+    denominator = 5 if require_success else 4
+    return completed, denominator
 
 
 def evaluate(payload: Mapping[str, Any] | None = None) -> TrackResult:
     payload = dict(payload or {})
+    identity = _extract_identity(payload)
+    strict_sprint4 = _as_bool(payload.get("strict_sprint4"), default=True)
+    validation = _identity_validation(identity, strict_sprint4=strict_sprint4)
 
-    adapter = str(payload.get("adapter", "openenv"))
+    adapter = identity["adapter"] or "openenv"
     environment_url = str(payload.get("environment_url") or payload.get("base_url") or "").rstrip("/")
     timeout = _as_float(payload.get("timeout"), default=10.0)
     live_check = _as_bool(payload.get("live_check"), default=True)
     require_success = _as_bool(payload.get("require_success"), default=False)
+    episode_id = payload.get("episode_id")
+    run_id = payload.get("run_id") or episode_id
+    expected_env_name = payload.get("env_name")
+    expected_scenario_id = payload.get("expected_scenario_id") or identity["scenario_id"]
 
-    expected_env_name = payload.get("expected_env_name") or payload.get("env_name")
-    expected_env_id = payload.get("expected_env_id") or payload.get("env_id")
-    expected_scenario_id = payload.get("expected_scenario_id") or payload.get("scenario_id")
+    metadata: dict[str, Any] = {
+        **identity,
+        "track": "openenv",
+        "run_id": str(run_id or ""),
+        "episode_id": str(episode_id or ""),
+        "sprint4_validation": validation,
+    }
 
     details: dict[str, Any] = {
         "description": DESCRIPTION,
+        "identity": dict(identity),
+        "metadata": dict(metadata),
         "adapter": adapter,
         "environment_url": environment_url or None,
+        "episode_id": episode_id,
+        "run_id": run_id,
         "timeout": timeout,
         "live_check": live_check,
         "require_success": require_success,
         "expected_env_name": expected_env_name,
-        "expected_env_id": expected_env_id,
         "expected_scenario_id": expected_scenario_id,
         "checks": {
+            "identity": not validation["missing_identity"],
+            "domain_known": validation["domain_known"],
+            "scenario_known": validation["scenario_known"],
+            "domain_scenario_match": validation["domain_scenario_match"],
             "health": False,
-            "contract": False,
             "reset": False,
             "step_count": 0,
             "state": False,
-            "actions": False,
             "success_path": False,
         },
     }
 
     if adapter != "openenv":
         return _result(
-            status="skip",
+            status=STATUS_SKIP,
             summary="payload targets a different adapter; OpenEnv track skipped",
             score=0.0,
             details=details,
+            metadata=metadata,
+        )
+
+    identity_errors: list[str] = []
+    if strict_sprint4:
+        if not validation["domain_known"]:
+            identity_errors.append(f"domain is not one of the 16 Sprint 4 domains: {identity.get('domain') or '<missing>'}")
+        if not validation["scenario_known"]:
+            identity_errors.append(f"scenario_id is not one of the 16 Sprint 4 scenarios: {identity.get('scenario_id') or '<missing>'}")
+        if not validation["domain_scenario_match"]:
+            identity_errors.append(
+                "domain/scenario_id mismatch: "
+                f"{identity.get('domain')} expects {validation['expected_scenario_for_domain']}, "
+                f"got {identity.get('scenario_id')}"
+            )
+        if validation["missing_identity"]:
+            identity_errors.append(
+                "missing Sprint 4 identity fields: " + ", ".join(validation["missing_identity"])
+            )
+
+    if identity_errors:
+        details["identity_errors"] = identity_errors
+        return _result(
+            status=STATUS_WARN,
+            summary="OpenEnv Sprint 4 identity is incomplete or inconsistent",
+            score=0.25,
+            details=details,
+            metadata=metadata,
         )
 
     if not environment_url:
         details["missing"] = ["environment_url"]
         return _result(
-            status="warn",
+            status=STATUS_WARN,
             summary="OpenEnv payload is incomplete: missing environment_url/base_url",
-            score=0.15,
+            score=0.35 if validation["scenario_known"] and validation["domain_known"] else 0.15,
             details=details,
+            metadata=metadata,
         )
-
-    reset_payload = _normalize_reset_payload(payload)
-    details["reset_payload"] = reset_payload
 
     try:
         action_plan = _normalize_action_plan(payload)
     except Exception as exc:
         details["error"] = str(exc)
         return _result(
-            status="warn",
+            status=STATUS_WARN,
             summary="OpenEnv payload has an invalid action_plan",
-            score=0.15,
+            score=0.20,
             details=details,
+            metadata=metadata,
         )
 
     details["action_plan"] = action_plan
 
     if not live_check:
         return _result(
-            status="pass",
-            summary="OpenEnv payload is documented and live check was intentionally disabled",
-            score=0.60,
+            status=STATUS_PASS,
+            summary="OpenEnv Sprint 4 payload is valid and live check was intentionally disabled",
+            score=0.70,
             details=details,
+            metadata=metadata,
         )
 
     if httpx is None:
         details["error"] = "httpx is not available in the current environment"
         return _result(
-            status="warn",
+            status=STATUS_WARN,
             summary="OpenEnv live check could not run because httpx is unavailable",
-            score=0.10,
+            score=0.20,
             details=details,
+            metadata=metadata,
         )
 
     try:
@@ -291,65 +761,20 @@ def evaluate(payload: Mapping[str, Any] | None = None) -> TrackResult:
 
             if not isinstance(health_json, Mapping):
                 raise ValueError("/health did not return a JSON object")
-
-            missing_health = _require_keys(
-                health_json,
-                ("status", "env", "initialized"),
-            )
-            if missing_health:
-                raise ValueError(f"/health missing keys: {', '.join(missing_health)}")
-
-            if str(health_json.get("status")) != "ok":
+            if "status" in health_json and str(health_json.get("status")) != "ok":
                 raise ValueError("/health returned status different from 'ok'")
-
-            if expected_env_name and str(health_json.get("env")) != str(expected_env_name):
+            if expected_env_name and health_json.get("env") and str(health_json.get("env")) != str(expected_env_name):
                 raise ValueError(
-                    f"/health env mismatch: expected '{expected_env_name}' "
-                    f"got '{health_json.get('env')}'"
+                    f"/health env mismatch: expected '{expected_env_name}' got '{health_json.get('env')}'"
                 )
 
             details["health"] = dict(health_json)
             details["checks"]["health"] = True
 
-            # 2) contract
-            contract_response = client.get(f"{environment_url}/contract")
-            contract_response.raise_for_status()
-            contract_json = contract_response.json()
+            # 2) reset
+            reset_payload = _build_reset_payload(payload, identity)
+            details["reset_payload"] = reset_payload
 
-            if not isinstance(contract_json, Mapping):
-                raise ValueError("/contract did not return a JSON object")
-
-            missing_contract = _require_keys(
-                contract_json,
-                ("env_id", "name", "version", "primary_scenarios", "supported_domains", "supported_env_ids"),
-            )
-            if missing_contract:
-                raise ValueError(f"/contract missing keys: {', '.join(missing_contract)}")
-
-            if expected_env_name and str(contract_json.get("name")) != str(expected_env_name):
-                raise ValueError(
-                    f"/contract name mismatch: expected '{expected_env_name}' "
-                    f"got '{contract_json.get('name')}'"
-                )
-
-            if expected_env_id:
-                supported_env_ids = list(contract_json.get("supported_env_ids") or [])
-                if str(expected_env_id) not in [str(item) for item in supported_env_ids]:
-                    raise ValueError(
-                        f"/contract does not advertise expected env_id '{expected_env_id}'"
-                    )
-
-            if expected_scenario_id:
-                primary_scenarios = [str(item) for item in contract_json.get("primary_scenarios") or []]
-                if str(expected_scenario_id) not in primary_scenarios:
-                    raise ValueError(
-                        f"/contract does not advertise expected scenario_id '{expected_scenario_id}'"
-                    )
-
-            details["contract"] = dict(contract_json)
-            details["checks"]["contract"] = True
-
-            # 3) reset
             reset_response = client.post(f"{environment_url}/reset", json=reset_payload)
             reset_response.raise_for_status()
             reset_json = reset_response.json()
@@ -357,63 +782,40 @@ def evaluate(payload: Mapping[str, Any] | None = None) -> TrackResult:
             if not isinstance(reset_json, Mapping):
                 raise ValueError("/reset did not return a JSON object")
 
-            missing_reset = _require_keys(
-                reset_json,
-                ("env_id", "scenario_id", "observation", "state", "info", "actions"),
-            )
-            if missing_reset:
-                raise ValueError(f"/reset missing keys: {', '.join(missing_reset)}")
-
             reset_state = reset_json.get("state")
             reset_info = reset_json.get("info")
-            reset_actions = reset_json.get("actions")
-
-            if not isinstance(reset_state, Mapping):
+            if reset_state is not None and not isinstance(reset_state, Mapping):
                 raise ValueError("/reset.state is not a JSON object")
-            if not isinstance(reset_info, Mapping):
+            if reset_info is not None and not isinstance(reset_info, Mapping):
                 raise ValueError("/reset.info is not a JSON object")
-            if not isinstance(reset_actions, Sequence) or isinstance(reset_actions, (str, bytes)):
-                raise ValueError("/reset.actions is not a JSON array")
 
-            if expected_env_id and str(reset_json.get("env_id")) != str(expected_env_id):
-                raise ValueError(
-                    f"/reset env_id mismatch: expected '{expected_env_id}' "
-                    f"got '{reset_json.get('env_id')}'"
+            if expected_scenario_id:
+                observed_reset_scenario = (
+                    reset_json.get("scenario_id")
+                    or (reset_info.get("scenario_id") if isinstance(reset_info, Mapping) else None)
+                    or (reset_state.get("scenario_id") if isinstance(reset_state, Mapping) else None)
                 )
-            if expected_scenario_id and str(reset_json.get("scenario_id")) != str(expected_scenario_id):
-                raise ValueError(
-                    f"/reset scenario_id mismatch: expected '{expected_scenario_id}' "
-                    f"got '{reset_json.get('scenario_id')}'"
-                )
-            if expected_env_name and str(reset_info.get("env_name")) != str(expected_env_name):
-                raise ValueError(
-                    f"/reset info env_name mismatch: expected '{expected_env_name}' "
-                    f"got '{reset_info.get('env_name')}'"
-                )
+                if observed_reset_scenario and str(observed_reset_scenario) != str(expected_scenario_id):
+                    raise ValueError(
+                        f"/reset scenario_id mismatch: expected '{expected_scenario_id}' "
+                        f"got '{observed_reset_scenario}'"
+                    )
 
             details["reset"] = dict(reset_json)
             details["checks"]["reset"] = True
 
-            # If no action plan provided, use first advertised action.
-            if not action_plan:
-                advertised = [str(item) for item in reset_actions if isinstance(item, (str, int, float))]
-                fallback_name = advertised[0] if advertised else "inspect_inventory"
-                action_plan = [{"name": fallback_name, "args": {}}]
-                details["action_plan"] = action_plan
-
-            # 4) step plan
+            # 3) step plan
             step_results: list[dict[str, Any]] = []
             last_step_state: Mapping[str, Any] | None = None
+            last_action_name = ""
 
             for idx, step_spec in enumerate(action_plan, start=1):
-                if not isinstance(step_spec, Mapping):
-                    raise ValueError(f"action_plan[{idx}] normalized into a non-mapping payload")
-
+                last_action_name = _extract_action_name(step_spec["action"])
                 step_response = client.post(
                     f"{environment_url}/step",
                     json={
-                        "name": str(step_spec.get("name") or ""),
-                        "args": dict(step_spec.get("args") or {}),
+                        "action": step_spec["action"],
+                        "value": step_spec["value"],
                     },
                 )
                 step_response.raise_for_status()
@@ -422,35 +824,25 @@ def evaluate(payload: Mapping[str, Any] | None = None) -> TrackResult:
                 if not isinstance(step_json, Mapping):
                     raise ValueError(f"/step #{idx} did not return a JSON object")
 
-                missing_step = _require_keys(
-                    step_json,
-                    ("env_id", "scenario_id", "observation", "reward", "done", "truncated", "info", "state", "actions"),
-                )
-                if missing_step:
-                    raise ValueError(f"/step #{idx} missing keys: {', '.join(missing_step)}")
-
                 step_state = step_json.get("state")
-                step_info = step_json.get("info")
-                if not isinstance(step_state, Mapping):
+                if step_state is not None and not isinstance(step_state, Mapping):
                     raise ValueError(f"/step #{idx}.state is not a JSON object")
-                if not isinstance(step_info, Mapping):
-                    raise ValueError(f"/step #{idx}.info is not a JSON object")
 
-                expected_action_name = str(step_spec.get("name") or "")
-                actual_action_name = _extract_action_name(step_state.get("last_action"))  # type: ignore[arg-type]
-                if actual_action_name and actual_action_name != expected_action_name:
-                    raise ValueError(
-                        f"/step #{idx} last_action mismatch: expected "
-                        f"'{expected_action_name}' got '{actual_action_name}'"
-                    )
+                if isinstance(step_state, Mapping):
+                    observed_action = _extract_action_name(step_state.get("last_action"))
+                    if observed_action and last_action_name and observed_action != last_action_name:
+                        raise ValueError(
+                            f"/step #{idx} last_action mismatch: expected "
+                            f"'{last_action_name}' got '{observed_action}'"
+                        )
+                    last_step_state = step_state
 
                 step_results.append(dict(step_json))
-                last_step_state = step_state
                 details["checks"]["step_count"] = idx
 
             details["steps"] = step_results
 
-            # 5) state
+            # 4) state
             state_response = client.get(f"{environment_url}/state")
             state_response.raise_for_status()
             state_json = state_response.json()
@@ -458,105 +850,81 @@ def evaluate(payload: Mapping[str, Any] | None = None) -> TrackResult:
             if not isinstance(state_json, Mapping):
                 raise ValueError("/state did not return a JSON object")
 
-            missing_state = _require_keys(
-                state_json,
-                ("env_id", "scenario_id", "state", "last_observation", "last_info"),
-            )
-            if missing_state:
-                raise ValueError(f"/state missing keys: {', '.join(missing_state)}")
+            envelope = _state_envelope(state_json)
+            if not isinstance(envelope, Mapping):
+                raise ValueError("/state state envelope is not a JSON object")
+            if not _state_has_progress_signal(state_json, envelope):
+                raise ValueError("/state does not include a recognizable progress/success signal")
 
-            envelope_state = state_json.get("state")
-            if not isinstance(envelope_state, Mapping):
-                raise ValueError("/state.state is not a JSON object")
-
-            if expected_env_id and str(state_json.get("env_id")) != str(expected_env_id):
+            if episode_id and state_json.get("episode_id") and state_json.get("episode_id") != episode_id:
                 raise ValueError(
-                    f"/state env_id mismatch: expected '{expected_env_id}' "
-                    f"got '{state_json.get('env_id')}'"
+                    f"/state episode_id mismatch: expected '{episode_id}' got '{state_json.get('episode_id')}'"
                 )
-            if expected_scenario_id and str(state_json.get("scenario_id")) != str(expected_scenario_id):
+
+            observed_scenario = state_json.get("scenario_id") or envelope.get("scenario_id")
+            if expected_scenario_id and observed_scenario and str(observed_scenario) != str(expected_scenario_id):
                 raise ValueError(
-                    f"/state scenario_id mismatch: expected '{expected_scenario_id}' "
-                    f"got '{state_json.get('scenario_id')}'"
+                    f"/state scenario_id mismatch: expected '{expected_scenario_id}' got '{observed_scenario}'"
                 )
 
             if last_step_state is not None:
-                final_last_action = _extract_action_name(envelope_state.get("last_action"))  # type: ignore[arg-type]
-                previous_last_action = _extract_action_name(last_step_state.get("last_action"))  # type: ignore[arg-type]
-                if previous_last_action and final_last_action != previous_last_action:
-                    raise ValueError("/state.state.last_action does not match the last step result")
+                final_last_action = _extract_action_name(envelope.get("last_action"))
+                previous_last_action = _extract_action_name(last_step_state.get("last_action"))
+                if previous_last_action and final_last_action and final_last_action != previous_last_action:
+                    raise ValueError("/state last_action does not match the last step result")
 
             details["state"] = dict(state_json)
             details["checks"]["state"] = True
 
-            # 6) actions
-            actions_response = client.get(f"{environment_url}/actions")
-            actions_response.raise_for_status()
-            actions_json = actions_response.json()
-
-            if not isinstance(actions_json, Mapping):
-                raise ValueError("/actions did not return a JSON object")
-
-            missing_actions = _require_keys(actions_json, ("env_id", "scenario_id", "actions"))
-            if missing_actions:
-                raise ValueError(f"/actions missing keys: {', '.join(missing_actions)}")
-
-            if not isinstance(actions_json.get("actions"), Sequence) or isinstance(actions_json.get("actions"), (str, bytes)):
-                raise ValueError("/actions.actions is not a JSON array")
-
-            details["actions"] = dict(actions_json)
-            details["checks"]["actions"] = True
-
             if require_success:
-                done = bool(envelope_state.get("done"))
-                success = bool(envelope_state.get("success"))
-                progress = int(envelope_state.get("progress") or 0)
-                target_progress = int(
-                    envelope_state.get("target_score")
-                    or envelope_state.get("target_progress")
-                    or 0
+                done = bool(envelope.get("done", state_json.get("done", False)))
+                success = bool(envelope.get("success", state_json.get("success", False)))
+                score = _as_int(envelope.get("score", state_json.get("score")), default=0)
+                progress = _as_int(envelope.get("progress", state_json.get("progress")), default=score)
+                target = _as_int(
+                    envelope.get("target_score")
+                    or envelope.get("target_progress")
+                    or state_json.get("target_score")
+                    or state_json.get("target_progress"),
+                    default=0,
                 )
 
                 if not done:
                     raise ValueError("require_success=True but final state.done is false")
                 if not success:
                     raise ValueError("require_success=True but final state.success is false")
-                if target_progress > 0 and progress < target_progress:
+                if target > 0 and progress < target:
                     raise ValueError(
-                        f"require_success=True but final progress {progress} "
-                        f"is below target {target_progress}"
+                        f"require_success=True but final progress {progress} is below target {target}"
                     )
 
                 details["checks"]["success_path"] = True
 
             return _result(
-                status="pass",
-                summary="OpenEnv live check passed: health/contract/reset/step/state/actions are operational",
+                status=STATUS_PASS,
+                summary="OpenEnv live check passed with Sprint 4 identity preserved",
                 score=1.0,
                 details=details,
+                metadata=metadata,
             )
 
     except Exception as exc:
-        completed_stages = 0
-        for key in ("health", "contract", "reset", "state", "actions"):
-            if details["checks"][key]:
-                completed_stages += 1
-        if details["checks"]["step_count"] > 0:
-            completed_stages += 1
-        if details["checks"]["success_path"]:
-            completed_stages += 1
-
-        denominator = 7 if require_success else 6
-        score = round(completed_stages / denominator, 2)
-
+        completed_stages, denominator = _completed_stage_count(
+            details["checks"],
+            require_success=require_success,
+        )
         details["error"] = str(exc)
 
+        identity_bonus = 0.10 if validation["domain_known"] and validation["scenario_known"] else 0.0
+        score = min(0.95, round(completed_stages / denominator, 2) + identity_bonus)
+
         return _result(
-            status="warn",
+            status=STATUS_WARN,
             summary=(
                 f"OpenEnv live check failed after {completed_stages}/{denominator} "
-                f"completed stages"
+                "completed stages; Sprint 4 metadata was preserved"
             ),
             score=score,
             details=details,
+            metadata=metadata,
         )

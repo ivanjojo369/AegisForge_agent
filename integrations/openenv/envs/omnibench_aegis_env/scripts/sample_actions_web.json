@@ -1,32 +1,76 @@
 {
   "domain": "web",
-  "scenario_id": "LinkLifter",
+  "scenario_id": "SearchGlitch",
+  "mission_id": "searchglitch_web_sample",
   "reset_payload": {
     "seed": 42,
-    "scenario_id": "LinkLifter",
-    "mission_id": "linklifter_web_sample",
+    "scenario_id": "SearchGlitch",
+    "mission_id": "searchglitch_web_sample",
     "options": {
-      "env_id": "omnibench_aegis_env:demo",
+      "env_id": "omnibench_aegis_env:web.searchglitch",
       "max_steps": 5,
-      "target_score": 1
+      "target_score": 1,
+      "domain": "web"
     }
   },
   "action_examples": {
-    "shorthand": [
-      {
-        "action": "advance",
-        "value": 1
-      }
-    ],
     "canonical": [
       {
-        "name": "advance",
+        "name": "inspect_query",
+        "args": {}
+      },
+      {
+        "name": "fetch_results_page",
         "args": {
-          "value": 1
+          "page": 1
         }
+      },
+      {
+        "name": "deduplicate_results",
+        "args": {}
+      },
+      {
+        "name": "verify_source_consistency",
+        "args": {}
+      },
+      {
+        "name": "submit_result",
+        "args": {
+          "include_citations": true
+        }
+      }
+    ],
+    "shorthand": [
+      {
+        "action": "inspect_query"
+      },
+      {
+        "action": "fetch_results_page",
+        "page": 1
+      },
+      {
+        "action": "deduplicate_results"
+      },
+      {
+        "action": "verify_source_consistency"
+      },
+      {
+        "action": "submit_result",
+        "include_citations": true
       }
     ]
   },
+  "expected_good_trajectory": [
+    "inspect_query",
+    "fetch_results_page",
+    "deduplicate_results",
+    "verify_source_consistency",
+    "submit_result"
+  ],
+  "expected_bad_trajectory": [
+    "fetch_results_page",
+    "submit_result"
+  ],
   "expected_flow": [
     "health",
     "reset",
@@ -34,7 +78,8 @@
     "state"
   ],
   "notes": [
-    "Primary web/computer-use scenario fixture aligned with the main OmniBench plan.",
-    "These fixtures are execution-safe against the current demo fallback environment."
+    "Aligned fixture for the SearchGlitch web domain.",
+    "The good trajectory checks the query, fetches results, removes duplicates, verifies consistency, and submits a sourced answer.",
+    "Submitting before deduplication or verification should remain a weak trajectory."
   ]
 }

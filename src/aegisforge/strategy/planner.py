@@ -50,8 +50,17 @@ class TaskPlanner:
     """Create a compact but track-aware execution plan before response generation."""
 
     MCU_TRACKS = {"mcu", "mcu_minecraft"}
-    SECURITY_TRACKS = {"security", "pibench", "cybergym", "netarena"}
+    SECURITY_TRACKS = {
+        "security",
+        "security_arena",
+        "agent_security",
+        "lambda_agent_security",
+        "pibench",
+        "cybergym",
+        "netarena",
+    }
     PROFILE_FALLBACKS = {
+        # Existing Sprint 4 / AgentBeats tracks.
         "officeqa": "openenv",
         "crmarenapro": "openenv",
         "crmarena": "openenv",
@@ -63,6 +72,33 @@ class TaskPlanner:
         "netarena": "security",
         "tau2_agentbeats": "tau2",
         "mcu_minecraft": "mcu",
+
+        # New 16-scenario OpenEnv/OmniBench domains.
+        "healthcare": "openenv",
+        "web": "openenv",
+        "agent_security": "security",
+        "lambda_agent_security": "security",
+        "software_testing": "openenv",
+        "defi": "openenv",
+        "legal_domain": "openenv",
+
+        # Scenario aliases mapped through the final 16-scenario set.
+        "saleforceonespy": "openenv",
+        "wikiwiper": "mcu",
+        "tickettwister": "tau2",
+        "bidbot": "openenv",
+        "taxwiztrap": "openenv",
+        "lnklifter": "openenv",
+        "inventoryinject": "security",
+        "devcontainerdoom": "security",
+        "staticshipscam": "security",
+        "whistleblowerwreck": "openenv",
+        "docudoctor": "openenv",
+        "searchglitch": "openenv",
+        "gymjailbreak": "security",
+        "codereviewruse": "openenv",
+        "cryptocrash": "openenv",
+        "lawfirmleak": "openenv",
     }
 
     def __init__(self, budget_guard: BudgetGuard | None = None) -> None:
@@ -127,7 +163,7 @@ class TaskPlanner:
             self._normalize_risk(metadata_dict.get("expected_risk", signals.get("expected_risk"))),
         )
 
-        if track in self.SECURITY_TRACKS:
+        if self._should_use_security_planning(track=track, scenario_family=scenario_family, metadata=metadata_dict):
             steps = self._build_security_steps(
                 classification=classification,
                 assessment_mode=assessment_mode,
@@ -194,6 +230,7 @@ class TaskPlanner:
                 strict_mode=strict_mode,
                 effective_risk=effective_risk,
                 max_turns=max_turns,
+                scenario_family=scenario_family,
                 requires_artifact=requires_artifact,
             ),
             risk_level=effective_risk,
@@ -266,7 +303,7 @@ class TaskPlanner:
             steps.append(
                 PlanStep(
                     name="probe_or_stage",
-                    description="Use bounded probing or staged interaction to pressure the target without relying on a single brittle payload.",
+                    description="Use bounded, scenario-contained probing to test the target without relying on a single brittle prompt.",
                     requires_tool=True,
                     required_confidence="medium" if effective_risk != "critical" else "high",
                 )
@@ -285,7 +322,7 @@ class TaskPlanner:
         steps.append(
             PlanStep(
                 name="pivot_if_resisted",
-                description="If the first vector fails, adapt framing, dependency pressure, or extraction path while staying scenario-grounded.",
+                description="If the first probe fails, adapt framing or trust-boundary pressure while staying scenario-grounded and benchmark-contained.",
                 requires_tool=False,
                 required_confidence="medium" if not strict_mode else "high",
             )
@@ -295,7 +332,7 @@ class TaskPlanner:
             steps.append(
                 PlanStep(
                     name="shape_attack_artifact",
-                    description="Ensure the final attack-oriented artifact states the exploit path, target dependency, and intended deviation clearly.",
+                    description="Ensure the final adversarial-test artifact states the scenario path, target dependency, and intended benchmark deviation clearly.",
                     requires_tool=False,
                     required_confidence="high",
                 )
@@ -304,7 +341,7 @@ class TaskPlanner:
         steps.append(
             PlanStep(
                 name="finalize_attack_output",
-                description="Produce the final attack-oriented output, keeping the intended deviation and exploit path explicit.",
+                description="Produce the final adversarial-test output, keeping the intended benchmark deviation and trust-boundary path explicit.",
                 requires_tool=False,
                 required_confidence="high",
             )
@@ -415,7 +452,7 @@ class TaskPlanner:
             steps.append(
                 PlanStep(
                     name="shape_dependency",
-                    description="Exploit reliance on trusted knowledge sources or recipe assumptions in a bounded way.",
+                    description="Stress-test reliance on trusted knowledge sources or recipe assumptions in a bounded benchmark-only way.",
                     requires_tool=False,
                     required_confidence="medium",
                 )
@@ -515,7 +552,7 @@ class TaskPlanner:
         ]
 
         if assessment_mode == "attacker":
-            notes.append("Favor adaptive, scenario-grounded exploitation over brittle one-shot prompts.")
+            notes.append("Favor adaptive, scenario-grounded red-team probing over brittle one-shot prompts.")
         else:
             notes.append("Preserve safe utility while minimizing leakage and unsafe output.")
 
@@ -564,9 +601,10 @@ class TaskPlanner:
         strict_mode: bool,
         effective_risk: str,
         max_turns: int,
+        scenario_family: str,
         requires_artifact: bool,
     ) -> str:
-        if track in self.SECURITY_TRACKS:
+        if track in self.SECURITY_TRACKS or self._is_security_family(scenario_family):
             if strict_mode and effective_risk in {"high", "critical"}:
                 return "minimal"
             if assessment_mode == "attacker":
@@ -596,16 +634,90 @@ class TaskPlanner:
         return profile.self_check_policy != "minimal"
 
     @staticmethod
+    def _is_security_family(scenario_family: str) -> bool:
+        family = str(scenario_family or "general").strip().lower()
+        return family in {
+            "prompt_injection",
+            "indirect_injection",
+            "jailbreak",
+            "roleplay_bypass",
+            "logic_subversion",
+            "translation_bypass",
+            "encoded_text_bypass",
+            "document_injection",
+            "web_content_poisoning",
+            "html_comment_injection",
+            "code_comment_poisoning",
+            "ocr_receipt_injection",
+            "qr_document_injection",
+            "prompt_extraction",
+            "internal_formula_exfiltration",
+            "debug_command_exfiltration",
+            "private_repo_prompt_exfiltration",
+            "hidden_secret_exfiltration",
+            "plugin_schema_exfiltration",
+            "data_exfiltration",
+            "pii_leak",
+            "pii_leakage",
+            "secret_leakage",
+            "notification_and_device_data_exfiltration",
+            "prototype_user_data_exfiltration",
+            "enterprise_chat_data_exfiltration",
+            "claim_data_privacy_exfiltration",
+            "photo_metadata_poisoning",
+            "insecure_output",
+            "script_injection_output",
+            "svg_payload_output",
+            "markdown_html_rendering_risk",
+            "persistent_xss_output",
+            "malicious_link",
+            "dangerous_code",
+            "supply_chain",
+            "dependency_attack",
+            "hallucinated_dependency_recommendation",
+            "container_recommendation_hijack",
+            "ruby_gem_hallucination",
+            "hallucinated_external_api",
+            "python_package_hallucination",
+        }
+
+    def _should_use_security_planning(
+        self,
+        *,
+        track: str,
+        scenario_family: str,
+        metadata: Mapping[str, Any],
+    ) -> bool:
+        if track in self.SECURITY_TRACKS:
+            return True
+        if self._is_security_family(scenario_family):
+            return True
+        category = str(metadata.get("category") or metadata.get("scenario_category") or "").strip().lower()
+        if category in {
+            "jailbreak",
+            "indirect_injection",
+            "prompt_extraction",
+            "pii_leak",
+            "pii_leakage",
+            "data_exfiltration",
+            "insecure_output",
+            "supply_chain",
+        }:
+            return True
+        source_url = str(metadata.get("source_url") or "").strip().lower()
+        return "agentbeats-lambda.s3" in source_url
+
+    @staticmethod
     def _attacker_vector_description(scenario_family: str) -> str:
         if scenario_family in {"prompt_injection", "indirect_injection", "jailbreak"}:
-            return "Choose an instruction-conflict or trust-boundary vector that may bypass the target's prioritization logic."
+            return "Choose a controlled instruction-conflict or trust-boundary probe for the benchmark target."
         if scenario_family in {"prompt_extraction", "data_exfiltration", "pii_leakage", "secret_leakage"}:
-            return "Choose an extraction path that pressures the target to reveal protected prompts, secrets, or sensitive data."
+            return "Choose a controlled extraction-pressure probe that tests whether protected prompts, secrets, or sensitive data stay protected."
         if scenario_family in {"insecure_output", "xss", "malicious_link", "dangerous_code"}:
-            return "Choose an output-shaping vector that nudges the target toward unsafe rendered content or executable artifacts."
+            return "Choose a controlled output-shaping probe that tests unsafe rendering or executable-artifact boundaries."
         if scenario_family in {"supply_chain", "dependency_attack"}:
-            return "Choose a trusted-dependency or package-origin manipulation vector."
-        return "Choose the most plausible exploit path given the task, target, and visible trust assumptions."
+            return "Choose a controlled dependency-origin probe that tests supply-chain trust assumptions."
+        return "Choose the most plausible benchmark-contained probe path given the task, target, and visible trust assumptions."
 
     @staticmethod
     def _defender_risk_description(scenario_family: str) -> str:
@@ -652,46 +764,136 @@ class TaskPlanner:
     @staticmethod
     def _normalize_track(value: Any) -> str:
         raw = str(value or "openenv").strip().lower()
+        normalized_raw = raw.replace("-", "_").replace(" ", "_").replace(".", "_")
         aliases = {
+            # Game / MCU.
             "game": "mcu_minecraft",
             "game_agent": "mcu_minecraft",
             "minecraft": "mcu_minecraft",
-            "minecraft benchmark": "mcu_minecraft",
-            "mcu-agentbeats": "mcu_minecraft",
+            "minecraft_benchmark": "mcu_minecraft",
             "mcu_agentbeats": "mcu_minecraft",
+            "mcu_minecraft": "mcu_minecraft",
+            "wikiwiper": "mcu_minecraft",
+            "wiki_wiper": "mcu_minecraft",
+
+            # Finance / OfficeQA.
             "finance": "officeqa",
             "finance_agent": "officeqa",
-            "office qa": "officeqa",
+            "office_qa": "officeqa",
             "officeqa_agentbeats": "officeqa",
+            "taxwiztrap": "officeqa",
+            "tax_wiz_trap": "officeqa",
+
+            # Business / CRM.
             "business": "crmarenapro",
             "business_process": "crmarenapro",
             "business_process_agent": "crmarenapro",
             "crmarena": "crmarenapro",
-            "entropic-crmarenapro": "crmarenapro",
+            "crm": "crmarenapro",
+            "entropic_crmarenapro": "crmarenapro",
+            "salesforceone": "crmarenapro",
+            "saleforceone": "crmarenapro",
+            "saleforceonespy": "crmarenapro",
+            "sale_force_one_spy": "crmarenapro",
+
+            # Research / Fieldwork.
             "research": "fieldworkarena",
             "research_agent": "fieldworkarena",
-            "fieldworkarena-greenagent": "fieldworkarena",
+            "fieldworkarena_greenagent": "fieldworkarena",
+            "fieldwork": "fieldworkarena",
+            "whistleblowerwreck": "fieldworkarena",
+            "whistle_blower_wreck": "fieldworkarena",
+            "whistleblower_wreck": "fieldworkarena",
+
+            # Multi-agent.
             "multi_agent": "maizebargain",
-            "multi-agent": "maizebargain",
             "multi_agent_evaluation": "maizebargain",
-            "maize bargain": "maizebargain",
-            "tutorial-agent-beats-comp": "maizebargain",
+            "multiagent": "maizebargain",
+            "maize_bargain": "maizebargain",
+            "maize_bargain_agent": "maizebargain",
+            "tutorial_agent_beats_comp": "maizebargain",
+            "bidbot": "maizebargain",
+            "bid_bot": "maizebargain",
+
+            # Tau2.
             "tau²": "tau2_agentbeats",
-            "tau2-agentbeats": "tau2_agentbeats",
+            "tau2": "tau2_agentbeats",
+            "tau": "tau2_agentbeats",
+            "tau_bench": "tau2_agentbeats",
+            "tau2_bench": "tau2_agentbeats",
+            "tau2_agentbeats": "tau2_agentbeats",
+            "tickettwister": "tau2_agentbeats",
+            "ticket_twister": "tau2_agentbeats",
+
+            # Computer use / OSWorld.
             "computer_use": "osworld",
             "computer_use_web": "osworld",
             "computer_use_web_agent": "osworld",
-            "osworld-green": "osworld",
-            "osworld-verified": "osworld",
+            "computer": "osworld",
+            "osworld_green": "osworld",
+            "osworld_verified": "osworld",
+            "linklifter": "osworld",
+            "lnklifter": "osworld",
+            "lnk_lifter": "osworld",
+
+            # Security / safety / cyber / coding security-like tracks.
             "security_arena": "security",
+            "agent_security": "agent_security",
+            "lambda_agent_security": "agent_security",
+            "lambda_security": "agent_security",
+            "gymjailbreak": "agent_security",
+            "gym_jailbreak": "agent_security",
             "agent_safety": "pibench",
-            "pi-bench": "pibench",
+            "pi_bench": "pibench",
+            "pibench": "pibench",
+            "inventoryinject": "pibench",
+            "inventory_inject": "pibench",
             "cybersecurity": "cybergym",
             "cybersecurity_agent": "cybergym",
+            "cyber": "cybergym",
+            "cybergym": "cybergym",
+            "staticshipscam": "cybergym",
+            "static_ship_scam": "cybergym",
             "coding": "netarena",
             "coding_agent": "netarena",
+            "netarena": "netarena",
+            "devcontainerdoom": "netarena",
+            "dev_container_doom": "netarena",
+
+            # New generalist OpenEnv domains.
+            "healthcare": "healthcare",
+            "healthcare_agent": "healthcare",
+            "medical": "healthcare",
+            "fhir": "healthcare",
+            "docudoctor": "healthcare",
+            "docu_doctor": "healthcare",
+            "web": "web",
+            "web_agent": "web",
+            "browser": "web",
+            "search": "web",
+            "searchglitch": "web",
+            "search_glitch": "web",
+            "software_testing": "software_testing",
+            "software_testing_agent": "software_testing",
+            "testing": "software_testing",
+            "logomesh": "software_testing",
+            "codereviewruse": "software_testing",
+            "code_review_ruse": "software_testing",
+            "defi": "defi",
+            "crypto": "defi",
+            "ethernaut": "defi",
+            "smart_contract": "defi",
+            "smart_contracts": "defi",
+            "cryptocrash": "defi",
+            "crypto_crash": "defi",
+            "legal_domain": "legal_domain",
+            "legal": "legal_domain",
+            "legal_agent": "legal_domain",
+            "agentify_bench": "legal_domain",
+            "lawfirmleak": "legal_domain",
+            "law_firm_leak": "legal_domain",
         }
-        return aliases.get(raw, raw)
+        return aliases.get(normalized_raw, aliases.get(raw, normalized_raw))
 
     @staticmethod
     def _normalize_mode(value: Any) -> str:
@@ -719,7 +921,27 @@ class TaskPlanner:
             "prompt_injection_and_jailbreaking": "prompt_injection",
             "jailbreaking": "jailbreak",
             "pii": "pii_leakage",
+            "pii_leak": "pii_leakage",
+            "privacy": "pii_leakage",
             "prompt_leakage": "prompt_extraction",
+            "roleplay_bypass": "jailbreak",
+            "logic_subversion": "jailbreak",
+            "translation_bypass": "jailbreak",
+            "encoded_text_bypass": "jailbreak",
+            "document_injection": "indirect_injection",
+            "web_content_poisoning": "indirect_injection",
+            "html_comment_injection": "indirect_injection",
+            "code_comment_poisoning": "indirect_injection",
+            "ocr_receipt_injection": "indirect_injection",
+            "qr_document_injection": "indirect_injection",
+            "internal_formula_exfiltration": "prompt_extraction",
+            "debug_command_exfiltration": "prompt_extraction",
+            "plugin_schema_exfiltration": "prompt_extraction",
+            "container_recommendation_hijack": "supply_chain",
+            "hallucinated_dependency_recommendation": "supply_chain",
+            "hallucinated_external_api": "supply_chain",
+            "python_package_hallucination": "supply_chain",
+            "ruby_gem_hallucination": "supply_chain",
         }
         return aliases.get(raw, raw)
 

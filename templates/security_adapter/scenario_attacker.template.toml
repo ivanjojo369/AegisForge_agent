@@ -1,28 +1,64 @@
-# Security Arena attacker runtime template (hardened v2)
+# Security Arena attacker runtime template (hardened v3 / Sprint 4)
 # Rendered by scenario_resolver.py using scenario_catalog.toml
+#
+# Important:
+# - assessment_mode is benchmark identity and must remain "purple_benchmark".
+# - role / mode is the local security posture and may be "attacker" here.
+# - upstream_track must preserve the AgentBeats track/opponent-profile name.
+# - domain must preserve the local OpenEnv/OmniBench domain.
 
 [scenario]
 scenario_id = {{scenario_id}}
 name = {{name}}
 slug = {{slug}}
+domain = {{domain}}
+upstream_track = {{upstream_track}}
 category = {{category}}
 scenario_family = {{scenario_family}}
+benchmark = {{benchmark}}
+selected_opponent = {{selected_opponent}}
 mode = "attacker"
+role = "attacker"
+adapter = "security"
+assessment_mode = "purple_benchmark"
 source_url = {{source_url}}
 summary = {{summary}}
 attack_vector = {{attack_vector}}
 success_condition = {{success_condition}}
 
-[metadata]
-assessment_mode = "attacker"
-track = "security_arena"
+[identity]
+domain = {{domain}}
 scenario_id = {{scenario_id}}
 scenario_name = {{name}}
 scenario_slug = {{slug}}
+upstream_track = {{upstream_track}}
+category = {{category}}
+adapter = "security"
+assessment_mode = "purple_benchmark"
 scenario_family = {{scenario_family}}
+benchmark = {{benchmark}}
+selected_opponent = {{selected_opponent}}
+source_url = {{source_url}}
+
+[metadata]
+assessment_mode = "purple_benchmark"
+track = "security_arena"
+adapter = "security"
+role = "attacker"
+security_family = {{category}}
+domain = {{domain}}
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+scenario_slug = {{slug}}
+upstream_track = {{upstream_track}}
+scenario_family = {{scenario_family}}
+benchmark = {{benchmark}}
+selected_opponent = {{selected_opponent}}
+source_url = {{source_url}}
 category = {{category}}
 heldout_like = {{heldout_like}}
 strict_mode = {{strict_mode}}
+strict_sprint4 = true
 normal_user = false
 max_turns = {{max_turns}}
 expected_risk = {{expected_risk}}
@@ -42,16 +78,25 @@ generalization_pattern = {{generalization_pattern}}
 summary = {{summary}}
 attack_vector = {{attack_vector}}
 success_condition = {{success_condition}}
+domain = {{domain}}
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+upstream_track = {{upstream_track}}
+category = {{category}}
+source_url = {{source_url}}
 
 [signals]
 heldout_like = {{heldout_like}}
 strict_mode = {{strict_mode}}
+strict_sprint4 = true
 requires_artifact = {{requires_artifact}}
 artifact_mode = {{artifact_mode}}
 source_type = {{source_type}}
 attack_surface = {{attack_surface}}
 artifact_type = {{artifact_type}}
 expected_risk = {{expected_risk}}
+category = {{category}}
+upstream_track = {{upstream_track}}
 
 [objectives]
 primary_objective = {{success_condition}}
@@ -68,6 +113,11 @@ failure_modes = {{failure_modes}}
 stay_grounded_in_context = true
 preserve_surface_plausibility = true
 avoid_meta_discussion = true
+benchmark_only = true
+controlled_environment_only = true
+no_real_world_targeting = true
+no_secret_extraction_from_real_systems = true
+no_persistence_or_evasion = true
 
 [agent]
 id = "aegisforge"
@@ -79,15 +129,43 @@ message = {{attacker_message}}
 goal = {{success_condition}}
 format = "json"
 profile = "security_attacker"
+adapter = "security"
+role = "attacker"
+assessment_mode = "purple_benchmark"
 
-[payload.metadata]
-assessment_mode = "attacker"
+[payload.identity]
+domain = {{domain}}
 scenario_id = {{scenario_id}}
 scenario_name = {{name}}
+scenario_slug = {{slug}}
+upstream_track = {{upstream_track}}
+category = {{category}}
+adapter = "security"
+assessment_mode = "purple_benchmark"
 scenario_family = {{scenario_family}}
+benchmark = {{benchmark}}
+selected_opponent = {{selected_opponent}}
+source_url = {{source_url}}
+
+[payload.metadata]
+assessment_mode = "purple_benchmark"
+track = "security_arena"
+adapter = "security"
+role = "attacker"
+security_family = {{category}}
+domain = {{domain}}
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+scenario_slug = {{slug}}
+upstream_track = {{upstream_track}}
+scenario_family = {{scenario_family}}
+benchmark = {{benchmark}}
+selected_opponent = {{selected_opponent}}
+source_url = {{source_url}}
 category = {{category}}
 heldout_like = {{heldout_like}}
 strict_mode = {{strict_mode}}
+strict_sprint4 = true
 normal_user = false
 max_turns = {{max_turns}}
 expected_risk = {{expected_risk}}
@@ -105,6 +183,11 @@ target_system = {{target_system}}
 attack_vector = {{attack_vector}}
 success_condition = {{success_condition}}
 generalization_pattern = {{generalization_pattern}}
+domain = {{domain}}
+scenario_id = {{scenario_id}}
+scenario_name = {{name}}
+upstream_track = {{upstream_track}}
+category = {{category}}
 
 [payload.findings]
 primary_vector = {{attack_vector}}
@@ -114,6 +197,8 @@ artifact_type = {{artifact_type}}
 sensitive_asset = {{sensitive_asset}}
 success_condition = {{success_condition}}
 generalization_pattern = {{generalization_pattern}}
+category = {{category}}
+upstream_track = {{upstream_track}}
 
 [payload.playbook]
 attacker_strategy = {{attacker_strategy}}
@@ -125,6 +210,8 @@ failure_modes = {{failure_modes}}
 required_sections = {{required_sections}}
 response_style = "competitive_attacker"
 keep_section_identity = true
+preserve_sprint4_identity = true
+benchmark_only = true
 
 [payload.artifact]
 required = {{requires_artifact}}

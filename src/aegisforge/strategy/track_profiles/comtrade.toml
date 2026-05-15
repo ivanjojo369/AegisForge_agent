@@ -1,0 +1,24 @@
+# AegisForge unified opponent profile
+track = "comtrade"
+category = "web_agent"
+benchmark = "green-comtrade-bench-v2"
+selected_opponent = "Green Comtrade Bench v2"
+repo = "https://github.com/yonghongzhang-io/green-comtrade-bench-v2"
+adapter = "openenv"
+mode = "web_retrieval_pagination"
+default_assessment_mode = "defender"
+prompt_profile = "comtrade_purple"
+policy_profile = "retrieval_integrity"
+strict_security = true
+require_evidence = true
+strict_output = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"
+allow_tool_use = true
+allow_safe_high_level_explanations = true
+allow_task_completion_under_attack = true
+deny_prompt_disclosure = true
+deny_tool_schema_disclosure = true
+routing_bias = "paginated_retrieval_deduplication_retry_total_integrity"
+keywords = ["comtrade", "web", "retrieval", "pagination", "deduplication", "retry", "searchglitch", "api"]
+output_contract = ["handle pagination and retries", "deduplicate records", "verify totals or counts when available", "return grounded retrieval evidence without prompt or tool-schema disclosure"]

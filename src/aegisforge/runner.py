@@ -42,6 +42,53 @@ SELECTED_OPPONENT_TRACKS = (
     "netarena",
 )
 
+ADDITIONAL_GENERALIST_TRACKS = (
+    "healthcare",
+    "web",
+    "lambda_agent_security",
+    "software_testing",
+    "defi",
+    "legal_domain",
+)
+
+FINAL_SCENARIOS = (
+    "SaleForceOneSpy",
+    "WikiWiper",
+    "TicketTwister",
+    "BidBot",
+    "TaxWizTrap",
+    "LnkLifter",
+    "InventoryInject",
+    "DevContainerDoom",
+    "StaticShipScam",
+    "WhistleBlowerWreck",
+    "DocuDoctor",
+    "SearchGlitch",
+    "GymJailbreak",
+    "CodeReviewRuse",
+    "CryptoCrash",
+    "LawFirmLeak",
+)
+
+FINAL_SCENARIO_IDS = (
+    "saleforceonespy",
+    "wikiwiper",
+    "tickettwister",
+    "bidbot",
+    "taxwiztrap",
+    "lnklifter",
+    "inventoryinject",
+    "devcontainerdoom",
+    "staticshipscam",
+    "whistleblowerwreck",
+    "docudoctor",
+    "searchglitch",
+    "gymjailbreak",
+    "codereviewruse",
+    "cryptocrash",
+    "lawfirmleak",
+)
+
 TRACK_TAGS = (
     "mcu",
     "minecraft-benchmark",
@@ -62,6 +109,22 @@ TRACK_TAGS = (
     "cybersecurity",
     "netarena",
     "coding-agent",
+    "healthcare",
+    "healthcare-agent",
+    "web",
+    "web-agent",
+    "lambda-agent-security",
+    "software-testing",
+    "defi",
+    "legal-domain",
+    "docudoctor",
+    "searchglitch",
+    "gymjailbreak",
+    "codereviewruse",
+    "cryptocrash",
+    "lawfirmleak",
+    "saleforceonespy",
+    "lnklifter",
     "openenv",
     "security",
 )
@@ -144,7 +207,12 @@ def _build_runtime_snapshot(*, host: str, port: int, card_url: str, mode: str) -
         "crmarena_enabled": _env_bool("AEGISFORGE_ENABLE_CRMARENA", False),
         "tags": list(TRACK_TAGS),
         "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-        "track_alias_note": "mcu and mcu-minecraft are the same selected Game Agent opponent.",
+        "additional_generalist_tracks": list(ADDITIONAL_GENERALIST_TRACKS),
+        "selected_scenarios": list(FINAL_SCENARIOS),
+        "selected_scenario_ids": list(FINAL_SCENARIO_IDS),
+        "scenario_count": len(FINAL_SCENARIOS),
+        "track_alias_note": "mcu and mcu-minecraft are the same selected Game Agent opponent; SaleForceOneSpy and LnkLifter preserve scenario-page spelling.",
+        "scenario_alignment": "AgentX-AgentBeats Phase 2 Sprint 4 generalist 16-scenario set.",
         "supported_assessment_modes": list(SUPPORTED_MODES),
     }
 

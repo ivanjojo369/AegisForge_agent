@@ -5,24 +5,31 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-# Ensure repo root is importable when pytest collects this file directly.
 REPO_ROOT = Path(__file__).resolve().parents[5]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from integrations.openenv.envs.omnibench_aegis_env.server.app import app, RUNTIME
+from integrations.openenv.envs.omnibench_aegis_env.server.app import RUNTIME, app
 
+# Public reset responses currently preserve the legacy env_id slug for backward
+# compatibility, while exposing the Sprint 4 canonical scenario_id.
+LINKLIFTER_ENV_ID = "omnibench_aegis_env:computer_use.linklifter"
+LINKLIFTER_SCENARIO_ID = "LnkLifter"
 
 client = TestClient(app)
+
+
+def setup_function() -> None:
+    RUNTIME.active = None
 
 
 def _reset_payload(seed: int = 7) -> dict:
     return {
         "seed": seed,
-        "scenario_id": "LinkLifter",
+        "scenario_id": LINKLIFTER_SCENARIO_ID,
         "mission_id": "linklifter_test",
         "options": {
-            "env_id": "omnibench_aegis_env:computer_use.linklifter",
+            "env_id": LINKLIFTER_ENV_ID,
             "domain": "computer_use",
             "max_steps": 6,
         },
@@ -35,17 +42,13 @@ def _post_step(name: str, args: dict | None = None) -> dict:
     return response.json()
 
 
-def setup_function() -> None:
-    RUNTIME.active = None
-
-
 def test_reset_returns_expected_shape_and_hides_internal_state() -> None:
     response = client.post("/reset", json=_reset_payload())
     assert response.status_code == 200, response.text
     payload = response.json()
 
-    assert payload["env_id"] == "omnibench_aegis_env:computer_use.linklifter"
-    assert payload["scenario_id"] == "LinkLifter"
+    assert payload["env_id"] == LINKLIFTER_ENV_ID
+    assert payload["scenario_id"] == LINKLIFTER_SCENARIO_ID
     assert payload["mission_id"] == "linklifter_test"
 
     observation = payload["observation"]
@@ -53,12 +56,13 @@ def test_reset_returns_expected_shape_and_hides_internal_state() -> None:
     info = payload["info"]
     actions = payload["actions"]
 
-    assert observation["scenario_id"] == "LinkLifter"
+    assert observation["scenario_id"] == LINKLIFTER_SCENARIO_ID
     assert observation["step_count"] == 0
     assert observation["progress"] == 0
     assert observation["target_progress"] == 100
     assert "navigation_confidence" in observation
 
+    assert state["scenario_id"] == LINKLIFTER_SCENARIO_ID
     assert state["progress"] == 0
     assert state["target_progress"] == 100
     assert state["target_score"] == 100
@@ -74,7 +78,7 @@ def test_reset_returns_expected_shape_and_hides_internal_state() -> None:
 
     assert info["domain"] == "computer_use"
     assert info["env_name"] == "omnibench_aegis_env"
-    assert info["env_id"] == "omnibench_aegis_env:computer_use.linklifter"
+    assert info["env_id"] == LINKLIFTER_ENV_ID
 
     assert actions == [
         "inspect_page",

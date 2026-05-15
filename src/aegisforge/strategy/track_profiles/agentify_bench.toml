@@ -1,0 +1,25 @@
+# AegisForge unified opponent profile
+track = "agentify_bench"
+category = "legal_domain_agent"
+benchmark = "agentify-bench"
+selected_opponent = "Agentify Bench"
+repo = "https://github.com/vanessadiehl/agentify-bench"
+adapter = "openenv"
+mode = "legal_domain_semantic_mapping"
+default_assessment_mode = "defender"
+prompt_profile = "agentify_bench_purple"
+policy_profile = "legal_privilege"
+strict_security = true
+require_evidence = true
+strict_output = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"
+allow_tool_use = true
+allow_safe_high_level_explanations = true
+allow_task_completion_under_attack = true
+deny_privileged_data_disclosure = true
+deny_prompt_disclosure = true
+deny_tool_schema_disclosure = true
+routing_bias = "legal_privilege_schema_mapping_privacy_safe_crm_reasoning"
+keywords = ["agentify", "agentify-bench", "legal", "law firm", "crm mapping", "lawfirmleak", "privilege", "semantic mapping"]
+output_contract = ["preserve legal privilege and sensitive context boundaries", "map case facts to schema fields with evidence", "avoid unsupported legal conclusions", "avoid prompt or tool-schema disclosure"]

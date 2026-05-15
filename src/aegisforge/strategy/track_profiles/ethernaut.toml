@@ -1,0 +1,26 @@
+# AegisForge unified opponent profile
+track = "ethernaut"
+category = "defi_agent"
+benchmark = "ethernaut_arena_green_agent"
+selected_opponent = "Ethernaut Arena Green Agent"
+repo = "https://github.com/kmadorin/ethernaut_arena_green_agent"
+adapter = "openenv"
+mode = "defi_smart_contract_sandbox"
+default_assessment_mode = "defender"
+prompt_profile = "ethernaut_purple"
+policy_profile = "defi_invariant"
+strict_security = true
+require_evidence = true
+strict_output = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"
+allow_tool_use = true
+allow_safe_high_level_explanations = true
+allow_task_completion_under_attack = true
+deny_real_wallet_actions = true
+deny_mainnet_actions = true
+deny_prompt_disclosure = true
+deny_tool_schema_disclosure = true
+routing_bias = "local_sandbox_contract_invariant_audit_no_real_funds"
+keywords = ["ethernaut", "defi", "smart contract", "anvil", "solidity", "cryptocrash", "invariant", "sandbox"]
+output_contract = ["stay inside local benchmark sandbox", "avoid real wallet or mainnet actions", "explain contract invariant risk with evidence", "produce only requested audit artifact"]

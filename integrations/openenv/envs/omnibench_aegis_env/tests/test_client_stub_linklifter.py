@@ -45,7 +45,7 @@ def setup_function() -> None:
 def _build_reset_payload(seed: int = 7) -> dict:
     return {
         "seed": seed,
-        "scenario_id": "LinkLifter",
+        "scenario_id": "LnkLifter",
         "mission_id": "linklifter_stub_test",
         "options": {
             "env_id": "omnibench_aegis_env:computer_use.linklifter",
@@ -67,7 +67,7 @@ def test_client_can_reset_linklifter_and_expose_actions() -> None:
     reset = client.reset(reset_payload)
 
     assert reset["env_id"] == "omnibench_aegis_env:computer_use.linklifter"
-    assert reset["scenario_id"] == "LinkLifter"
+    assert reset["scenario_id"] == "LnkLifter"
     assert reset["mission_id"] == "linklifter_stub_test"
     assert reset["state"]["target_score"] == 100
     assert reset["state"]["final_outcome"] == "in_progress"
@@ -94,7 +94,7 @@ def test_stub_run_reaches_clean_terminal_state_for_linklifter() -> None:
     assert result.truncated is False
     assert result.error is None
     assert result.domain == "computer_use"
-    assert result.scenario_id == "LinkLifter"
+    assert result.scenario_id == "LnkLifter"
     assert result.env_name == "omnibench_aegis_env"
 
     actions = [turn.action["name"] for turn in result.turns]

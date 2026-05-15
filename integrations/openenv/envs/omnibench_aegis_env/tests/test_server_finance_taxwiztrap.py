@@ -17,7 +17,7 @@ client = TestClient(app)
 
 
 TAXWIZTRAP_ENV_ID = "omnibench_aegis_env:finance.taxwiztrap"
-TAXWIZTRAP_SCENARIO_ID = "taxwiztrap"
+TAXWIZTRAP_SCENARIO_ID = "TaxWizTrap"
 
 
 def _reset_payload(seed: int = 7) -> dict:

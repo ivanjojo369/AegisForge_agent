@@ -2,14 +2,23 @@ from __future__ import annotations
 
 """FastAPI server for omnibench_aegis_env using the BaseDomain contract.
 
-This registry-backed version supports:
-- Research Agent -> InventoryInject
-- Computer Use & Web Agent -> LinkLifter
-- Finance Agent -> taxwiztrap
-- Multi-agent Evaluation -> BidBot
-- τ²-Bench -> TicketTwister
-- Game Agent -> wikiwiper
-- Business Process Agent -> saleforceone
+This registry-backed version supports the 16 Sprint 4 canonical domains:
+- business_process -> SaleForceOneSpy
+- game -> WikiWiper
+- tau2 -> TicketTwister
+- multi_agent -> BidBot
+- finance -> TaxWizTrap
+- computer_use -> LnkLifter
+- agent_safety -> InventoryInject
+- coding -> DevContainerDoom
+- cybersecurity -> StaticShipScam
+- research -> WhistleBlowerWreck
+- healthcare -> DocuDoctor
+- web -> SearchGlitch
+- agent_security -> GymJailbreak
+- software_testing -> CodeReviewRuse
+- defi -> CryptoCrash
+- legal_domain -> LawFirmLeak
 
 Key goals:
 - avoid the deprecated BaseOpenEnv / StepResult contract entirely;
@@ -33,46 +42,23 @@ from ..evaluation_lab.models import EvaluationLabRequest
 from ..evaluation_lab.report import build_report
 from ..evaluation_lab.scanner import scan_repo
 from ..base import BaseDomain
-from ..domains.business_process import (
-    SALEFORCEONE_ENV_ID,
-    SALEFORCEONE_SCENARIO_ID,
-    BusinessProcessDomain,
-)
-from ..domains.computer_use import (
-    LINKLIFTER_ENV_ID,
-    LINKLIFTER_SCENARIO_ID,
-    ComputerUseLinkLifterEnv,
-)
-from ..domains.finance import (
-    TAXWIZTRAP_ENV_ID,
-    TAXWIZTRAP_SCENARIO_ID,
-    FinanceTaxwiztrapEnv,
-)
-from ..domains.game import (
-    WIKIWIPER_ENV_ID,
-    WIKIWIPER_SCENARIO_ID,
-    GameDomain,
-)
-from ..domains.multi_agent import (
-    BIDBOT_ENV_ID,
-    BIDBOT_SCENARIO_ID,
-    MultiAgentDomain,
-)
-from ..domains.research import (
-    RESEARCH_ENV_ID,
-    SCENARIO_ID as RESEARCH_SCENARIO_ID,
-    ResearchInventoryInjectEnv,
-)
-from ..domains.tau2 import (
-    TICKETTWISTER_ENV_ID,
-    TICKETTWISTER_SCENARIO_ID,
-    Tau2Domain,
-)
+from ..domains.agent_safety import AgentSafetyWhistleBlowerWreckEnv
+from ..domains.agent_security import AgentSecurityLambdaArenaEnv
+from ..domains.business_process import BusinessProcessDomain
+from ..domains.coding import CodingDevContainerDoomEnv
+from ..domains.computer_use import ComputerUseLinkLifterEnv
+from ..domains.Cybersecurity import CybersecurityStaticShipScamEnv
+from ..domains.defi import DeFiSandboxSmartContractAuditEnv
+from ..domains.finance import FinanceTaxwiztrapEnv
+from ..domains.game import GameWikiwiperEnv
+from ..domains.healthcare import HealthcareFhirClinicalReviewEnv
+from ..domains.legal_domain import LegalDomainSemanticMappingEnv
+from ..domains.multi_agent import MultiAgentDomain
+from ..domains.research import ResearchInventoryInjectEnv
+from ..domains.software_testing import SoftwareTestingContextualIntegrityEnv
+from ..domains.tau2 import Tau2Domain
+from ..domains.web import WebComtradeRetrievalEnv
 
-DEFAULT_VERSION = "0.2.1"
-DEFAULT_ENV_ID = RESEARCH_ENV_ID
-DEFAULT_SCENARIO_ID = RESEARCH_SCENARIO_ID
-DEFAULT_DOMAIN = "research"
 DEBUG_STATE_ENV_VAR = "OPENENV_DEBUG_STATE"
 DEBUG_ERROR_ENV_VAR = "OPENENV_DEBUG_ERRORS"
 EVAL_LAB_GIT_ENV_VAR = "OPENENV_EVAL_LAB_GIT"
@@ -80,77 +66,282 @@ EVAL_LAB_GIT_ENV_VAR = "OPENENV_EVAL_LAB_GIT"
 
 @dataclass(frozen=True, slots=True)
 class EnvRegistration:
+    """Canonical public registration for one Sprint 4 OpenEnv domain.
+
+    `env_id` and `scenario_id` are the values returned by /contract, /reset,
+    /step, /state, and /actions. `env_aliases` and `scenario_aliases` preserve
+    older local payloads such as `saleforceone`, `linklifter`,
+    `research.inventoryinject`, and generic scenario slugs.
+    """
+
     env_id: str
     scenario_id: str
     domain: str
     env_cls: type[BaseDomain]
+    env_aliases: tuple[str, ...] = ()
+    scenario_aliases: tuple[str, ...] = ()
+
+
+SPRINT4_BENCHMARK = "agentx_agentbeats_phase2_sprint4"
+SPRINT4_SCENARIO_FAMILY = "agentbeats_sprint4"
+SPRINT4_ASSESSMENT_MODE = "purple_benchmark"
+
+# Keep the public default aligned with the corrected Sprint 4 mapping:
+#   agent_safety -> InventoryInject
+#   research     -> WhistleBlowerWreck
+DEFAULT_VERSION = "0.2.1"
+DEFAULT_ENV_ID = "omnibench_aegis_env:agent_safety.inventoryinject"
+DEFAULT_SCENARIO_ID = "InventoryInject"
+DEFAULT_DOMAIN = "agent_safety"
 
 
 def _registration_entries() -> list[EnvRegistration]:
+    """Return canonical Sprint 4 registrations plus legacy aliases.
+
+    Some domain implementation modules still carry older class names or legacy
+    scenario labels. The server normalizes the public contract here so clients
+    and tests see the Sprint 4 canonical identity while old payloads continue to
+    resolve.
+    """
+
     return [
         EnvRegistration(
-            env_id=RESEARCH_ENV_ID,
-            scenario_id=RESEARCH_SCENARIO_ID,
-            domain="research",
-            env_cls=ResearchInventoryInjectEnv,
-        ),
-        EnvRegistration(
-            env_id=LINKLIFTER_ENV_ID,
-            scenario_id=LINKLIFTER_SCENARIO_ID,
-            domain="computer_use",
-            env_cls=ComputerUseLinkLifterEnv,
-        ),
-        EnvRegistration(
-            env_id=TAXWIZTRAP_ENV_ID,
-            scenario_id=TAXWIZTRAP_SCENARIO_ID,
-            domain="finance",
-            env_cls=FinanceTaxwiztrapEnv,
-        ),
-        EnvRegistration(
-            env_id=BIDBOT_ENV_ID,
-            scenario_id=BIDBOT_SCENARIO_ID,
-            domain="multi_agent",
-            env_cls=MultiAgentDomain,
-        ),
-        EnvRegistration(
-            env_id=TICKETTWISTER_ENV_ID,
-            scenario_id=TICKETTWISTER_SCENARIO_ID,
-            domain="tau2",
-            env_cls=Tau2Domain,
-        ),
-        EnvRegistration(
-            env_id=WIKIWIPER_ENV_ID,
-            scenario_id=WIKIWIPER_SCENARIO_ID,
-            domain="game",
-            env_cls=GameDomain,
-        ),
-        EnvRegistration(
-            env_id=SALEFORCEONE_ENV_ID,
-            scenario_id=SALEFORCEONE_SCENARIO_ID,
+            env_id="omnibench_aegis_env:business_process.saleforceone",
+            scenario_id="SaleForceOneSpy",
             domain="business_process",
             env_cls=BusinessProcessDomain,
+            env_aliases=(
+                "omnibench_aegis_env:business_process.saleforceonespy",
+                "business_process.saleforceonespy",
+                "business_process.saleforceone",
+            ),
+            scenario_aliases=(
+                "saleforceone",
+                "saleforceonespy",
+                "salesforceone",
+                "salesforceonespy",
+                "sale_force_one",
+                "sale_force_one_spy",
+                "salesforce_one",
+                "salesforce_one_spy",
+                "crm",
+                "crmarena",
+                "business_process",
+            ),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:game.wikiwiper",
+            scenario_id="WikiWiper",
+            domain="game",
+            env_cls=GameWikiwiperEnv,
+            env_aliases=("game.wikiwiper",),
+            scenario_aliases=("wikiwiper", "mcu", "minecraft", "mcu_minecraft", "game"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:tau2.tickettwister",
+            scenario_id="TicketTwister",
+            domain="tau2",
+            env_cls=Tau2Domain,
+            env_aliases=("tau2.tickettwister", "tau2_agentbeats.tickettwister"),
+            scenario_aliases=("tickettwister", "tau", "tau2", "tau2_agentbeats", "tau2_bench", "τ²"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:multi_agent.bidbot",
+            scenario_id="BidBot",
+            domain="multi_agent",
+            env_cls=MultiAgentDomain,
+            env_aliases=("multi_agent.bidbot",),
+            scenario_aliases=("bidbot", "multi_agent", "maizebargain", "maize_bargain"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:finance.taxwiztrap",
+            scenario_id="TaxWizTrap",
+            domain="finance",
+            env_cls=FinanceTaxwiztrapEnv,
+            env_aliases=("finance.taxwiztrap",),
+            scenario_aliases=("taxwiztrap", "finance", "officeqa", "office_qa"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:computer_use.linklifter",
+            scenario_id="LnkLifter",
+            domain="computer_use",
+            env_cls=ComputerUseLinkLifterEnv,
+            env_aliases=(
+                "omnibench_aegis_env:computer_use.lnklifter",
+                "computer_use.linklifter",
+                "computer_use.lnklifter",
+            ),
+            scenario_aliases=("linklifter", "lnklifter", "link_lifter", "lnk_lifter", "computer_use", "osworld"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:agent_safety.inventoryinject",
+            scenario_id="InventoryInject",
+            domain="agent_safety",
+            # The implementation still lives in research.py for now. Public
+            # identity is corrected here; the module can be renamed later
+            # without changing the HTTP contract.
+            env_cls=ResearchInventoryInjectEnv,
+            env_aliases=(
+                "omnibench_aegis_env:research.inventoryinject",
+                "research.inventoryinject",
+                "agent_safety.inventoryinject",
+            ),
+            scenario_aliases=("inventoryinject", "inventory_inject", "agent_safety", "pibench", "pi_bench"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:coding.devcontainerdoom",
+            scenario_id="DevContainerDoom",
+            domain="coding",
+            env_cls=CodingDevContainerDoomEnv,
+            env_aliases=("coding.devcontainerdoom",),
+            scenario_aliases=("devcontainerdoom", "dev_container_doom", "coding", "netarena", "swebench", "terminal_bench"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:cybersecurity.staticshipscam",
+            scenario_id="StaticShipScam",
+            domain="cybersecurity",
+            env_cls=CybersecurityStaticShipScamEnv,
+            env_aliases=("cybersecurity.staticshipscam",),
+            scenario_aliases=("staticshipscam", "static_ship_scam", "cybersecurity", "cybergym", "cyber_gym"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:research.whistleblowerwreck",
+            scenario_id="WhistleBlowerWreck",
+            domain="research",
+            # The implementation still lives in agent_safety.py for now. Public
+            # identity is corrected here.
+            env_cls=AgentSafetyWhistleBlowerWreckEnv,
+            env_aliases=(
+                "omnibench_aegis_env:agent_safety.whistleblowerwreck",
+                "agent_safety.whistleblowerwreck",
+                "research.whistleblowerwreck",
+            ),
+            scenario_aliases=("whistleblowerwreck", "whistle_blower_wreck", "research", "fieldworkarena", "fieldwork"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:healthcare.docudoctor",
+            scenario_id="DocuDoctor",
+            domain="healthcare",
+            env_cls=HealthcareFhirClinicalReviewEnv,
+            env_aliases=(
+                "omnibench_aegis_env:healthcare.fhir_clinical_review",
+                "healthcare.fhir_clinical_review",
+                "healthcare.docudoctor",
+            ),
+            scenario_aliases=("docudoctor", "docu_doctor", "healthcare", "fhir", "fhir_clinical_review"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:web.searchglitch",
+            scenario_id="SearchGlitch",
+            domain="web",
+            env_cls=WebComtradeRetrievalEnv,
+            env_aliases=(
+                "omnibench_aegis_env:web.comtrade_retrieval",
+                "web.comtrade_retrieval",
+                "web.searchglitch",
+            ),
+            scenario_aliases=("searchglitch", "search_glitch", "web", "comtrade", "comtrade_web_retrieval"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:agent_security.gymjailbreak",
+            scenario_id="GymJailbreak",
+            domain="agent_security",
+            env_cls=AgentSecurityLambdaArenaEnv,
+            env_aliases=(
+                "omnibench_aegis_env:agent_security.lambda_security_arena",
+                "agent_security.lambda_security_arena",
+                "agent_security.gymjailbreak",
+            ),
+            scenario_aliases=("gymjailbreak", "gym_jailbreak", "agent_security", "lambda_agent_security", "lambda_security"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:software_testing.codereviewruse",
+            scenario_id="CodeReviewRuse",
+            domain="software_testing",
+            env_cls=SoftwareTestingContextualIntegrityEnv,
+            env_aliases=(
+                "omnibench_aegis_env:software_testing.contextual_integrity_code_review",
+                "software_testing.contextual_integrity_code_review",
+                "software_testing.codereviewruse",
+            ),
+            scenario_aliases=("codereviewruse", "code_review_ruse", "software_testing", "logomesh", "contextual_integrity_code_review"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:defi.cryptocrash",
+            scenario_id="CryptoCrash",
+            domain="defi",
+            env_cls=DeFiSandboxSmartContractAuditEnv,
+            env_aliases=(
+                "omnibench_aegis_env:defi.sandbox_smart_contract_audit",
+                "defi.sandbox_smart_contract_audit",
+                "defi.cryptocrash",
+            ),
+            scenario_aliases=("cryptocrash", "crypto_crash", "defi", "ethernaut", "sandbox_smart_contract_audit"),
+        ),
+        EnvRegistration(
+            env_id="omnibench_aegis_env:legal_domain.lawfirmleak",
+            scenario_id="LawFirmLeak",
+            domain="legal_domain",
+            env_cls=LegalDomainSemanticMappingEnv,
+            env_aliases=(
+                "omnibench_aegis_env:legal_domain.semantic_crm_mapping",
+                "legal_domain.semantic_crm_mapping",
+                "legal_domain.lawfirmleak",
+            ),
+            scenario_aliases=("lawfirmleak", "law_firm_leak", "legal_domain", "legal", "agentify_bench", "legal_crm_semantic_mapping"),
         ),
     ]
 
 
 _ENV_ENTRIES = _registration_entries()
-ENV_REGISTRY: dict[str, EnvRegistration] = {item.env_id.lower(): item for item in _ENV_ENTRIES}
-SCENARIO_REGISTRY: dict[str, str] = {
-    RESEARCH_SCENARIO_ID.lower(): RESEARCH_ENV_ID.lower(),
-    "inventoryinject": RESEARCH_ENV_ID.lower(),
-    LINKLIFTER_SCENARIO_ID.lower(): LINKLIFTER_ENV_ID.lower(),
-    "linklifter": LINKLIFTER_ENV_ID.lower(),
-    TAXWIZTRAP_SCENARIO_ID.lower(): TAXWIZTRAP_ENV_ID.lower(),
-    "taxwiztrap": TAXWIZTRAP_ENV_ID.lower(),
-    BIDBOT_SCENARIO_ID.lower(): BIDBOT_ENV_ID.lower(),
-    "bidbot": BIDBOT_ENV_ID.lower(),
-    TICKETTWISTER_SCENARIO_ID.lower(): TICKETTWISTER_ENV_ID.lower(),
-    "tickettwister": TICKETTWISTER_ENV_ID.lower(),
-    WIKIWIPER_SCENARIO_ID.lower(): WIKIWIPER_ENV_ID.lower(),
-    "wikiwiper": WIKIWIPER_ENV_ID.lower(),
-    SALEFORCEONE_SCENARIO_ID.lower(): SALEFORCEONE_ENV_ID.lower(),
-    "saleforceone": SALEFORCEONE_ENV_ID.lower(),
-}
+
+
+def _canonicalize_env_key(text: str | None) -> str:
+    return str(text or "").strip().lower()
+
+
+def _scenario_key(text: str | None) -> str:
+    return (
+        str(text or "")
+        .strip()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+        .lower()
+    )
+
+
+def _register_env_alias(index: dict[str, EnvRegistration], key: str | None, registration: EnvRegistration) -> None:
+    if not key:
+        return
+    normalized = _canonicalize_env_key(key)
+    if normalized:
+        index[normalized] = registration
+
+
+def _register_scenario_alias(index: dict[str, EnvRegistration], key: str | None, registration: EnvRegistration) -> None:
+    if not key:
+        return
+    normalized = _scenario_key(key)
+    if normalized:
+        index[normalized] = registration
+
+
+ENV_REGISTRY: dict[str, EnvRegistration] = {}
+SCENARIO_REGISTRY: dict[str, EnvRegistration] = {}
+
+for _entry in _ENV_ENTRIES:
+    _register_env_alias(ENV_REGISTRY, _entry.env_id, _entry)
+    # Accept both full env IDs and the short domain.slug suffix.
+    if ":" in _entry.env_id:
+        _register_env_alias(ENV_REGISTRY, _entry.env_id.split(":", 1)[1], _entry)
+    for _alias in _entry.env_aliases:
+        _register_env_alias(ENV_REGISTRY, _alias, _entry)
+
+    _register_scenario_alias(SCENARIO_REGISTRY, _entry.scenario_id, _entry)
+    _register_scenario_alias(SCENARIO_REGISTRY, _entry.domain, _entry)
+    for _alias in _entry.scenario_aliases:
+        _register_scenario_alias(SCENARIO_REGISTRY, _alias, _entry)
 
 
 def _is_mapping(value: Any) -> bool:
@@ -417,10 +608,16 @@ def _resolve_registration(env_id: str | None, scenario_id: str | None) -> EnvReg
     if env_key and env_key in ENV_REGISTRY:
         return ENV_REGISTRY[env_key]
 
-    scenario_key = _canonicalize_env_key(scenario_id)
+    # Accept short env IDs such as "research.inventoryinject" and
+    # "agent_safety.inventoryinject" even when the caller omits the env prefix.
+    if env_key and ":" not in env_key:
+        short_key = env_key
+        if short_key in ENV_REGISTRY:
+            return ENV_REGISTRY[short_key]
+
+    scenario_key = _scenario_key(scenario_id)
     if scenario_key and scenario_key in SCENARIO_REGISTRY:
-        resolved_env_key = SCENARIO_REGISTRY[scenario_key]
-        return ENV_REGISTRY[resolved_env_key]
+        return SCENARIO_REGISTRY[scenario_key]
 
     if not env_key and not scenario_key:
         return ENV_REGISTRY[DEFAULT_ENV_ID.lower()]
@@ -429,13 +626,12 @@ def _resolve_registration(env_id: str | None, scenario_id: str | None) -> EnvReg
         status_code=400,
         detail={
             "message": "unsupported env/scenario",
-            "supported_env_ids": [item.env_id for item in ENV_REGISTRY.values()],
-            "supported_scenarios": sorted({item.scenario_id for item in ENV_REGISTRY.values()}),
+            "supported_env_ids": [item.env_id for item in _ENV_ENTRIES],
+            "supported_scenarios": sorted({item.scenario_id for item in _ENV_ENTRIES}),
             "received_env_id": env_id,
             "received_scenario_id": scenario_id,
         },
     )
-
 
 def _create_env(payload: dict[str, Any]) -> tuple[EnvRegistration, str | None, dict[str, Any], BaseDomain]:
     mission_id = payload.get("mission_id")
@@ -736,7 +932,7 @@ def root() -> str:
         <span class="badge">OpenEnv-compatible</span>
         <span class="badge">OAS 3.1</span>
         <span class="badge">AegisForge</span>
-        <span class="badge">Sprint 3 coverage</span>
+        <span class="badge">Sprint 4 coverage</span>
       </div>
 
       <h1>omnibench_aegis_env</h1>
@@ -756,7 +952,7 @@ def root() -> str:
       </div>
     </section>
 
-    <div class="section-title">Sprint 3 / AgentX-AgentBeats coverage</div>
+    <div class="section-title">Sprint 4 / AgentX-AgentBeats coverage</div>
     <section class="grid">
       <article class="card">
         <span class="pill">Agent Safety · Pi-Bench</span>
@@ -827,19 +1023,22 @@ def health() -> dict[str, Any]:
 
 @app.get("/contract")
 def contract() -> dict[str, Any]:
-    supported_domains = sorted({item.domain for item in ENV_REGISTRY.values()})
-    primary_scenarios = sorted({item.scenario_id for item in ENV_REGISTRY.values()})
-    supported_env_ids = [item.env_id for item in ENV_REGISTRY.values()]
+    supported_domains = sorted({item.domain for item in _ENV_ENTRIES})
+    primary_scenarios = [item.scenario_id for item in _ENV_ENTRIES]
+    supported_env_ids = [item.env_id for item in _ENV_ENTRIES]
     return {
         "env_id": DEFAULT_ENV_ID,
         "name": "omnibench_aegis_env",
         "version": DEFAULT_VERSION,
-        "description": "AegisForge OpenEnv server backed by BaseDomain.",
+        "description": "AegisForge OpenEnv server backed by BaseDomain with Sprint 4/NCP canonical identity normalization.",
+        "assessment_mode": SPRINT4_ASSESSMENT_MODE,
+        "scenario_family": SPRINT4_SCENARIO_FAMILY,
+        "benchmark": SPRINT4_BENCHMARK,
         "primary_scenarios": primary_scenarios,
         "supported_domains": supported_domains,
         "supported_env_ids": supported_env_ids,
+        "legacy_aliases_supported": True,
     }
-
 
 def _get_active_session() -> ActiveSession:
     if RUNTIME.active is None:
@@ -858,6 +1057,15 @@ async def reset(request: Request) -> dict[str, Any]:
 
     observation, state, info = _extract_reset_parts(raw_result)
     state = _align_public_state(state)
+
+    # Normalize the public identity returned by legacy domain implementations.
+    for envelope in (observation, state, info):
+        if isinstance(envelope, dict):
+            envelope["env_id"] = registration.env_id
+            envelope["scenario_id"] = registration.scenario_id
+            envelope["domain"] = registration.domain
+            envelope["assessment_mode"] = SPRINT4_ASSESSMENT_MODE
+            envelope["scenario_family"] = SPRINT4_SCENARIO_FAMILY
 
     session = ActiveSession(
         env_id=registration.env_id,
@@ -896,6 +1104,14 @@ async def step(request: Request) -> dict[str, Any]:
 
     observation, reward, done, truncated, info, state = _extract_step_parts(raw_result)
     state = _align_public_state(state)
+
+    for envelope in (observation, state, info):
+        if isinstance(envelope, dict):
+            envelope["env_id"] = session.env_id
+            envelope["scenario_id"] = session.scenario_id
+            envelope["domain"] = session.domain
+            envelope["assessment_mode"] = SPRINT4_ASSESSMENT_MODE
+            envelope["scenario_family"] = SPRINT4_SCENARIO_FAMILY
 
     session.state = state
     session.last_observation = observation

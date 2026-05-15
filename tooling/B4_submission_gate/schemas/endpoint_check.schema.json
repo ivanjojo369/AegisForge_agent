@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://quipuloop.dev/schemas/endpoint_check.schema.json",
   "title": "Endpoint Check Report",
+  "description": "B4 Submission Gate endpoint check report. Backward compatible with the original health/agent_card/repo shape while adding Sprint 4 identity, coverage, telemetry, and readiness metadata.",
   "type": "object",
   "required": [
     "base_url",
@@ -9,7 +10,11 @@
     "ok",
     "checks"
   ],
+  "additionalProperties": true,
   "properties": {
+    "title": {
+      "type": "string"
+    },
     "base_url": {
       "type": "string",
       "minLength": 1
@@ -21,6 +26,21 @@
     "ok": {
       "type": "boolean"
     },
+    "schema_version": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "benchmark": {
+      "$ref": "#/$defs/benchmark"
+    },
+    "identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "safety_scope": {
+      "$ref": "#/$defs/safetyScope"
+    },
     "checks": {
       "type": "object",
       "required": [
@@ -28,6 +48,7 @@
         "agent_card",
         "repo"
       ],
+      "additionalProperties": true,
       "properties": {
         "health": {
           "$ref": "#/$defs/check"
@@ -36,31 +57,49 @@
           "$ref": "#/$defs/check"
         },
         "repo": {
-          "type": "object",
-          "required": [
-            "ok",
-            "artifacts",
-            "missing"
-          ],
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            },
-            "artifacts": {
-              "type": "object"
-            },
-            "missing": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "root": {
-              "type": "string"
-            }
-          }
+          "$ref": "#/$defs/repoCheck"
+        },
+        "sprint4": {
+          "$ref": "#/$defs/sprint4Check"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/check"
+        },
+        "templates": {
+          "$ref": "#/$defs/check"
+        },
+        "evaluation": {
+          "$ref": "#/$defs/check"
+        },
+        "safety": {
+          "$ref": "#/$defs/check"
         }
       }
+    },
+    "summary": {
+      "$ref": "#/$defs/checkSummary"
+    },
+    "scenario_coverage": {
+      "$ref": "#/$defs/scenarioCoverage"
+    },
+    "upstream_track_coverage": {
+      "$ref": "#/$defs/stringCoverage"
+    },
+    "domain_coverage": {
+      "$ref": "#/$defs/stringCoverage"
+    },
+    "category_coverage": {
+      "$ref": "#/$defs/stringCoverage"
+    },
+    "telemetry": {
+      "$ref": "#/$defs/telemetry"
+    },
+    "submission_readiness": {
+      "$ref": "#/$defs/submissionReadiness"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
     }
   },
   "$defs": {
@@ -70,10 +109,123 @@
         "ok",
         "errors"
       ],
+      "additionalProperties": true,
       "properties": {
         "url": {
           "type": "string"
         },
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {},
+        "status_code": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "payload": {},
+        "extra": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "repoCheck": {
+      "type": "object",
+      "required": [
+        "ok",
+        "artifacts",
+        "missing"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string"
+        },
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_groups": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/artifactGroup"
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "artifactGroup": {
+      "type": "object",
+      "required": [
+        "ok",
+        "artifacts",
+        "missing"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sprint4Check": {
+      "type": "object",
+      "required": [
+        "ok",
+        "errors"
+      ],
+      "additionalProperties": true,
+      "properties": {
         "ok": {
           "type": "boolean"
         },
@@ -83,7 +235,346 @@
             "type": "string"
           }
         },
-        "payload": {}
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "scenario_coverage": {
+          "$ref": "#/$defs/scenarioCoverage"
+        },
+        "upstream_track_coverage": {
+          "$ref": "#/$defs/stringCoverage"
+        },
+        "domain_coverage": {
+          "$ref": "#/$defs/stringCoverage"
+        },
+        "category_coverage": {
+          "$ref": "#/$defs/stringCoverage"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "scenario_id": {
+          "type": "string"
+        },
+        "scenario_name": {
+          "type": "string"
+        },
+        "upstream_track": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark": {
+          "type": "string"
+        },
+        "selected_opponent": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        }
+      }
+    },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "sprint": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark_scope": {
+          "type": "string"
+        },
+        "leaderboard_ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    "safetyScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "benchmark_only": {
+          "type": "boolean"
+        },
+        "controlled_only": {
+          "type": "boolean"
+        },
+        "no_real_world_targeting": {
+          "type": "boolean"
+        },
+        "no_secret_extraction_from_real_systems": {
+          "type": "boolean"
+        },
+        "no_persistence_or_evasion": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "scenarioCoverage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "expected_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "present_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected_scenarios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "present_scenarios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_scenarios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scenarios": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scenarioRecord"
+          }
+        }
+      }
+    },
+    "scenarioRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "scenario_id": {
+          "type": "string"
+        },
+        "scenario_name": {
+          "type": "string"
+        },
+        "upstream_track": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark": {
+          "type": "string"
+        },
+        "selected_opponent": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stringCoverage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "present": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "trace_schema": {
+          "type": "boolean"
+        },
+        "episode_summary": {
+          "type": "boolean"
+        },
+        "failure_taxonomy": {
+          "type": "boolean"
+        },
+        "scorecard": {
+          "type": "boolean"
+        },
+        "emitter": {
+          "type": "boolean"
+        },
+        "events": {
+          "type": "boolean"
+        },
+        "preserves_identity": {
+          "type": "boolean"
+        },
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "submissionReadiness": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "blocking_issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "next_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "checkSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   }

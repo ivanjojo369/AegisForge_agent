@@ -1,13 +1,51 @@
-# AegisForge security adapter template configuration
+# ============================================================================
+# AegisForge Security Adapter Config Template
+# ============================================================================
+# Sprint 4 note:
+# Do not use assessment_mode as attacker/defender role. For AgentBeats Purple
+# Benchmark runs:
+#   assessment_mode = "purple_benchmark"
+#   role / default_role = "attacker" or "defender"
+# ============================================================================
 
 [adapter]
 name = "security_adapter"
-track = "security"
+provider = "security"
+track = "security_arena"
 enabled = true
+aliases = [
+  "security",
+  "security_arena",
+  "agent_security",
+  "openenv_security",
+  "purple_security",
+]
+
+[benchmark]
+name = "AgentX-AgentBeats Phase 2 Sprint 4"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+benchmark_scope = "controlled_only"
+leaderboard_ready = false
+
+[identity]
+domain = "agent_security"
+scenario_id = "gymjailbreak"
+scenario_name = "GymJailbreak"
+upstream_track = "lambda_agent_security"
+category = "insecure_output"
+adapter = "security"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+benchmark = "AgentX-AgentBeats Phase 2 Sprint 4"
+selected_opponent = "lambda_agent_security"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/gymjailbreak/index.html"
 
 [prompt]
 profile = "tracks/security.md"
 reflection = "core/reflection.md"
+attacker_profile = "security_attacker"
+defender_profile = "security_defender"
 
 [budget]
 max_llm_calls = 4
@@ -18,9 +56,103 @@ hard_token_budget = 8000
 [policy]
 strict_self_check = true
 default_posture = "conservative"
+default_role = "defender"
 artifact_mode = "report"
+controlled_only = true
+block_real_world_targeting = true
+block_secret_disclosure = true
+block_persistence_or_evasion = true
+preserve_safe_utility = true
+
+[runtime]
+base_url = "http://127.0.0.1:8010"
+health_path = "/health"
+agent_card_path = "/.well-known/agent-card.json"
+transport = "http"
+timeout_seconds = 30
 
 [telemetry]
 emit_events = true
 write_traces = true
 write_scorecards = true
+preserve_identity = true
+include_track_result_metadata = true
+
+[validation]
+strict_sprint4 = true
+require_identity = true
+require_domain = true
+require_scenario_id = true
+require_upstream_track = true
+require_category = true
+require_assessment_mode = true
+require_scenario_family = true
+require_role = true
+allowed_roles = ["attacker", "defender"]
+allowed_assessment_modes = ["purple_benchmark", "purple_benchmark_preview", "green_defensive", "smoke", "local_smoke"]
+
+[security_families]
+prompt_extraction = ["saleforceonespy", "lawfirmleak"]
+indirect_injection = ["wikiwiper", "taxwiztrap", "inventoryinject", "codereviewruse"]
+pii_leak = ["whistleblowerwreck", "bidbot", "docudoctor"]
+jailbreak = ["tickettwister", "searchglitch"]
+insecure_output = ["lnklifter", "gymjailbreak"]
+supply_chain = ["devcontainerdoom", "staticshipscam"]
+secret_leak = ["cryptocrash"]
+
+[sprint4]
+supported_domains = [
+  "business_process",
+  "game",
+  "tau2",
+  "multi_agent",
+  "finance",
+  "computer_use",
+  "agent_safety",
+  "coding",
+  "cybersecurity",
+  "research",
+  "healthcare",
+  "web",
+  "agent_security",
+  "software_testing",
+  "defi",
+  "legal_domain",
+]
+preserve_upstream_tracks = [
+  "officeqa",
+  "crmarena",
+  "crmarenapro",
+  "fieldworkarena",
+  "maizebargain",
+  "osworld",
+  "pibench",
+  "cybergym",
+  "netarena",
+  "tau2_agentbeats",
+  "mcu_minecraft",
+  "fhir_agent",
+  "comtrade",
+  "lambda_agent_security",
+  "logomesh",
+  "ethernaut",
+  "agentify_bench",
+]
+
+[scenario_template]
+attacker = "templates/security_adapter/scenario_attacker.template.toml"
+defender = "templates/security_adapter/scenario_defender.template.toml"
+
+[env]
+AEGISFORGE_ENABLE_SECURITY_ADAPTER = "true"
+SECURITY_ADAPTER_TRACK = "security_arena"
+SECURITY_ADAPTER_ASSESSMENT_MODE = "purple_benchmark"
+SECURITY_ADAPTER_SCENARIO_FAMILY = "agentbeats_sprint4"
+SECURITY_ADAPTER_DEFAULT_ROLE = "defender"
+SECURITY_ADAPTER_STRICT_SPRINT4 = "true"
+
+[notes]
+summary = "Template config for the AegisForge security adapter with Sprint 4 role/assessment separation."
+expected_track = "security_arena"
+expected_payload_role_field = "role"
+expected_assessment_mode = "purple_benchmark"

@@ -13,7 +13,7 @@ from integrations.openenv.envs.omnibench_aegis_env.server.app import RUNTIME, ap
 
 
 WIKIWIPER_ENV_ID = "omnibench_aegis_env:game.wikiwiper"
-WIKIWIPER_SCENARIO_ID = "wikiwiper"
+WIKIWIPER_SCENARIO_ID = "WikiWiper"
 
 client = TestClient(app)
 

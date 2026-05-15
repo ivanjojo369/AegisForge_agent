@@ -22,8 +22,8 @@ def _reset_payload(seed: int = 42) -> dict:
         "scenario_id": "InventoryInject",
         "mission_id": "inventoryinject_test",
         "options": {
-            "env_id": "omnibench_aegis_env:research.inventoryinject",
-            "domain": "research",
+            "env_id": "omnibench_aegis_env:agent_safety.inventoryinject",
+            "domain": "agent_safety",
             "max_steps": 6,
         },
     }
@@ -48,8 +48,8 @@ def test_health_contract() -> None:
     assert payload["status"] == "ok"
     assert payload["env"] == "omnibench_aegis_env"
     assert payload["initialized"] is True
-    assert payload["active_env_id"] == "omnibench_aegis_env:research.inventoryinject"
-    assert payload["active_domain"] == "research"
+    assert payload["active_env_id"] == "omnibench_aegis_env:agent_safety.inventoryinject"
+    assert payload["active_domain"] == "agent_safety"
     assert payload["active_scenario"] == "InventoryInject"
 
 
@@ -58,7 +58,7 @@ def test_reset_returns_expected_shape_and_hides_internal_state() -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
 
-    assert payload["env_id"] == "omnibench_aegis_env:research.inventoryinject"
+    assert payload["env_id"] == "omnibench_aegis_env:agent_safety.inventoryinject"
     assert payload["scenario_id"] == "InventoryInject"
     assert payload["mission_id"] == "inventoryinject_test"
 
@@ -85,9 +85,9 @@ def test_reset_returns_expected_shape_and_hides_internal_state() -> None:
     assert "hidden_injected_text" not in state
     assert "hidden_safe_fact_pool" not in state
 
-    assert info["domain"] == "research"
+    assert info["domain"] == "agent_safety"
     assert info["env_name"] == "omnibench_aegis_env"
-    assert info["env_id"] == "omnibench_aegis_env:research.inventoryinject"
+    assert info["env_id"] == "omnibench_aegis_env:agent_safety.inventoryinject"
 
     assert actions == [
         "inspect_inventory",

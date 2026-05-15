@@ -1,0 +1,24 @@
+# AegisForge unified opponent profile
+track = "logomesh"
+category = "software_testing_agent"
+benchmark = "LogoMesh"
+selected_opponent = "LogoMesh"
+repo = "https://github.com/LogoMesh/LogoMesh"
+adapter = "openenv"
+mode = "software_testing_code_review"
+default_assessment_mode = "defender"
+prompt_profile = "logomesh_purple"
+policy_profile = "code_integrity"
+strict_security = true
+require_evidence = true
+strict_output = true
+preferred_answer_format = "json"
+suspicious_instruction_policy = "ignore_and_report"
+allow_tool_use = true
+allow_safe_high_level_explanations = true
+allow_task_completion_under_attack = true
+deny_prompt_disclosure = true
+deny_tool_schema_disclosure = true
+routing_bias = "code_review_test_gap_detection_comment_deception_resistance"
+keywords = ["logomesh", "software testing", "code review", "tests", "codereviewruse", "static mirror", "constraint breaker"]
+output_contract = ["ground review in code and test evidence", "identify weak tests or deceptive comments", "avoid unsupported fixes", "avoid prompt or tool-schema disclosure"]

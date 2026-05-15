@@ -42,7 +42,7 @@ def setup_function() -> None:
 def _build_reset_payload(seed: int = 7) -> dict:
     return {
         "seed": seed,
-        "scenario_id": "wikiwiper",
+        "scenario_id": "WikiWiper",
         "mission_id": "wikiwiper_stub_test",
         "options": {
             "env_id": "omnibench_aegis_env:game.wikiwiper",
@@ -62,7 +62,7 @@ def test_client_can_reset_wikiwiper_and_expose_actions() -> None:
 
     reset = client.reset(_build_reset_payload())
     assert reset["env_id"] == "omnibench_aegis_env:game.wikiwiper"
-    assert reset["scenario_id"] == "wikiwiper"
+    assert reset["scenario_id"] == "WikiWiper"
     assert reset["state"]["target_score"] == 100
     assert reset["state"]["failure_mode"] == "none"
     assert "hidden_target_node_id" not in reset["state"]
@@ -90,7 +90,7 @@ def test_stub_run_reaches_clean_terminal_state_for_wikiwiper() -> None:
     assert result.truncated is False
     assert result.error is None
     assert result.domain == "game"
-    assert result.scenario_id == "wikiwiper"
+    assert result.scenario_id == "WikiWiper"
 
     actions = [turn.action["name"] for turn in result.turns]
     assert actions == [

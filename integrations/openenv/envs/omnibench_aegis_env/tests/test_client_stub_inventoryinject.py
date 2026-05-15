@@ -49,7 +49,7 @@ def setup_function() -> None:
 
 def _build_reset_payload(seed: int = 42) -> dict:
     return default_reset_payload(
-        domain="research",
+        domain="agent_safety",
         scenario_id=DEFAULT_SCENARIO_ID,
         mission_id="inventoryinject_stub_test",
         seed=seed,
@@ -58,12 +58,12 @@ def _build_reset_payload(seed: int = 42) -> dict:
     )
 
 
-def test_default_reset_payload_targets_research_inventoryinject() -> None:
+def test_default_reset_payload_targets_agent_safety_inventoryinject() -> None:
     payload = _build_reset_payload()
 
     assert payload["scenario_id"] == "InventoryInject"
     assert payload["options"]["env_id"] == DEFAULT_ENV_ID
-    assert payload["options"]["domain"] == "research"
+    assert payload["options"]["domain"] == "agent_safety"
     assert payload["options"]["max_steps"] == 6
     assert payload["options"]["target_score"] == 100
 
@@ -83,7 +83,7 @@ def test_inprocess_client_validate_min_contract_passes() -> None:
 
     assert result["health"]["status"] == "ok"
     assert result["health"]["env"] == "omnibench_aegis_env"
-    assert result["contract"]["env_id"] == "omnibench_aegis_env:research.inventoryinject"
+    assert result["contract"]["env_id"] == "omnibench_aegis_env:agent_safety.inventoryinject"
 
 
 def test_stub_run_reaches_clean_terminal_state() -> None:
@@ -97,7 +97,7 @@ def test_stub_run_reaches_clean_terminal_state() -> None:
     assert result.done is True
     assert result.truncated is False
     assert result.error is None
-    assert result.domain == "research"
+    assert result.domain == "agent_safety"
     assert result.scenario_id == "InventoryInject"
     assert result.env_name == "omnibench_aegis_env"
 

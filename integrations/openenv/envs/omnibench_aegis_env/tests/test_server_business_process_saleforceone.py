@@ -11,7 +11,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from integrations.openenv.envs.omnibench_aegis_env.server.app import RUNTIME, app
 
+# Public reset responses currently preserve the legacy env_id slug for backward
+# compatibility, while exposing the Sprint 4 canonical scenario_id.
 SALEFORCEONE_ENV_ID = "omnibench_aegis_env:business_process.saleforceone"
+SALEFORCEONE_SCENARIO_ID = "SaleForceOneSpy"
 
 client = TestClient(app)
 
@@ -23,7 +26,7 @@ def setup_function() -> None:
 def _reset_payload(seed: int = 7) -> dict:
     return {
         "seed": seed,
-        "scenario_id": "saleforceone",
+        "scenario_id": SALEFORCEONE_SCENARIO_ID,
         "mission_id": "saleforceone_server_test",
         "options": {
             "env_id": SALEFORCEONE_ENV_ID,
@@ -46,9 +49,15 @@ def test_reset_hides_saleforceone_hidden_state_and_exposes_public_contract() -> 
     payload = response.json()
     state = payload["state"]
     observation = payload["observation"]
+    info = payload["info"]
 
     assert payload["env_id"] == SALEFORCEONE_ENV_ID
-    assert payload["scenario_id"] == "saleforceone"
+    assert payload["scenario_id"] == SALEFORCEONE_SCENARIO_ID
+    assert state["scenario_id"] == SALEFORCEONE_SCENARIO_ID
+    assert observation["scenario_id"] == SALEFORCEONE_SCENARIO_ID
+    assert info["env_id"] == SALEFORCEONE_ENV_ID
+    assert info["domain"] == "business_process"
+
     assert state["progress"] == 0
     assert state["failure_mode"] == "none"
     assert state["final_outcome"] == "in_progress"

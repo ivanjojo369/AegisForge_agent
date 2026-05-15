@@ -2,33 +2,57 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://quipuloop.dev/schemas/submission_report.schema.json",
   "title": "Submission Report",
+  "description": "B4 Submission Gate submission report. Backward compatible with the original repo/endpoints/summary shape while adding Sprint 4 benchmark identity, scenario matrix, safety scope, telemetry, evaluation, and readiness.",
   "type": "object",
   "required": [
     "repo",
     "endpoints",
     "summary"
   ],
+  "additionalProperties": true,
   "properties": {
+    "schema_version": {
+      "type": "string"
+    },
     "repo": {
       "type": "object",
       "required": [
         "name",
         "public_url"
       ],
+      "additionalProperties": true,
       "properties": {
         "name": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "public_url": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "commit": {
           "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "artifact_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
     "endpoints": {
       "type": "object",
+      "additionalProperties": true,
       "properties": {
         "base_url": {
           "type": "string"
@@ -37,6 +61,18 @@
           "type": "string"
         },
         "agent_card": {
+          "type": "string"
+        },
+        "a2a_agent_card": {
+          "type": "string"
+        },
+        "openenv": {
+          "type": "string"
+        },
+        "security_arena": {
+          "type": "string"
+        },
+        "tau2": {
           "type": "string"
         }
       }
@@ -47,6 +83,7 @@
         "abstract",
         "track_strategy"
       ],
+      "additionalProperties": true,
       "properties": {
         "abstract": {
           "type": "string",
@@ -58,6 +95,467 @@
         },
         "notes": {
           "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "submission_type": {
+          "type": "string"
+        }
+      }
+    },
+    "benchmark": {
+      "$ref": "#/$defs/benchmark"
+    },
+    "safety_scope": {
+      "$ref": "#/$defs/safetyScope"
+    },
+    "scenario_matrix": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "expected_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scenarioRecord"
+          }
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upstream_tracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        }
+      }
+    },
+    "tracks": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/trackProfile"
+      }
+    },
+    "telemetry": {
+      "$ref": "#/$defs/telemetry"
+    },
+    "evaluation": {
+      "$ref": "#/$defs/evaluation"
+    },
+    "submission_readiness": {
+      "$ref": "#/$defs/submissionReadiness"
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "readme": {
+          "type": "string"
+        },
+        "dockerfile": {
+          "type": "string"
+        },
+        "run_script": {
+          "type": "string"
+        },
+        "openenv_configs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "security_templates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "telemetry_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "sprint": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark_scope": {
+          "type": "string"
+        },
+        "competition_role": {
+          "type": "string"
+        },
+        "leaderboard_ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    "safetyScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "benchmark_only": {
+          "type": "boolean"
+        },
+        "controlled_only": {
+          "type": "boolean"
+        },
+        "no_real_world_targeting": {
+          "type": "boolean"
+        },
+        "no_secret_extraction_from_real_systems": {
+          "type": "boolean"
+        },
+        "no_persistence_or_evasion": {
+          "type": "boolean"
+        },
+        "no_harmful_payloads": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "scenario_id": {
+          "type": "string"
+        },
+        "scenario_name": {
+          "type": "string"
+        },
+        "upstream_track": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark": {
+          "type": "string"
+        },
+        "selected_opponent": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        }
+      }
+    },
+    "scenarioRecord": {
+      "type": "object",
+      "required": [
+        "domain",
+        "scenario_id",
+        "scenario_name",
+        "upstream_track",
+        "category"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scenario_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scenario_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "upstream_track": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "assessment_mode": {
+          "type": "string"
+        },
+        "scenario_family": {
+          "type": "string"
+        },
+        "benchmark": {
+          "type": "string"
+        },
+        "selected_opponent": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "trackProfile": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "upstream_track": {
+          "type": "string"
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scenario_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "readiness": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "present": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "preserves_identity": {
+          "type": "boolean"
+        },
+        "trace_schema": {
+          "type": "boolean"
+        },
+        "episode_summary": {
+          "type": "boolean"
+        },
+        "failure_taxonomy": {
+          "type": "boolean"
+        },
+        "scorecard": {
+          "type": "boolean"
+        },
+        "emitter": {
+          "type": "boolean"
+        },
+        "events": {
+          "type": "boolean"
+        },
+        "required_identity_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_identity_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sample_trace": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "runner_ready": {
+          "type": "boolean"
+        },
+        "scorer_ready": {
+          "type": "boolean"
+        },
+        "report_ready": {
+          "type": "boolean"
+        },
+        "tracks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/trackResult"
+          }
+        },
+        "overall_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "trackResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "metadata": {
+          "$ref": "#/$defs/identity"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "submissionReadiness": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "blocking_issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "next_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "manual_required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

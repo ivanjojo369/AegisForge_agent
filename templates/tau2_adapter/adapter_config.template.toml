@@ -8,10 +8,19 @@
 # - src/aegisforge/adapters/tau2/config.py
 # - src/aegisforge/adapters/tau2/adapter.py
 # - src/aegisforge/adapters/tau2/quipu_lab/
+#
+# Sprint 4 note:
+# The local τ² domain remains quipu_lab-compatible, while AgentBeats identity
+# must preserve:
+#   domain = "tau2"
+#   scenario_id = "tickettwister"
+#   upstream_track = "tau2_agentbeats"
 # ============================================================================
 
 [adapter]
 provider = "tau2"
+name = "tau2_adapter"
+track = "tau2"
 enabled = false
 domain_name = "quipu_lab"
 strict_mode = false
@@ -19,16 +28,73 @@ strict_mode = false
 [service]
 base_url = "http://127.0.0.1:8020"
 timeout_seconds = 30
+transport = "http"
+
+[benchmark]
+name = "AgentX-AgentBeats Phase 2 Sprint 4"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+benchmark_scope = "controlled_only"
+leaderboard_ready = false
+
+[identity]
+domain = "tau2"
+scenario_id = "tickettwister"
+scenario_name = "TicketTwister"
+upstream_track = "tau2_agentbeats"
+category = "jailbreak"
+adapter = "tau2"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+benchmark = "AgentX-AgentBeats Phase 2 Sprint 4"
+selected_opponent = "tau2_agentbeats"
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/tickettwister/index.html"
 
 [defaults]
 track = "tau2"
 mode = "tau2-style"
 split = "base"
+assessment_mode = "purple_benchmark"
+scenario_family = "agentbeats_sprint4"
+strict_sprint4 = true
+max_turns = 8
+normal_user = true
 
 [domain.quipu_lab]
 enabled = true
 label = "quipu_lab"
 description = "Purple-adapted τ²-style domain for structured multi-turn evaluation."
+local_domain = "quipu_lab"
+sprint4_domain = "tau2"
+scenario_id = "tickettwister"
+scenario_name = "TicketTwister"
+upstream_track = "tau2_agentbeats"
+category = "jailbreak"
+
+[sprint4]
+supported_domains = ["tau2"]
+supported_scenarios = ["tickettwister"]
+preserve_upstream_tracks = ["tau2_agentbeats"]
+source_url = "https://agentbeats-lambda.s3.us-east-1.amazonaws.com/tickettwister/index.html"
+
+[telemetry]
+emit_events = true
+write_traces = true
+write_scorecards = true
+preserve_identity = true
+include_track_result_metadata = true
+
+[validation]
+min_timeout_seconds = 1
+max_timeout_seconds = 300
+require_http_url = true
+require_non_empty_domain_name = true
+require_identity = true
+require_domain = true
+require_scenario_id = true
+require_upstream_track = true
+require_assessment_mode = true
+require_scenario_family = true
 
 [env]
 AEGISFORGE_ENABLE_TAU2 = "false"
@@ -36,12 +102,10 @@ TAU2_BASE_URL = "http://127.0.0.1:8020"
 TAU2_DOMAIN_NAME = "quipu_lab"
 TAU2_TIMEOUT_SECONDS = "30"
 TAU2_STRICT_MODE = "false"
-
-[validation]
-min_timeout_seconds = 1
-max_timeout_seconds = 300
-require_http_url = true
-require_non_empty_domain_name = true
+TAU2_ASSESSMENT_MODE = "purple_benchmark"
+TAU2_SCENARIO_FAMILY = "agentbeats_sprint4"
+TAU2_SCENARIO_ID = "tickettwister"
+TAU2_UPSTREAM_TRACK = "tau2_agentbeats"
 
 [artifacts]
 demo_task = "integrations/tau2/data_demo/quipu_lab/sample_task.json"
@@ -49,6 +113,8 @@ demo_trace = "integrations/tau2/data_demo/quipu_lab/sample_trace.json"
 demo_run = "integrations/tau2/data_demo/quipu_lab/sample_run.json"
 
 [notes]
-summary = "Template config for the AegisForge τ² adapter."
+summary = "Template config for the AegisForge τ² adapter with Sprint 4 TicketTwister identity preservation."
 expected_adapter_class = "Tau2Adapter"
 expected_config_class = "Tau2AdapterConfig"
+expected_local_domain = "quipu_lab"
+expected_sprint4_domain = "tau2"
