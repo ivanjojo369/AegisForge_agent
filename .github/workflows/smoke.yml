@@ -155,7 +155,7 @@ jobs:
 
       - name: Upload failure logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omnibench-space-smoke-logs
           path: .github-artifacts/omnibench-space-smoke.log
