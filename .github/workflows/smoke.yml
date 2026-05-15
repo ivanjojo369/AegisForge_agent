@@ -134,7 +134,7 @@ jobs:
           set -euo pipefail
           curl -fsS "$ROOT_URL" -o /tmp/root.html
           grep -q "omnibench_aegis_env" /tmp/root.html
-          grep -q "Sprint 3 coverage" /tmp/root.html
+          grep -q "Sprint 4 coverage" /tmp/root.html
           echo "Landing page looks valid."
 
       - name: Probe /docs
@@ -166,3 +166,4 @@ jobs:
         shell: bash
         run: |
           docker rm -f omnibench-aegis-env-smoke || true
+
