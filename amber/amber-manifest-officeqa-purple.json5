@@ -1,7 +1,17 @@
 {
   manifest_version: "0.2.0",
 
-  name: "AegisForge OfficeQA Purple",
+  metadata: {
+    name: "AegisForge OfficeQA Purple",
+    display_name: "AegisForge OfficeQA Purple",
+    description: "AegisForge NCP Purple adapter for AgentX-AgentBeats OfficeQA evaluation.",
+    agent: "AegisForge NCP Purple",
+    mode: "purple_benchmark",
+    benchmark: "AgentX-AgentBeats Phase 2 Sprint 4",
+    scenario_family: "agentbeats_sprint4",
+    track: "officeqa",
+    repository: "https://github.com/ivanjojo369/AegisForge_agent"
+  },
 
   program: {
     image: "ghcr.io/ivanjojo369/aegisforge-officeqa-purple:latest",
