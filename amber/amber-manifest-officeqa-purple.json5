@@ -14,7 +14,7 @@
   },
 
   program: {
-    image: "ghcr.io/ivanjojo369/aegisforge-officeqa-purple:latest",
+    image: "ghcr.io/ivanjojo369/aegisforge_agent:latest",
     entrypoint: "python -u -m aegisforge.runner --host 0.0.0.0 --port 8001",
     env: {
       PYTHONUNBUFFERED: "1",
@@ -47,3 +47,4 @@
     a2a: "a2a"
   }
 }
+
