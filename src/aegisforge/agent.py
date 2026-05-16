@@ -1109,6 +1109,7 @@ class AegisForgeAgent:
         self.battle_history: list[dict[str, Any]] = []
         self._active_battle_key: str | None = None
         self._current_llm_calls = 0
+        self.build_protocol_state: dict[str, dict[str, Any]] = {}
 
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
@@ -1317,6 +1318,537 @@ class AegisForgeAgent:
         return lines
 
 
+    def _build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
+        """Backward-compatible alias for older Build-it harnesses."""
+        return self._is_build_it_protocol(metadata, task_text)
+
+    def _is_build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
+        """Detect the Build-it / block-building exact-output protocol."""
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        mode_values = [
+            os.getenv("AGENT_QA_MODE"),
+            os.getenv("AEGISFORGE_OUTPUT_PROTOCOL"),
+            os.getenv("AGENT_OUTPUT_PROTOCOL"),
+            os.getenv("BUILD_PROTOCOL"),
+            os.getenv("BUILDER_AGENT_MODE"),
+            safe_metadata.get("agent_qa_mode"),
+            safe_metadata.get("qa_mode"),
+            safe_metadata.get("output_protocol"),
+            safe_metadata.get("response_protocol"),
+            safe_metadata.get("required_response_format"),
+            safe_metadata.get("required_output"),
+            safe_metadata.get("expected_output"),
+            safe_metadata.get("answer_format"),
+            safe_metadata.get("protocol"),
+            safe_metadata.get("mode"),
+            safe_metadata.get("builder_mode"),
+            safe_metadata.get("builder_agent"),
+        ]
+        normalized_modes = {
+            re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+            for value in mode_values
+            if value is not None and str(value).strip()
+        }
+        build_modes = {
+            "build_it",
+            "buildwhatimean",
+            "build_what_i_mean",
+            "block_building",
+            "builder_agent",
+            "minecraft_builder",
+            "block_builder",
+        }
+        if normalized_modes & build_modes:
+            return True
+
+        combined = self._coerce_text(task_text)
+        if safe_metadata:
+            try:
+                combined += "\n" + json.dumps(self._normalize_for_json(dict(safe_metadata)), ensure_ascii=False)[:8000]
+            except Exception:
+                combined += "\n" + str(dict(safe_metadata))[:8000]
+        lowered = combined.lower()
+
+        keyword_markers = (
+            "build what i mean",
+            "block building",
+            "builder agent",
+            "start_structure",
+            "start structure",
+            "[build];",
+            "[ask];",
+        )
+        if any(marker in lowered for marker in keyword_markers):
+            return True
+
+        if any(key in safe_metadata for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "block_building")):
+            return True
+
+        coord_like = bool(re.search(r"[a-zA-Z]+\s*,?\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+", combined))
+        if coord_like and ("build" in lowered or "block" in lowered or "structure" in lowered):
+            return True
+        return False
+
+    def _build_it_session_key(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        for key in (
+            "build_session_id",
+            "session_id",
+            "conversation_id",
+            "thread_id",
+            "battle_id",
+            "game_id",
+            "match_id",
+            "speaker",
+        ):
+            value = safe_metadata.get(key)
+            if value is not None and str(value).strip():
+                return f"buildit::{str(value).strip()}"
+        snippet = self._coerce_text(task_text).strip()[:120]
+        if snippet:
+            digest = hashlib.sha1(snippet.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            return f"buildit::{digest}"
+        return "buildit::default"
+
+    def _normalize_build_color(self, value: Any) -> str:
+        text = self._coerce_text(value).strip()
+        if not text:
+            return ""
+        compact = re.sub(r"[^a-z0-9]+", "", text.lower())
+        aliases = {
+            "red": "Red",
+            "blue": "Blue",
+            "green": "Green",
+            "yellow": "Yellow",
+            "black": "Black",
+            "white": "White",
+            "orange": "Orange",
+            "purple": "Purple",
+            "pink": "Pink",
+            "brown": "Brown",
+            "gray": "Grey",
+            "grey": "Grey",
+            "lightgray": "Grey",
+            "lightgrey": "Grey",
+            "lightblue": "Cyan",
+            "cyan": "Cyan",
+            "aqua": "Cyan",
+            "lime": "Green",
+            "magenta": "Pink",
+            "teal": "Cyan",
+        }
+        return aliases.get(compact, text.title().replace(" ", ""))
+
+    def _extract_build_blocks_from_candidate(self, value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return self._parse_build_blocks(value)
+        if isinstance(value, Mapping):
+            if {"color", "x", "y", "z"}.issubset(set(value.keys())):
+                return [{
+                    "color": self._normalize_build_color(value.get("color")),
+                    "x": self._coerce_int(value.get("x"), default=0),
+                    "y": self._coerce_int(value.get("y"), default=0),
+                    "z": self._coerce_int(value.get("z"), default=0),
+                }]
+            blocks: list[dict[str, Any]] = []
+            for key in ("blocks", "start_structure", "START_STRUCTURE", "initial_blocks", "structure"):
+                if key in value:
+                    blocks.extend(self._extract_build_blocks_from_candidate(value.get(key)))
+            return blocks
+        if isinstance(value, (list, tuple)):
+            blocks: list[dict[str, Any]] = []
+            for item in value:
+                blocks.extend(self._extract_build_blocks_from_candidate(item))
+            return blocks
+        return []
+
+    def _parse_build_blocks(self, text: Any) -> list[dict[str, Any]]:
+        raw = self._coerce_text(text).strip()
+        if not raw:
+            return []
+        if raw.upper().startswith("[ASK]"):
+            return []
+        if raw.upper().startswith("[BUILD]"):
+            raw = raw.split(";", 1)[1] if ";" in raw else ""
+        pattern = re.compile(r"(?P<color>[A-Za-z][A-Za-z_ ]{0,24})\s*,?\s*(?P<x>-?\d+)\s*,\s*(?P<y>-?\d+)\s*,\s*(?P<z>-?\d+)")
+        blocks: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, int, int]] = set()
+        for match in pattern.finditer(raw):
+            color = self._normalize_build_color(match.group("color"))
+            x = self._coerce_int(match.group("x"), default=0)
+            y = self._coerce_int(match.group("y"), default=0)
+            z = self._coerce_int(match.group("z"), default=0)
+            key = (color, x, y, z)
+            if key in seen:
+                continue
+            seen.add(key)
+            blocks.append({"color": color, "x": x, "y": y, "z": z})
+        return blocks
+
+    def _validate_build_blocks(self, blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+        allowed_colors = {
+            "Red", "Blue", "Green", "Yellow", "Purple", "Orange",
+            "White", "Black", "Brown", "Pink", "Grey", "Cyan",
+        }
+        valid_xz = [-400, -300, -200, -100, 0, 100, 200, 300, 400]
+        valid_y = [50, 150, 250, 350, 450]
+
+        def snap(value: int, allowed: list[int]) -> int:
+            return min(allowed, key=lambda item: abs(item - value))
+
+        validated: list[dict[str, Any]] = []
+        errors: list[str] = []
+        seen: set[tuple[str, int, int, int]] = set()
+
+        for block in blocks:
+            color = self._normalize_build_color(block.get("color"))
+            x = self._coerce_int(block.get("x"), default=0)
+            y = self._coerce_int(block.get("y"), default=50)
+            z = self._coerce_int(block.get("z"), default=0)
+
+            if color not in allowed_colors:
+                errors.append(f"invalid color: {color or 'unknown'}")
+                continue
+
+            x = snap(x, valid_xz)
+            y = snap(y, valid_y)
+            z = snap(z, valid_xz)
+
+            key = (color, x, y, z)
+            if key in seen:
+                continue
+
+            seen.add(key)
+            validated.append({"color": color, "x": x, "y": y, "z": z})
+
+        return validated, errors
+
+    def _format_build_it_build(self, blocks: list[dict[str, Any]]) -> str:
+        return "[BUILD];" + ";".join(
+            f"{block['color']},{int(block['x'])},{int(block['y'])},{int(block['z'])}"
+            for block in blocks
+        )
+
+    def _format_build_it_ask(self, question: Any) -> str:
+        text = self._coerce_text(question).strip()
+        text = re.sub(r"[\r\n;]+", " ", text).strip()
+        if not text:
+            text = "Please provide the blocks in the format Color,x,y,z."
+        return f"[ASK];{text}"
+
+    def _parse_build_it_response(self, text: Any) -> dict[str, Any]:
+        raw = self._coerce_text(text).strip()
+        if not raw:
+            return {"kind": "ask", "question": "Please provide the blocks in the format Color,x,y,z."}
+
+        raw_upper = raw.upper()
+
+        if raw_upper.startswith("[ASK]"):
+            question = raw.split(";", 1)[1].strip() if ";" in raw else raw[5:].strip()
+            return {"kind": "ask", "question": question or "Please clarify the required blocks."}
+
+        explicit_build = raw_upper.startswith("[BUILD]")
+        looks_like_task_prompt = bool(
+            re.search(
+                r"\b(INSTRUCTION|START_STRUCTURE|START STRUCTURE|EXISTING BLOCKS|TASK TEXT|USER REQUEST)\b",
+                raw,
+                re.I,
+            )
+        )
+
+        # Important: a benchmark prompt may contain START_STRUCTURE coordinates.
+        # Those coordinates are context, not the agent's final [BUILD] answer.
+        if looks_like_task_prompt and not explicit_build:
+            return {"kind": "unknown", "raw": raw}
+
+        blocks = self._parse_build_blocks(raw)
+        if blocks:
+            validated, errors = self._validate_build_blocks(blocks)
+            if validated:
+                return {"kind": "build", "blocks": validated, "errors": errors}
+
+        return {"kind": "unknown", "raw": raw}
+
+    def _build_it_state(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> dict[str, Any]:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        session_key = self._build_it_session_key(safe_metadata, task_text)
+        state = dict(self.build_protocol_state.get(session_key, {}))
+        state.setdefault("session_key", session_key)
+        state.setdefault("history", [])
+        state["speaker"] = self._coerce_text(safe_metadata.get("speaker") or state.get("speaker"))
+        state["current_round"] = max(0, self._coerce_int(safe_metadata.get("current_round"), default=self._coerce_int(state.get("current_round"), default=0)))
+        instruction = self._coerce_text(
+            safe_metadata.get("instruction")
+            or safe_metadata.get("user_request")
+            or safe_metadata.get("task")
+            or task_text
+        ).strip()
+        if instruction:
+            state["instruction_current"] = instruction
+        initial_candidates = []
+        for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "block_building", "structure", "blocks"):
+            if key in safe_metadata:
+                initial_candidates.append(safe_metadata.get(key))
+        initial_blocks: list[dict[str, Any]] = []
+        for candidate in initial_candidates:
+            initial_blocks.extend(self._extract_build_blocks_from_candidate(candidate))
+        if initial_blocks:
+            validated, _errors = self._validate_build_blocks(initial_blocks)
+            if validated:
+                state["initial_blocks"] = validated
+        feedback = self._coerce_text(
+            safe_metadata.get("feedback")
+            or safe_metadata.get("last_feedback")
+            or safe_metadata.get("result")
+            or safe_metadata.get("last_result")
+        ).strip()
+        if feedback:
+            state["feedback"] = feedback
+        qa_answer = self._coerce_text(safe_metadata.get("answer") or safe_metadata.get("response_to_question")).strip()
+        if qa_answer:
+            answers = list(state.get("question_answers", []))
+            answers.append(qa_answer)
+            state["question_answers"] = answers[-8:]
+        last_result = self._coerce_text(safe_metadata.get("last_result") or state.get("last_result")).strip()
+        if last_result:
+            state["last_result"] = last_result
+        self.build_protocol_state[session_key] = state
+        return state
+
+    def _build_it_llm_messages(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> list[dict[str, str]]:
+        state_summary = {
+            "instruction_current": state.get("instruction_current"),
+            "initial_blocks": state.get("initial_blocks", []),
+            "last_result": state.get("last_result", ""),
+            "feedback": state.get("feedback", ""),
+            "question_answers": state.get("question_answers", []),
+            "speaker": state.get("speaker", ""),
+            "current_round": state.get("current_round", 0),
+        }
+        system = (
+            "You are AegisForge's Build-it adapter. Return exactly one line. "
+            "If the structure can be produced, output [BUILD];Color,x,y,z;Color,x,y,z. "
+            "If information is missing and guessing would likely be wrong, output [ASK];question. "
+            "Do not output explanations, markdown, JSON, or extra commentary. "
+            "Grid X/Z values are exactly -400,-300,-200,-100,0,100,200,300,400. "
+            "Y values are exactly 50,150,250,350,450. Ground level is y=50. "
+            "origin/middle/highlighted square means 0,50,0. "
+            "left is -X, right is +X, front is +Z, behind/back is -Z, on top is +Y. "
+            "Use only these colors: Red, Blue, Green, Yellow, Purple, Orange, White, Black, Brown, Pink, Grey, Cyan. "
+            "Always include all blocks that should remain on the grid."
+        )
+        user = (
+            f"Task text:\n{task_text}\n\n"
+            f"Metadata/state:\n{json.dumps(self._normalize_for_json(state_summary), ensure_ascii=False)}\n\n"
+            "Remember: answer with exactly one line starting with [BUILD]; or [ASK];"
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _heuristic_build_it_response(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> str:
+        task_text_clean = self._coerce_text(task_text).strip()
+
+        # Only treat coordinates in task_text as a final answer when the text is
+        # explicitly an agent response. Otherwise they are likely START_STRUCTURE
+        # context from the benchmark.
+        direct_blocks = self._parse_build_blocks(task_text_clean) if task_text_clean.upper().startswith("[BUILD]") else []
+
+        validated, errors = self._validate_build_blocks(direct_blocks)
+        if validated:
+            return self._format_build_it_build(validated)
+
+        embedded_initial_blocks: list[dict[str, Any]] = []
+        for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "block_building", "structure", "blocks"):
+            embedded_initial_blocks.extend(self._extract_build_blocks_from_candidate(metadata.get(key)))
+
+        if not embedded_initial_blocks:
+            embedded_initial_blocks = self._parse_build_blocks(task_text_clean)
+
+        lowered = f"{task_text}\n{state.get('feedback', '')}".lower()
+
+        if state.get("last_result") and any(word in lowered for word in ("same", "repeat", "again", "reuse", "previous")):
+            parsed_previous = self._parse_build_it_response(state.get("last_result"))
+            if parsed_previous.get("kind") == "build" and parsed_previous.get("blocks"):
+                return self._format_build_it_build(parsed_previous["blocks"])
+
+        initial_blocks = state.get("initial_blocks", []) if isinstance(state.get("initial_blocks"), list) else []
+        if not initial_blocks:
+            initial_blocks = embedded_initial_blocks
+
+        initial_validated, _ = self._validate_build_blocks(initial_blocks)
+
+        color_match = re.search(
+            r"\b(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan)\b",
+            lowered,
+            re.I,
+        )
+        color = self._normalize_build_color(color_match.group(1)) if color_match else ""
+
+        if not color and initial_validated:
+            color = initial_validated[-1]["color"]
+
+        if not color:
+            color = "Red"
+
+        def block(c: str, x: int, y: int, z: int) -> dict[str, Any]:
+            return {"color": self._normalize_build_color(c), "x": x, "y": y, "z": z}
+
+        def build_with_existing(new_blocks: list[dict[str, Any]]) -> str:
+            combined = list(initial_validated) + list(new_blocks)
+            validated_blocks, _ = self._validate_build_blocks(combined)
+            return self._format_build_it_build(validated_blocks)
+
+        # Four corners.
+        if "corner" in lowered:
+            corners = [
+                block(color, -400, 50, 400),
+                block(color, 400, 50, 400),
+                block(color, -400, 50, -400),
+                block(color, 400, 50, -400),
+            ]
+            return build_with_existing(corners)
+
+        # Full edges.
+        if "left edge" in lowered:
+            return build_with_existing([block(color, -400, 50, z) for z in range(-400, 401, 100)])
+        if "right edge" in lowered:
+            return build_with_existing([block(color, 400, 50, z) for z in range(-400, 401, 100)])
+        if "top edge" in lowered or "back edge" in lowered:
+            return build_with_existing([block(color, x, 50, -400) for x in range(-400, 401, 100)])
+        if "bottom edge" in lowered or "front edge" in lowered:
+            return build_with_existing([block(color, x, 50, 400) for x in range(-400, 401, 100)])
+
+        # On top of referenced blocks.
+        if "on top" in lowered and initial_validated:
+            ref_color_match = re.search(r"on top of (?:each |the |all )?(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan)", lowered)
+            ref_color = self._normalize_build_color(ref_color_match.group(1)) if ref_color_match else ""
+            refs = [b for b in initial_validated if not ref_color or b["color"] == ref_color]
+            if refs:
+                return build_with_existing([block(color, b["x"], b["y"] + 100, b["z"]) for b in refs])
+
+        # Position relative to an existing block.
+        if initial_validated and any(word in lowered for word in ("left of", "right of", "front of", "behind", "back of")):
+            ref = initial_validated[-1]
+            x, y, z = int(ref["x"]), int(ref["y"]), int(ref["z"])
+            if "left of" in lowered:
+                x -= 100
+            elif "right of" in lowered:
+                x += 100
+            elif "front of" in lowered:
+                z += 100
+            elif "behind" in lowered or "back of" in lowered:
+                z -= 100
+            return build_with_existing([block(color, x, y, z)])
+
+        # Origin / middle / highlighted square.
+        start_x, start_y, start_z = 0, 50, 0
+        if initial_validated and "origin" not in lowered and "middle" not in lowered and "highlighted" not in lowered:
+            start_x = int(initial_validated[-1]["x"])
+            start_y = int(initial_validated[-1]["y"])
+            start_z = int(initial_validated[-1]["z"])
+
+        # Row handling.
+        count = 1
+        count_match = re.search(r"\b(row of|line of|place|build|stack)\s+(one|two|three|four|five|six|seven|eight|nine|\d+)", lowered)
+        word_to_num = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        }
+        if count_match:
+            raw_count = count_match.group(2)
+            count = word_to_num.get(raw_count, self._coerce_int(raw_count, default=1))
+
+        if "row" in lowered or "line" in lowered:
+            dx, dz = 100, 0
+            if "left" in lowered:
+                dx, dz = -100, 0
+            elif "right" in lowered:
+                dx, dz = 100, 0
+            elif "front" in lowered:
+                dx, dz = 0, 100
+            elif "behind" in lowered or "back" in lowered:
+                dx, dz = 0, -100
+            return build_with_existing([
+                block(color, start_x + i * dx, start_y, start_z + i * dz)
+                for i in range(max(1, count))
+            ])
+
+        if "stack" in lowered:
+            return build_with_existing([
+                block(color, start_x, start_y + i * 100, start_z)
+                for i in range(max(1, count))
+            ])
+
+        # Simple placement at origin/default.
+        if any(word in lowered for word in ("origin", "middle", "highlighted", "place", "build", "put", "block")):
+            return build_with_existing([block(color, start_x, start_y, start_z)])
+
+        ask_markers = (
+            "?",
+            "clarify",
+            "which",
+            "what color",
+            "what block",
+            "where",
+            "missing",
+            "insufficient",
+        )
+        if any(marker in lowered for marker in ask_markers):
+            return self._format_build_it_ask("Please provide the missing block details in the format Color,x,y,z.")
+
+        if initial_validated:
+            return self._format_build_it_build(initial_validated)
+
+        return self._format_build_it_ask("Please provide the blocks in the format Color,x,y,z.")
+
+    def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        state = self._build_it_state(safe_metadata, task_text)
+
+        direct = self._parse_build_it_response(task_text)
+        final_text = ""
+        if direct.get("kind") == "build" and direct.get("blocks"):
+            final_text = self._format_build_it_build(direct["blocks"])
+        elif direct.get("kind") == "ask":
+            final_text = self._format_build_it_ask(direct.get("question"))
+
+        if not final_text and self._llm_base_url():
+            llm_text = self._call_llm(
+                messages=self._build_it_llm_messages(task_text, safe_metadata, state),
+                temperature=0.1,
+                max_tokens=180,
+            )
+            if llm_text:
+                parsed = self._parse_build_it_response(llm_text)
+                if parsed.get("kind") == "build" and parsed.get("blocks"):
+                    final_text = self._format_build_it_build(parsed["blocks"])
+                elif parsed.get("kind") == "ask":
+                    final_text = self._format_build_it_ask(parsed.get("question"))
+
+        if not final_text:
+            final_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
+
+        state["last_result"] = final_text
+        state["feedback"] = self._coerce_text(safe_metadata.get("feedback") or state.get("feedback")).strip()
+        history = list(state.get("history", []))
+        history.append({
+            "round": state.get("current_round", 0),
+            "speaker": state.get("speaker", ""),
+            "instruction_current": state.get("instruction_current", ""),
+            "last_result": final_text,
+            "feedback": state.get("feedback", ""),
+        })
+        state["history"] = history[-12:]
+        self.build_protocol_state[state["session_key"]] = state
+        return final_text
+
+    async def _build_it_process_message(self, text: str, metadata: Mapping[str, Any] | None = None) -> str:
+        return self._handle_build_it_turn(text, metadata or {})
+
+    async def _process_build_it_response(self, text: str, metadata: Mapping[str, Any] | None = None) -> str:
+        return self._handle_build_it_turn(text, metadata or {})
+
     def _strict_output_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> str:
         """Return a benchmark-required exact-output protocol, if one is active.
 
@@ -1481,18 +2013,28 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
-        strict_protocol = self._strict_output_protocol(metadata, base_text)
+        build_it_protocol = self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if build_it_protocol else self._strict_output_protocol(metadata, base_text)
 
         # In strict symbolic modes, do not emit the normal progress/status text.
         # Some green agents validate the visible transcript and reject any text
         # other than the final literal token.
-        if not strict_protocol:
+        if not strict_protocol and not build_it_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
             )
 
-        if strict_protocol:
+        if build_it_protocol:
+            final_text = self._handle_build_it_turn(base_text, metadata)
+            trace = {
+                "mode": "build_it_protocol",
+                "protocol": "build_it",
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+                "session_key": self._build_it_session_key(metadata, base_text),
+            }
+        elif strict_protocol:
             final_text = self._apply_strict_output_protocol(
                 "",
                 task_text=base_text,
@@ -1527,18 +2069,18 @@ class AegisForgeAgent:
 
         await updater.add_artifact(
             parts=[Part(root=TextPart(kind="text", text=final_text))],
-            name="response" if strict_protocol else "AegisForgeResponse",
+            name="response" if (strict_protocol or build_it_protocol) else "AegisForgeResponse",
         )
 
         # Strict output mode must expose only the literal final token.  Trace and
         # debug artifacts remain available in normal AegisForge modes.
-        if self.trace_artifacts_enabled and not strict_protocol:
+        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
 
-        if self.debug_artifacts_enabled and not strict_protocol:
+        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
@@ -2866,7 +3408,10 @@ class AegisForgeAgent:
     def _llm_base_url(self) -> str:
         raw = (os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
         if not raw:
-            return ""
+            if (os.getenv("OPENAI_API_KEY") or "").strip():
+                raw = "https://api.openai.com/v1"
+            else:
+                return ""
         if raw.endswith("/chat/completions"):
             return raw
         if raw.endswith("/v1"):
