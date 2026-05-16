@@ -1750,13 +1750,28 @@ class AegisForgeAgent:
 
         # Row handling.
         count = 1
-        count_match = re.search(r"\b(row of|line of|place|build|stack)\s+(one|two|three|four|five|six|seven|eight|nine|\d+)", lowered)
         word_to_num = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
             "six": 6, "seven": 7, "eight": 8, "nine": 9,
         }
+
+        count_match = re.search(
+            r"\b(?:row|line|stack)\s+(?:of\s+)?(one|two|three|four|five|six|seven|eight|nine|\d+)\b",
+            lowered,
+        )
+        if not count_match:
+            count_match = re.search(
+                r"\b(?:place|build|put)\s+(?:a\s+)?(?:row|line|stack)\s+(?:of\s+)?(one|two|three|four|five|six|seven|eight|nine|\d+)\b",
+                lowered,
+            )
+        if not count_match:
+            count_match = re.search(
+                r"\b(?:place|build|put)\s+(one|two|three|four|five|six|seven|eight|nine|\d+)\b",
+                lowered,
+            )
+
         if count_match:
-            raw_count = count_match.group(2)
+            raw_count = count_match.group(1)
             count = word_to_num.get(raw_count, self._coerce_int(raw_count, default=1))
 
         if "row" in lowered or "line" in lowered:
