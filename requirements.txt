@@ -80,7 +80,7 @@ requests==2.32.5
     #   google-api-core
 rsa==4.9.1
     # via google-auth
-sse-starlette==3.3.2
+sse-starlette==3.3.3
     # via a2a-sdk
 starlette==0.52.1
     # via
