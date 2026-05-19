@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v7_exact_small_programs_no_mixed_corners_2026_05_19"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v8_precise_rows_tshape_no_grid_overbuild_2026_05_19"
 
 
 @dataclass(frozen=True)
@@ -2408,7 +2408,12 @@ class AegisForgeAgent:
         return result
 
     def _build_it_is_explicit_large_structure(self, lowered: str) -> bool:
-        """Return True only when the prompt clearly asks for a broad area/fill."""
+        """Return True when the prompt clearly asks for a broad area/fill.
+
+        This is intentionally broader than _build_it_allow_massive_fill: a wall,
+        border, or perimeter may be a legitimate structured request, but it should
+        still not permit hallucinated 9x9 filled grids unless the wording says so.
+        """
         lowered = self._coerce_text(lowered).lower()
         if re.search(r"\b(?:\d+|three|four|five|six|seven|eight|nine)\s*(?:x|by)\s*(?:\d+|three|four|five|six|seven|eight|nine)\b", lowered):
             return True
@@ -2420,6 +2425,16 @@ class AegisForgeAgent:
         )
         return any(marker in lowered for marker in large_markers)
 
+    def _build_it_allow_massive_fill(self, lowered: str) -> bool:
+        """Only these phrases can justify a very large filled grid/platform."""
+        lowered = self._coerce_text(lowered).lower()
+        strict_fill_markers = (
+            "entire grid", "whole grid", "full grid", "fill the grid", "filled grid",
+            "fill every", "every square", "all squares", "entire floor", "whole floor",
+            "full floor", "filled floor", "fill the area", "filled area", "checkerboard",
+        )
+        return any(marker in lowered for marker in strict_fill_markers)
+
     def _build_it_expected_small_prompt(self, lowered: str) -> bool:
         """Detect prompts where exact small structures are more likely than broad fills."""
         lowered = self._coerce_text(lowered).lower()
@@ -2427,9 +2442,12 @@ class AegisForgeAgent:
             "row", "line", "stack", "tower", "column", "pillar", "on top", "above",
             "leftmost", "rightmost", "frontmost", "backmost", "origin", "center", "centre",
             "middle", "highlighted", "to the left", "to the right", "in front", "behind",
-            "l shape", "l-shape", "t shape", "t-shape", "cross", "plus",
+            "l shape", "l-shape", "t shape", "t-shape", "t-shaped", "tee", "cross", "plus",
+            "path", "arm", "arms", "stem", "trunk", "horizontal", "vertical", "end cap", "caps",
         )
-        return any(marker in lowered for marker in small_markers) and not self._build_it_is_explicit_large_structure(lowered)
+        # A small-structure marker should override weak broad words such as grid UI
+        # context, but not an explicit filled/entire-grid instruction.
+        return any(marker in lowered for marker in small_markers) and not self._build_it_allow_massive_fill(lowered)
 
     def _build_it_sanitize_candidate_blocks(self, blocks: list[dict[str, Any]], lowered: str) -> list[dict[str, Any]]:
         """Remove common overbuild artifacts before formatting a Build-it answer.
@@ -2461,14 +2479,20 @@ class AegisForgeAgent:
         unique_x = {int(b["x"]) for b in validated}
         unique_z = {int(b["z"]) for b in validated}
         explicit_large = self._build_it_is_explicit_large_structure(lowered)
+        allow_massive_fill = self._build_it_allow_massive_fill(lowered)
         expected_small = self._build_it_expected_small_prompt(lowered)
-        if not explicit_large:
+
+        # v8 hard guard: Build-it exact scoring punishes extra blocks. A 9x9
+        # platform/grid is only allowed for genuinely filled/entire-grid prompts.
+        if not allow_massive_fill:
             if len(validated) > 24:
-                return []
-            if expected_small and len(unique_x) >= 5 and len(unique_z) >= 5 and len(validated) >= 20:
                 return []
             if len(unique_x) >= 7 and len(unique_z) >= 7:
                 return []
+            if expected_small and len(unique_x) >= 5 and len(unique_z) >= 5 and len(validated) >= 20:
+                return []
+        elif not explicit_large and len(validated) > 24:
+            return []
 
         # If the request is a small row/stack/on-top program, avoid returning a
         # mixed structure with far-corner anchors. The heuristic should compose
@@ -2663,48 +2687,168 @@ class AegisForgeAgent:
         return blocks[-1]
 
     def _build_it_try_exact_row_plus_top_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
-        """Small exact interpreter for the recurring row + on-top pattern.
+        """Precision interpreter for a compact row/line with blocks placed on an endpoint.
 
-        Example handled conservatively:
-        "row of three yellow blocks to the left ... two purple blocks on top of the leftmost block"
-        -> 3 yellow ground blocks and 2 purple vertical blocks above the leftmost block.
+        Handles flexible phrasings such as:
+        - "row of three yellow blocks to the left ... two purple blocks on top of the leftmost block"
+        - "three yellow blocks in a line left from the origin, add two purple above the left end"
+        The rule is intentionally compact: it never adds corners, grids, or platforms.
         """
         if not any(term in lowered for term in ("row", "line")):
             return []
         if not any(term in lowered for term in ("on top", "above", "over", "stack")):
             return []
+
         color_pattern = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
         number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
-        row_match = re.search(rf"(?:row|line)\s+(?:of\s+)?{number}\s+{color_pattern}\s+blocks?", lowered)
-        if not row_match:
-            row_match = re.search(rf"{number}\s+{color_pattern}\s+blocks?\s+(?:in\s+)?(?:a\s+)?(?:row|line)", lowered)
-        if not row_match:
-            return []
-        row_count = max(1, min(9, self._build_it_parse_number(row_match.group(1), default=3)))
-        row_color = self._normalize_build_color(row_match.group(2)) or primary_color
-        direction = self._build_it_direction_vector_from_text(lowered)
+
+        # Split the top/above clause from the row clause.  This prevents "leftmost"
+        # in the top clause from being misread as a request for a +Z row.
+        split_match = re.search(r"\b(on\s+top(?:\s+of)?|above|over)\b", lowered)
+        row_part = lowered[:split_match.start()] if split_match else lowered
+        top_part = lowered[split_match.start():] if split_match else lowered
+
+        row_count = 0
+        row_color = ""
+        row_patterns = (
+            rf"(?:row|line)\s+(?:of\s+)?{number}\s+(?:{color_pattern}\s+)?blocks?",
+            rf"{number}\s+(?:{color_pattern}\s+)?blocks?\s+(?:in\s+)?(?:a\s+)?(?:row|line)",
+            rf"{number}\s+(?:block\s+)?(?:{color_pattern}\s+)?(?:row|line)",
+        )
+        for pattern in row_patterns:
+            match = re.search(pattern, row_part)
+            if not match:
+                continue
+            groups = [g for g in match.groups() if g]
+            # First group matching number is the count; first group matching color is the row color.
+            for group in groups:
+                if re.fullmatch(number, group):
+                    row_count = self._build_it_parse_number(group, default=3)
+                    break
+            for group in groups:
+                if re.fullmatch(color_pattern, group):
+                    row_color = self._normalize_build_color(group)
+                    break
+            break
+
+        if not row_count:
+            near = re.search(rf"{number}[^.;,]{{0,50}}(?:row|line)|(?:row|line)[^.;,]{{0,50}}{number}", row_part)
+            if near:
+                for group in near.groups():
+                    if group:
+                        row_count = self._build_it_parse_number(group, default=3)
+                        break
+        row_count = max(1, min(9, row_count or 3))
+
+        if not row_color:
+            row_color = self._build_it_extract_color_after_number(row_part, fallback=(colors[0] if colors else primary_color))
+        row_color = row_color or primary_color
+
+        # Prefer direction in the row clause. If no explicit row direction is present
+        # but the reference is leftmost/rightmost, use the corresponding X axis.
+        if "left" in row_part and "right" not in row_part:
+            direction = (-100, 0)
+        elif "right" in row_part and "left" not in row_part:
+            direction = (100, 0)
+        elif "front" in row_part and not any(term in row_part for term in ("back", "behind")):
+            direction = (0, 100)
+        elif any(term in row_part for term in ("back", "behind")) and "front" not in row_part:
+            direction = (0, -100)
+        elif "leftmost" in top_part or "left end" in top_part:
+            direction = (-100, 0)
+        elif "rightmost" in top_part or "right end" in top_part:
+            direction = (100, 0)
+        elif "frontmost" in top_part or "front end" in top_part:
+            direction = (0, 100)
+        elif "backmost" in top_part or "back end" in top_part:
+            direction = (0, -100)
+        else:
+            direction = self._build_it_line_direction(row_part or lowered)
+
         row = self._line_blocks([row_color], row_count, (0, 50, 0), direction, centered=False, fallback_color=row_color)
 
         top_count = 1
-        top_color = colors[-1] if len(colors) > 1 else primary_color
-        # Prefer the color immediately attached to the on-top clause.
-        top_match = re.search(rf"{number}\s+{color_pattern}\s+blocks?\s+(?:on\s+top|above|over)", lowered)
-        if top_match:
-            top_count = max(1, min(4, self._build_it_parse_number(top_match.group(1), default=1)))
-            top_color = self._normalize_build_color(top_match.group(2)) or top_color
-        else:
-            top_match = re.search(rf"(?:on\s+top|above|over)[^.;,]*?{number}\s+{color_pattern}\s+blocks?", lowered)
-            if top_match:
-                top_count = max(1, min(4, self._build_it_parse_number(top_match.group(1), default=1)))
-                top_color = self._normalize_build_color(top_match.group(2)) or top_color
-        ref = self._build_it_choose_reference_block(row, lowered)
-        if not ref:
+        top_color = ""
+        top_patterns = (
+            rf"{number}\s+{color_pattern}\s+blocks?\s+(?:on\s+top|above|over)",
+            rf"(?:on\s+top(?:\s+of)?|above|over)[^.;,]*?{number}\s+{color_pattern}\s+blocks?",
+            rf"(?:stack|put|place|add)\s+{number}\s+{color_pattern}\s+blocks?",
+        )
+        for pattern in top_patterns:
+            match = re.search(pattern, lowered)
+            if not match:
+                continue
+            for group in match.groups():
+                if group and re.fullmatch(number, group):
+                    top_count = self._build_it_parse_number(group, default=1)
+                    break
+            for group in match.groups():
+                if group and re.fullmatch(color_pattern, group):
+                    top_color = self._normalize_build_color(group)
+                    break
+            break
+        top_count = max(1, min(4, top_count))
+
+        if not top_color:
+            # Use the first color in the top clause that is different from the row color.
+            top_clause_color = re.search(color_pattern, top_part)
+            if top_clause_color:
+                candidate = self._normalize_build_color(top_clause_color.group(1))
+                if candidate != row_color:
+                    top_color = candidate
+        if not top_color:
+            distinct = [c for c in colors if c != row_color]
+            top_color = distinct[-1] if distinct else row_color
+
+        reference = self._build_it_choose_reference_block(row, lowered)
+        if not reference:
             return row
         blocks = list(row)
-        base_x, base_z = int(ref["x"]), int(ref["z"])
-        # Existing ground row is y=50, so on-top blocks begin at y=150.
+        base_x, base_z = int(reference["x"]), int(reference["z"])
         for i in range(top_count):
             blocks.append(self._build_it_block(top_color, base_x, 150 + 100 * i, base_z))
+        return self._build_it_unique_blocks(blocks)
+
+    def _build_it_try_exact_t_shape_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+        """Compact T/tee interpreter.
+
+        Generic default: a 3-block crossbar one square behind the origin and a
+        5-block stem moving forward from the origin.  If a secondary color is
+        supplied and the prompt mentions ends/caps, place one cap beyond each
+        crossbar end.  This avoids the old failure mode where a T-like prompt
+        became a filled 9x9 green grid.
+        """
+        if not any(term in lowered for term in ("t shape", "t-shape", "t-shaped", "tee shape", "tee")):
+            return []
+        base_color = colors[0] if colors else primary_color
+        accent_color = ""
+        if len(colors) > 1:
+            accent_color = colors[1]
+        elif "purple" in lowered and base_color != "Purple":
+            accent_color = "Purple"
+
+        # Keep defaults compact.  Counts are bounded to avoid overbuild.
+        bar_count = 3
+        stem_count = 5
+        bar_match = re.search(r"(?:bar|top|crossbar|horizontal)[^.;,]*?(one|two|three|four|five|\d+)", lowered)
+        if bar_match:
+            bar_count = max(3, min(5, self._build_it_parse_number(bar_match.group(1), default=3)))
+        stem_match = re.search(r"(?:stem|vertical|down|front|long)[^.;,]*?(one|two|three|four|five|\d+)", lowered)
+        if stem_match:
+            stem_count = max(2, min(5, self._build_it_parse_number(stem_match.group(1), default=5)))
+
+        blocks: list[dict[str, Any]] = []
+        # Crossbar centered at z=-100.
+        half = bar_count // 2
+        for step in range(-half, half + 1):
+            blocks.append(self._build_it_block(base_color, step * 100, 50, -100))
+        # Stem starts at origin and moves forward; no duplicate with crossbar center.
+        for step in range(stem_count):
+            blocks.append(self._build_it_block(base_color, 0, 50, step * 100))
+
+        if accent_color and any(term in lowered for term in ("end", "ends", "cap", "caps", "tip", "tips", "purple")):
+            blocks.append(self._build_it_block(accent_color, -(half + 1) * 100, 50, -100))
+            blocks.append(self._build_it_block(accent_color, (half + 1) * 100, 50, -100))
         return self._build_it_unique_blocks(blocks)
 
     def _build_it_try_exact_stack_pair_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
@@ -2772,6 +2916,7 @@ class AegisForgeAgent:
         """
         attempts = (
             self._build_it_try_exact_row_plus_top_program(lowered, colors, primary_color),
+            self._build_it_try_exact_t_shape_program(lowered, colors, primary_color),
             self._build_it_try_exact_stack_pair_program(lowered, colors, primary_color),
         )
         for blocks in attempts:
