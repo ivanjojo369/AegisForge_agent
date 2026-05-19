@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v8_precise_rows_tshape_no_grid_overbuild_2026_05_19"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v9_v7_stable_plus_small_guards_2026_05_19"
 
 
 @dataclass(frozen=True)
@@ -2916,7 +2916,6 @@ class AegisForgeAgent:
         """
         attempts = (
             self._build_it_try_exact_row_plus_top_program(lowered, colors, primary_color),
-            self._build_it_try_exact_t_shape_program(lowered, colors, primary_color),
             self._build_it_try_exact_stack_pair_program(lowered, colors, primary_color),
         )
         for blocks in attempts:
@@ -2931,27 +2930,32 @@ class AegisForgeAgent:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
             self._build_it_try_exact_small_program(lowered, initial_validated, colors, primary_color),
-            self._build_it_try_multi_clause_program(lowered, colors, primary_color),
-            self._build_it_try_corner_plus_stack_program(lowered, colors, primary_color),
             self._build_it_try_row_with_top_blocks_program(lowered, colors, primary_color),
-            self._build_it_try_t_or_l_extension_program(lowered, initial_validated, colors, primary_color),
-            self._build_it_try_existing_line_extension_program(lowered, initial_validated, colors, primary_color),
-            self._build_it_try_edge_parallel_program(lowered, colors, primary_color),
-            self._build_it_try_each_program(lowered, initial_validated, colors, primary_color),
             self._build_it_try_row_then_stack_program(lowered, colors, primary_color),
             self._build_it_try_stack_chain_program(lowered, initial_validated, colors, primary_color),
+            self._build_it_try_existing_line_extension_program(lowered, initial_validated, colors, primary_color),
+            self._build_it_try_each_program(lowered, initial_validated, colors, primary_color),
+            self._build_it_try_t_or_l_extension_program(lowered, initial_validated, colors, primary_color),
+            self._build_it_try_edge_parallel_program(lowered, colors, primary_color),
         )
         for blocks in attempts:
             if blocks:
                 validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
                 if len(validated) > len(initial_validated):
                     return validated
-        # Corners are allowed only when they are the whole explicit request.
-        # Never use sparse corner anchors as the semantic fallback for mixed prompts.
-        if self._build_it_corner_requested(lowered) and not self._build_it_has_non_corner_structure(lowered):
-            validated, _ = self._validate_build_blocks(self._build_it_try_corner_program(lowered, colors, primary_color))
-            if validated:
-                return validated
+                
+        # Broad multi-clause composition is risky for exact scoring. Use it only
+        # when the prompt is not a compact row/stack/on-top/relative structure.
+        if not self._build_it_expected_small_prompt(lowered):
+            broad_attempts = (
+                self._build_it_try_multi_clause_program(lowered, colors, primary_color),
+                self._build_it_try_corner_plus_stack_program(lowered, colors, primary_color),
+            )
+            for blocks in broad_attempts:
+                if blocks:
+                    validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
+                    if len(validated) > len(initial_validated):
+                        return validated
         return []
 
     def _heuristic_build_it_response(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> str:
