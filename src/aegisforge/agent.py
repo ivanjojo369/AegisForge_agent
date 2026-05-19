@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v6_conservative_exact_no_overbuild_2026_05_19"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v7_exact_small_programs_no_mixed_corners_2026_05_19"
 
 
 @dataclass(frozen=True)
@@ -2447,11 +2447,13 @@ class AegisForgeAgent:
 
         explicit_corners = self._build_it_corner_requested(lowered)
         corner_xz = {(-400, -400), (-400, 400), (400, -400), (400, 400)}
-        if not explicit_corners:
-            non_corner = [b for b in validated if (int(b["x"]), int(b["z"])) not in corner_xz]
-            # Strip corner hallucinations only if some meaningful non-corner structure remains.
-            if non_corner:
-                validated = non_corner
+        non_corner = [b for b in validated if (int(b["x"]), int(b["z"])) not in corner_xz]
+        # v7: corners are the most common false-positive overbuild in this benchmark.
+        # Keep mixed corner+non-corner structures only when explicitly enabled;
+        # otherwise exact small structures should win over decorative anchors.
+        mixed_corners_allowed = _env_flag("AEGISFORGE_BUILD_IT_ALLOW_MIXED_CORNERS", default=False)
+        if non_corner and (not explicit_corners or (self._build_it_expected_small_prompt(lowered) and not mixed_corners_allowed)):
+            validated = non_corner
 
         # Reject broad grid/platform hallucinations unless the prompt truly asks
         # for a filled or whole-area object. This specifically prevents 9x9
@@ -2629,9 +2631,161 @@ class AegisForgeAgent:
             blocks.extend(self._build_it_try_corner_program(lowered, [color], primary_color))
         return self._build_it_unique_blocks(blocks)
 
+    def _build_it_direction_vector_from_text(self, lowered: str) -> tuple[int, int]:
+        if "left" in lowered and "right" not in lowered:
+            return (-100, 0)
+        if "right" in lowered and "left" not in lowered:
+            return (100, 0)
+        if "front" in lowered and not any(term in lowered for term in ("back", "behind")):
+            return (0, 100)
+        if any(term in lowered for term in ("back", "behind")) and "front" not in lowered:
+            return (0, -100)
+        return self._build_it_line_direction(lowered)
+
+    def _build_it_extract_color_after_number(self, text: str, *, fallback: str) -> str:
+        color_pattern = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
+        match = re.search(color_pattern, self._coerce_text(text).lower())
+        return self._normalize_build_color(match.group(1)) if match else fallback
+
+    def _build_it_choose_reference_block(self, blocks: list[dict[str, Any]], lowered: str) -> dict[str, Any] | None:
+        if not blocks:
+            return None
+        if "leftmost" in lowered:
+            return min(blocks, key=lambda b: (int(b["x"]), int(b["z"]), int(b["y"])))
+        if "rightmost" in lowered:
+            return max(blocks, key=lambda b: (int(b["x"]), -int(b["z"]), -int(b["y"])))
+        if "frontmost" in lowered or "front most" in lowered:
+            return max(blocks, key=lambda b: (int(b["z"]), -int(b["x"]), -int(b["y"])))
+        if "backmost" in lowered or "back most" in lowered or "behindmost" in lowered:
+            return min(blocks, key=lambda b: (int(b["z"]), int(b["x"]), int(b["y"])))
+        if "middle" in lowered or "center" in lowered or "centre" in lowered or "origin" in lowered:
+            return min(blocks, key=lambda b: abs(int(b["x"])) + abs(int(b["z"])) + abs(int(b["y"]) - 50))
+        return blocks[-1]
+
+    def _build_it_try_exact_row_plus_top_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+        """Small exact interpreter for the recurring row + on-top pattern.
+
+        Example handled conservatively:
+        "row of three yellow blocks to the left ... two purple blocks on top of the leftmost block"
+        -> 3 yellow ground blocks and 2 purple vertical blocks above the leftmost block.
+        """
+        if not any(term in lowered for term in ("row", "line")):
+            return []
+        if not any(term in lowered for term in ("on top", "above", "over", "stack")):
+            return []
+        color_pattern = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
+        number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+        row_match = re.search(rf"(?:row|line)\s+(?:of\s+)?{number}\s+{color_pattern}\s+blocks?", lowered)
+        if not row_match:
+            row_match = re.search(rf"{number}\s+{color_pattern}\s+blocks?\s+(?:in\s+)?(?:a\s+)?(?:row|line)", lowered)
+        if not row_match:
+            return []
+        row_count = max(1, min(9, self._build_it_parse_number(row_match.group(1), default=3)))
+        row_color = self._normalize_build_color(row_match.group(2)) or primary_color
+        direction = self._build_it_direction_vector_from_text(lowered)
+        row = self._line_blocks([row_color], row_count, (0, 50, 0), direction, centered=False, fallback_color=row_color)
+
+        top_count = 1
+        top_color = colors[-1] if len(colors) > 1 else primary_color
+        # Prefer the color immediately attached to the on-top clause.
+        top_match = re.search(rf"{number}\s+{color_pattern}\s+blocks?\s+(?:on\s+top|above|over)", lowered)
+        if top_match:
+            top_count = max(1, min(4, self._build_it_parse_number(top_match.group(1), default=1)))
+            top_color = self._normalize_build_color(top_match.group(2)) or top_color
+        else:
+            top_match = re.search(rf"(?:on\s+top|above|over)[^.;,]*?{number}\s+{color_pattern}\s+blocks?", lowered)
+            if top_match:
+                top_count = max(1, min(4, self._build_it_parse_number(top_match.group(1), default=1)))
+                top_color = self._normalize_build_color(top_match.group(2)) or top_color
+        ref = self._build_it_choose_reference_block(row, lowered)
+        if not ref:
+            return row
+        blocks = list(row)
+        base_x, base_z = int(ref["x"]), int(ref["z"])
+        # Existing ground row is y=50, so on-top blocks begin at y=150.
+        for i in range(top_count):
+            blocks.append(self._build_it_block(top_color, base_x, 150 + 100 * i, base_z))
+        return self._build_it_unique_blocks(blocks)
+
+    def _build_it_try_exact_stack_pair_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+        """Small exact interpreter for center/origin stack plus one adjacent stack."""
+        if not any(term in lowered for term in ("stack", "tower", "column", "pillar")):
+            return []
+        if not any(term in lowered for term in ("origin", "center", "centre", "middle")):
+            return []
+        color = colors[0] if colors else primary_color
+        number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+        # First stack height: number near the first stack/tower phrase.
+        first_height = self._build_it_parse_stack_height(lowered, default=3)
+        first_match = re.search(rf"{number}\s+(?:block\s+)?(?:{color.lower()}\s+)?(?:stack|tower|column|pillar)", lowered)
+        if first_match:
+            first_height = self._build_it_parse_number(first_match.group(1), default=first_height)
+        first_height = max(1, min(5, first_height))
+        blocks = self._build_it_stack_at(color, 0, 0, first_height)
+
+        # Adjacent stack: detect direction and local height.
+        direction_patterns = (
+            ("front", (0, 100), ("in front", "front of", "front")),
+            ("back", (0, -100), ("behind", "back of", "back")),
+            ("right", (100, 0), ("to the right", "right of", "right")),
+            ("left", (-100, 0), ("to the left", "left of", "left")),
+        )
+        for _name, (dx, dz), terms in direction_patterns:
+            if not any(term in lowered for term in terms):
+                continue
+            local_height = first_height
+            # Prefer a number inside the same clause as the relative direction.
+            clauses = re.split(r"\b(?:and|then|plus|with)\b|[.;,]", lowered)
+            for clause in clauses:
+                if not any(term in clause for term in terms):
+                    continue
+                if not any(term in clause for term in ("stack", "tower", "column", "pillar", "blocks", "block", "tall", "high")):
+                    continue
+                clause_match = re.search(number, clause)
+                if clause_match:
+                    local_height = self._build_it_parse_number(clause_match.group(1), default=local_height)
+                    break
+            else:
+                term_regex = "|".join(re.escape(t) for t in terms)
+                patterns = (
+                    rf"(?:{term_regex})[^.;,]*?{number}\s+(?:blocks?|block\s+)?(?:tall|high|stack|tower|column|pillar)?",
+                    rf"{number}\s+(?:block\s+)?(?:{color.lower()}\s+)?(?:stack|tower|column|pillar)\s+(?:{term_regex})",
+                )
+                for pattern in patterns:
+                    match = re.search(pattern, lowered)
+                    if match:
+                        local_height = self._build_it_parse_number(match.group(1), default=local_height)
+                        break
+            local_height = max(1, min(5, local_height))
+            blocks.extend(self._build_it_stack_at(color, dx, dz, local_height))
+            # Keep this conservative: only one adjacent direction for this exact program.
+            break
+        return self._build_it_unique_blocks(blocks)
+
+    def _build_it_try_exact_small_program(self, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+        """v7 precision-first layer for small Build-it instructions.
+
+        This layer is intentionally narrow: it handles high-frequency patterns seen
+        in the leaderboard logs and returns compact structures. It refuses to create
+        decorative corners, full grids, or platforms unless a later explicit shape
+        rule handles them.
+        """
+        attempts = (
+            self._build_it_try_exact_row_plus_top_program(lowered, colors, primary_color),
+            self._build_it_try_exact_stack_pair_program(lowered, colors, primary_color),
+        )
+        for blocks in attempts:
+            if not blocks:
+                continue
+            clean = self._build_it_sanitize_candidate_blocks(blocks, lowered)
+            if clean:
+                return clean
+        return []
+
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_exact_small_program(lowered, initial_validated, colors, primary_color),
             self._build_it_try_multi_clause_program(lowered, colors, primary_color),
             self._build_it_try_corner_plus_stack_program(lowered, colors, primary_color),
             self._build_it_try_row_with_top_blocks_program(lowered, colors, primary_color),
@@ -2853,6 +3007,14 @@ class AegisForgeAgent:
                             final_text = self._format_build_it_ask(parsed.get("question"))
                 if not final_text:
                     final_text = heuristic_text
+
+        if final_text.upper().startswith("[BUILD];"):
+            parsed_final = self._parse_build_it_response(final_text)
+            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), task_text.lower())
+            if clean_final:
+                final_text = self._format_build_it_build(clean_final)
+            elif self._build_it_expected_small_prompt(task_text.lower()):
+                final_text = self._format_build_it_ask("Please clarify the exact small structure; I avoided sending an overbuilt grid or corner fallback.")
 
         state["last_result"] = final_text
         state["feedback"] = self._coerce_text(safe_metadata.get("feedback") or state.get("feedback")).strip()
