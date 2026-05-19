@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v5_heuristic_first_precise_relative_stacks_2026_05_19"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v6_conservative_exact_no_overbuild_2026_05_19"
 
 
 @dataclass(frozen=True)
@@ -2407,17 +2407,74 @@ class AegisForgeAgent:
             result.append(block)
         return result
 
+    def _build_it_is_explicit_large_structure(self, lowered: str) -> bool:
+        """Return True only when the prompt clearly asks for a broad area/fill."""
+        lowered = self._coerce_text(lowered).lower()
+        if re.search(r"\b(?:\d+|three|four|five|six|seven|eight|nine)\s*(?:x|by)\s*(?:\d+|three|four|five|six|seven|eight|nine)\b", lowered):
+            return True
+        large_markers = (
+            "entire grid", "whole grid", "full grid", "fill the grid", "filled grid",
+            "fill the area", "filled area", "full platform", "large platform",
+            "entire floor", "whole floor", "full floor", "checkerboard",
+            "all squares", "every square", "perimeter", "border", "all edges", "four edges",
+        )
+        return any(marker in lowered for marker in large_markers)
+
+    def _build_it_expected_small_prompt(self, lowered: str) -> bool:
+        """Detect prompts where exact small structures are more likely than broad fills."""
+        lowered = self._coerce_text(lowered).lower()
+        small_markers = (
+            "row", "line", "stack", "tower", "column", "pillar", "on top", "above",
+            "leftmost", "rightmost", "frontmost", "backmost", "origin", "center", "centre",
+            "middle", "highlighted", "to the left", "to the right", "in front", "behind",
+            "l shape", "l-shape", "t shape", "t-shape", "cross", "plus",
+        )
+        return any(marker in lowered for marker in small_markers) and not self._build_it_is_explicit_large_structure(lowered)
+
     def _build_it_sanitize_candidate_blocks(self, blocks: list[dict[str, Any]], lowered: str) -> list[dict[str, Any]]:
-        """Remove common LLM overbuild artifacts before formatting a Build-it answer."""
+        """Remove common overbuild artifacts before formatting a Build-it answer.
+
+        AgentBeats build_what_i_mean rewards exact structures. Extra blocks are
+        usually worse than asking a clarification, so this sanitizer is deliberately
+        conservative and fair-play safe: it does not encode task answers; it only
+        rejects broad hallucinated fills, sparse corner fallbacks, and impossible
+        duplicate/invalid coordinates.
+        """
+        lowered = self._coerce_text(lowered).lower()
         validated, _ = self._validate_build_blocks(blocks)
         if not validated:
             return []
-        if not self._build_it_corner_requested(lowered):
-            corner_xz = {(-400, -400), (-400, 400), (400, -400), (400, 400)}
+
+        explicit_corners = self._build_it_corner_requested(lowered)
+        corner_xz = {(-400, -400), (-400, 400), (400, -400), (400, 400)}
+        if not explicit_corners:
             non_corner = [b for b in validated if (int(b["x"]), int(b["z"])) not in corner_xz]
-            # Strip sparse corner hallucinations only if something meaningful remains.
+            # Strip corner hallucinations only if some meaningful non-corner structure remains.
             if non_corner:
                 validated = non_corner
+
+        # Reject broad grid/platform hallucinations unless the prompt truly asks
+        # for a filled or whole-area object. This specifically prevents 9x9
+        # grids generated from generic words like "grid" in the benchmark UI.
+        unique_x = {int(b["x"]) for b in validated}
+        unique_z = {int(b["z"]) for b in validated}
+        explicit_large = self._build_it_is_explicit_large_structure(lowered)
+        expected_small = self._build_it_expected_small_prompt(lowered)
+        if not explicit_large:
+            if len(validated) > 24:
+                return []
+            if expected_small and len(unique_x) >= 5 and len(unique_z) >= 5 and len(validated) >= 20:
+                return []
+            if len(unique_x) >= 7 and len(unique_z) >= 7:
+                return []
+
+        # If the request is a small row/stack/on-top program, avoid returning a
+        # mixed structure with far-corner anchors. The heuristic should compose
+        # only clauses it understands; otherwise ASK is safer than overbuilding.
+        if expected_small and not explicit_corners:
+            if any(abs(int(b["x"])) == 400 and abs(int(b["z"])) == 400 for b in validated):
+                return []
+
         return self._build_it_unique_blocks(validated)
 
     def _build_it_try_corner_plus_stack_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
@@ -2587,7 +2644,7 @@ class AegisForgeAgent:
         )
         for blocks in attempts:
             if blocks:
-                validated, _ = self._validate_build_blocks(blocks)
+                validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
                 if len(validated) > len(initial_validated):
                     return validated
         # Corners are allowed only when they are the whole explicit request.
@@ -2662,19 +2719,25 @@ class AegisForgeAgent:
             if any(term in lowered for term in ("square", "rectangle")):
                 width, depth = self._build_it_dimensions(lowered, default=(3, 3))
                 return build_with_existing(self._square_blocks(colors, width, depth, anchor, lowered, fallback_color=primary_color))
-            return build_with_existing(self._edge_blocks(colors, lowered, fallback_color=primary_color))
+            candidate = self._build_it_sanitize_candidate_blocks(self._edge_blocks(colors, lowered, fallback_color=primary_color), lowered)
+            if candidate:
+                return build_with_existing(candidate)
 
         if any(term in lowered for term in ("cross", "plus sign", "plus-shaped", "plus shaped")):
             size = self._build_it_count_near(lowered, ("block", "blocks", "wide", "size"), default=5)
             return build_with_existing(self._cross_blocks(colors, size, anchor, fallback_color=primary_color))
 
-        if any(term in lowered for term in ("square", "rectangle", "platform", "floor", "grid")):
+        shape_requested = any(term in lowered for term in ("square", "rectangle", "platform", "floor")) or self._build_it_is_explicit_large_structure(lowered)
+        if shape_requested:
             width, depth = self._build_it_dimensions(lowered, default=(3, 3))
             if "row" in lowered and "column" in lowered:
                 rows = self._build_it_count_near(lowered, ("row",), default=depth)
                 cols = self._build_it_count_near(lowered, ("column", "col"), default=width)
                 width, depth = cols, rows
-            return build_with_existing(self._square_blocks(colors, width, depth, anchor, lowered, fallback_color=primary_color))
+            candidate = self._square_blocks(colors, width, depth, anchor, lowered, fallback_color=primary_color)
+            candidate = self._build_it_sanitize_candidate_blocks(candidate, lowered)
+            if candidate:
+                return build_with_existing(candidate)
 
         if any(term in lowered for term in ("wall", "fence")):
             width, height = self._build_it_dimensions(lowered, default=(3, 3))
@@ -2771,8 +2834,10 @@ class AegisForgeAgent:
             if not final_text:
                 heuristic_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
                 if heuristic_text.upper().startswith("[BUILD];"):
-                    final_text = heuristic_text
-                elif self._llm_base_url() and not llm_first:
+                    parsed_heuristic = self._parse_build_it_response(heuristic_text)
+                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), task_text.lower())
+                    final_text = self._format_build_it_build(clean_heuristic) if clean_heuristic else self._format_build_it_ask("Please clarify the exact small structure; broad grid fills are disabled unless explicitly requested.")
+                elif self._llm_base_url() and not llm_first and _env_flag("AEGISFORGE_BUILD_IT_ALLOW_LLM_FALLBACK", default=False):
                     llm_text = self._call_llm(
                         messages=self._build_it_llm_messages(task_text, safe_metadata, state),
                         temperature=0.0,
