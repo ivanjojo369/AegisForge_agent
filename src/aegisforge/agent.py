@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v4_no_corner_only_2026_05_19"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v5_heuristic_first_precise_relative_stacks_2026_05_19"
 
 
 @dataclass(frozen=True)
@@ -2100,8 +2100,15 @@ class AegisForgeAgent:
         )
         return any(term in lowered for term in structural_terms)
 
-    def _build_it_try_corner_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+    def _build_it_corner_requested(self, lowered: str) -> bool:
         if "corner" not in lowered:
+            return False
+        if re.search(r"\b(?:no|not|without|avoid|except)\s+(?:any\s+|the\s+|all\s+)?corners?\b", lowered):
+            return False
+        return bool(re.search(r"\b(?:corner|corners|four corners|all four corners|corner blocks?|in each corner|at each corner)\b", lowered))
+
+    def _build_it_try_corner_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
+        if not self._build_it_corner_requested(lowered):
             return []
         base_color = colors[0] if colors else primary_color
         top_color = colors[1] if len(colors) > 1 else base_color
@@ -2400,9 +2407,22 @@ class AegisForgeAgent:
             result.append(block)
         return result
 
+    def _build_it_sanitize_candidate_blocks(self, blocks: list[dict[str, Any]], lowered: str) -> list[dict[str, Any]]:
+        """Remove common LLM overbuild artifacts before formatting a Build-it answer."""
+        validated, _ = self._validate_build_blocks(blocks)
+        if not validated:
+            return []
+        if not self._build_it_corner_requested(lowered):
+            corner_xz = {(-400, -400), (-400, 400), (400, -400), (400, 400)}
+            non_corner = [b for b in validated if (int(b["x"]), int(b["z"])) not in corner_xz]
+            # Strip sparse corner hallucinations only if something meaningful remains.
+            if non_corner:
+                validated = non_corner
+        return self._build_it_unique_blocks(validated)
+
     def _build_it_try_corner_plus_stack_program(self, lowered: str, colors: list[str], primary_color: str) -> list[dict[str, Any]]:
         """Compose corner requests with center/relative stacks instead of returning sparse corners only."""
-        if "corner" not in lowered or not any(term in lowered for term in ("stack", "tower", "column", "pillar")):
+        if not self._build_it_corner_requested(lowered) or not any(term in lowered for term in ("stack", "tower", "column", "pillar")):
             return []
         base_color = colors[0] if colors else primary_color
         blocks: list[dict[str, Any]] = []
@@ -2516,9 +2536,19 @@ class AegisForgeAgent:
                 direction_pattern = "|".join(re.escape(word) for word in direction_words)
                 number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
                 patterns = (
-                    rf"(?:stack|tower|column|pillar)\s+of\s+{number}[^.;,]*?(?:{direction_pattern})",
+                    # Prefer the clause that owns the direction so "five at origin and four in front" returns four.
+                    rf"(?:^|\band\b|[,;])\s*(?:a\s+|an\s+)?(?:stack|tower|column|pillar)\s+of\s+{number}[^.;,]*?(?:{direction_pattern})",
+                    rf"(?:^|\band\b|[,;])\s*(?:a\s+|an\s+)?{number}\s*(?:-|\s+)(?:[a-z]+\s+){{0,3}}(?:blocks?|block)?\s*(?:[a-z]+\s+){{0,3}}(?:stack|tower|column|pillar)[^.;,]*?(?:{direction_pattern})",
+                    # "tower of four ... in front"
+                    rf"(?:stack|tower|column|pillar)\s+of\s+{number}(?:(?!\band\b).)*?(?:{direction_pattern})",
+                    # "four block purple tower in front" / "four-block tower in front"
+                    rf"{number}\s*(?:-|\s+)(?:[a-z]+\s+){{0,3}}(?:blocks?|block)?\s*(?:[a-z]+\s+){{0,3}}(?:stack|tower|column|pillar)(?:(?!\band\b).)*?(?:{direction_pattern})",
+                    # "in front ... tower of four"
                     rf"(?:{direction_pattern})[^.;,]*?(?:stack|tower|column|pillar)\s+of\s+{number}",
+                    # "in front ... four blocks tall/high"
                     rf"(?:{direction_pattern})[^.;,]*?{number}\s+(?:blocks?|tall|high)",
+                    # "four blocks in front"
+                    rf"(?:^|\band\b|[,;])\s*(?:a\s+|an\s+)?{number}\s+(?:blocks?|tall|high)[^.;,]*?(?:{direction_pattern})",
                 )
                 for pattern in patterns:
                     match = re.search(pattern, lowered)
@@ -2537,7 +2567,7 @@ class AegisForgeAgent:
                 blocks.extend(self._build_it_stack_at(color, 100, 0, local_stack_height(("to the right", "right of", "right"), height)))
             if "to the left" in lowered or "left of" in lowered:
                 blocks.extend(self._build_it_stack_at(color, -100, 0, local_stack_height(("to the left", "left of", "left"), height)))
-        if "corner" in lowered and blocks:
+        if self._build_it_corner_requested(lowered) and blocks:
             color = colors[0] if colors else primary_color
             blocks.extend(self._build_it_try_corner_program(lowered, [color], primary_color))
         return self._build_it_unique_blocks(blocks)
@@ -2562,7 +2592,7 @@ class AegisForgeAgent:
                     return validated
         # Corners are allowed only when they are the whole explicit request.
         # Never use sparse corner anchors as the semantic fallback for mixed prompts.
-        if "corner" in lowered and not self._build_it_has_non_corner_structure(lowered):
+        if self._build_it_corner_requested(lowered) and not self._build_it_has_non_corner_structure(lowered):
             validated, _ = self._validate_build_blocks(self._build_it_try_corner_program(lowered, colors, primary_color))
             if validated:
                 return validated
@@ -2623,7 +2653,7 @@ class AegisForgeAgent:
 
         anchor = self._build_it_anchor(lowered, initial_validated)
 
-        if "corner" in lowered and not self._build_it_has_non_corner_structure(lowered):
+        if self._build_it_corner_requested(lowered) and not self._build_it_has_non_corner_structure(lowered):
             return build_with_existing(self._corners_blocks(colors, lowered, fallback_color=primary_color))
 
         if "edge" in lowered or "border" in lowered or "perimeter" in lowered:
@@ -2725,7 +2755,7 @@ class AegisForgeAgent:
         # When an API/base URL is available, let the LLM attempt the full spatial
         # interpretation first; deterministic rules remain the offline fallback.
         if not final_text:
-            llm_first = _env_flag("AEGISFORGE_BUILD_IT_LLM_FIRST", default=True)
+            llm_first = _env_flag("AEGISFORGE_BUILD_IT_LLM_FIRST", default=False)
             if llm_first and self._llm_base_url():
                 llm_text = self._call_llm(
                     messages=self._build_it_llm_messages(task_text, safe_metadata, state),
@@ -2735,7 +2765,9 @@ class AegisForgeAgent:
                 if llm_text:
                     parsed = self._parse_build_it_response(llm_text)
                     if parsed.get("kind") == "build" and parsed.get("blocks"):
-                        final_text = self._format_build_it_build(parsed["blocks"])
+                        clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
+                        if clean_blocks:
+                            final_text = self._format_build_it_build(clean_blocks)
             if not final_text:
                 heuristic_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
                 if heuristic_text.upper().startswith("[BUILD];"):
@@ -2749,7 +2781,9 @@ class AegisForgeAgent:
                     if llm_text:
                         parsed = self._parse_build_it_response(llm_text)
                         if parsed.get("kind") == "build" and parsed.get("blocks"):
-                            final_text = self._format_build_it_build(parsed["blocks"])
+                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
+                            if clean_blocks:
+                                final_text = self._format_build_it_build(clean_blocks)
                         elif parsed.get("kind") == "ask":
                             final_text = self._format_build_it_ask(parsed.get("question"))
                 if not final_text:
