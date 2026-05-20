@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v11_single_channel_bwim_2026_05_20"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v12_no_generic_ask_effective_text_2026_05_20"
 
 
 @dataclass(frozen=True)
@@ -1543,13 +1543,16 @@ class AegisForgeAgent:
         text = self._coerce_text(question).strip()
         text = re.sub(r"[\r\n;]+", " ", text).strip()
         if not text:
-            text = "Please provide the blocks in the format Color,x,y,z."
+            text = "What color should the unspecified block(s) be?"
         return f"[ASK];{text}"
 
     def _parse_build_it_response(self, text: Any) -> dict[str, Any]:
         raw = self._coerce_text(text).strip()
         if not raw:
-            return {"kind": "ask", "question": "Please provide the blocks in the format Color,x,y,z."}
+            # Empty visible A2A text is common when the benchmark sends the
+            # instruction through metadata/JSON. Treat it as unknown so the
+            # Build-it state/effective-task-text path can still solve the turn.
+            return {"kind": "unknown", "raw": ""}
 
         raw_upper = raw.upper()
         if raw_upper.startswith("[ASK]"):
@@ -1655,6 +1658,42 @@ class AegisForgeAgent:
             state["last_result"] = last_result
         self.build_protocol_state[session_key] = state
         return state
+
+    def _build_it_effective_task_text(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> str:
+        """Build the text the BWIM parser should reason over.
+
+        Some AgentBeats turns send an empty visible message while the actual
+        instruction/start structure is nested in metadata. The previous adapter
+        parsed the empty visible text first and emitted a generic [ASK], which
+        created ask loops. This method makes metadata/state the source of truth
+        before falling back to visible text.
+        """
+        pieces: list[str] = []
+        for value in (
+            state.get("instruction_current"),
+            metadata.get("instruction"),
+            metadata.get("user_request"),
+            metadata.get("task"),
+            metadata.get("prompt"),
+            metadata.get("query"),
+            metadata.get("objective"),
+            metadata.get("target"),
+            task_text,
+        ):
+            text = self._coerce_text(value).strip()
+            if text and text not in pieces:
+                pieces.append(text)
+
+        if state.get("initial_blocks") and "START_STRUCTURE" not in "\n".join(pieces).upper():
+            pieces.append("START_STRUCTURE: " + self._format_build_it_build(state.get("initial_blocks", [])).split(";", 1)[1])
+
+        for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "existing_blocks", "block_building"):
+            if key in metadata:
+                candidate_text = self._coerce_text(metadata.get(key)).strip()
+                if candidate_text and candidate_text not in pieces:
+                    pieces.append(f"{key}: {candidate_text}")
+
+        return "\n".join(pieces).strip()
 
     def _build_it_llm_messages(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> list[dict[str, str]]:
         state_summary = {
@@ -3367,13 +3406,18 @@ class AegisForgeAgent:
         if initial_validated:
             return self._format_build_it_build(initial_validated)
 
-        return self._format_build_it_ask("Please provide the blocks in the format Color,x,y,z.")
+        # Never end with a generic [ASK]. Generic asks cause the benchmark to
+        # loop when the question-answerer is unavailable and they do not encode
+        # a useful missing slot. Prefer a conservative, valid build payload.
+        fallback_blocks = initial_validated or [self._build_it_block(primary_color, 0, 50, 0)]
+        return self._format_build_it_build(fallback_blocks)
 
     def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         state = self._build_it_state(safe_metadata, task_text)
+        effective_text = self._build_it_effective_task_text(task_text, safe_metadata, state)
 
-        direct = self._parse_build_it_response(task_text)
+        direct = self._parse_build_it_response(effective_text if effective_text.strip().upper().startswith(("[BUILD]", "[ASK]")) else task_text)
         final_text = ""
         if direct.get("kind") == "build" and direct.get("blocks"):
             final_text = self._format_build_it_build(direct["blocks"])
@@ -3387,7 +3431,7 @@ class AegisForgeAgent:
             llm_first = _env_flag("AEGISFORGE_BUILD_IT_LLM_FIRST", default=False)
             if llm_first and self._llm_base_url():
                 llm_text = self._call_llm(
-                    messages=self._build_it_llm_messages(task_text, safe_metadata, state),
+                    messages=self._build_it_llm_messages(effective_text or task_text, safe_metadata, state),
                     temperature=0.0,
                     max_tokens=420,
                 )
@@ -3398,21 +3442,21 @@ class AegisForgeAgent:
                         if clean_blocks:
                             final_text = self._format_build_it_build(clean_blocks)
             if not final_text:
-                heuristic_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
+                heuristic_text = self._heuristic_build_it_response(effective_text or task_text, safe_metadata, state)
                 if heuristic_text.upper().startswith("[BUILD];"):
                     parsed_heuristic = self._parse_build_it_response(heuristic_text)
-                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), task_text.lower())
+                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), (effective_text or task_text).lower())
                     final_text = self._format_build_it_build(clean_heuristic) if clean_heuristic else self._format_build_it_ask("Please clarify the exact small structure; broad grid fills are disabled unless explicitly requested.")
                 elif self._llm_base_url() and not llm_first and _env_flag("AEGISFORGE_BUILD_IT_ALLOW_LLM_FALLBACK", default=False):
                     llm_text = self._call_llm(
-                        messages=self._build_it_llm_messages(task_text, safe_metadata, state),
+                        messages=self._build_it_llm_messages(effective_text or task_text, safe_metadata, state),
                         temperature=0.0,
                         max_tokens=420,
                     )
                     if llm_text:
                         parsed = self._parse_build_it_response(llm_text)
                         if parsed.get("kind") == "build" and parsed.get("blocks"):
-                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
+                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], (effective_text or task_text).lower())
                             if clean_blocks:
                                 final_text = self._format_build_it_build(clean_blocks)
                         elif parsed.get("kind") == "ask":
@@ -3422,10 +3466,10 @@ class AegisForgeAgent:
 
         if final_text.upper().startswith("[BUILD];"):
             parsed_final = self._parse_build_it_response(final_text)
-            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), task_text.lower())
+            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), (effective_text or task_text).lower())
             if clean_final:
                 final_text = self._format_build_it_build(clean_final)
-            elif self._build_it_expected_small_prompt(task_text.lower()):
+            elif self._build_it_expected_small_prompt((effective_text or task_text).lower()):
                 final_text = self._format_build_it_ask("Please clarify the exact small structure; I avoided sending an overbuilt grid or corner fallback.")
 
         state["last_result"] = final_text
