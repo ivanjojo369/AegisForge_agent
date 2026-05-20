@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v10_metadata_instruction_adaptive_ask_2026_05_20"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v11_single_channel_bwim_2026_05_20"
 
 
 @dataclass(frozen=True)
@@ -1619,24 +1619,9 @@ class AegisForgeAgent:
             safe_metadata.get("instruction")
             or safe_metadata.get("user_request")
             or safe_metadata.get("task")
-            or safe_metadata.get("task_text")
-            or safe_metadata.get("prompt")
-            or safe_metadata.get("sentenceW")
-            or safe_metadata.get("sentenceD")
             or task_text
         ).strip()
-        previous_was_question_for_instruction = self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]")
-        incoming_for_instruction = self._coerce_text(task_text).strip()
-        incoming_looks_like_answer = (
-            previous_was_question_for_instruction
-            and incoming_for_instruction
-            and instruction == incoming_for_instruction
-            and not re.search(
-                r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
-                incoming_for_instruction.lower(),
-            )
-        )
-        if instruction and not incoming_looks_like_answer:
+        if instruction:
             state["instruction_current"] = instruction
 
         initial_candidates: list[Any] = []
@@ -1660,28 +1645,7 @@ class AegisForgeAgent:
         ).strip()
         if feedback:
             state["feedback"] = feedback
-        incoming_text = self._coerce_text(task_text).strip()
-        previous_was_question = self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]")
-        looks_like_fresh_instruction = bool(re.search(
-            r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
-            incoming_text.lower(),
-        ))
-        qa_answer = self._coerce_text(
-            safe_metadata.get("answer")
-            or safe_metadata.get("response_to_question")
-            or safe_metadata.get("answer_to_question")
-            or safe_metadata.get("question_answer")
-            or safe_metadata.get("qa_answer")
-            or safe_metadata.get("clarification")
-            or safe_metadata.get("clarification_answer")
-            or safe_metadata.get("speaker_answer")
-        ).strip()
-        if not qa_answer and previous_was_question and incoming_text and not looks_like_fresh_instruction:
-            # The Build-it green speaker often answers a clarification as plain
-            # message text rather than as structured metadata. Treat short
-            # non-instruction replies such as "blue" or "three" as the answer
-            # while keeping the previous instruction_current intact.
-            qa_answer = incoming_text
+        qa_answer = self._coerce_text(safe_metadata.get("answer") or safe_metadata.get("response_to_question")).strip()
         if qa_answer:
             answers = list(state.get("question_answers", []))
             answers.append(qa_answer)
@@ -2707,16 +2671,7 @@ class AegisForgeAgent:
         return blocks[-1]
 
     def _build_it_allow_ambiguity_ask(self) -> bool:
-        """Whether the Build-it adapter may ask a clarification question.
-
-        Build What I Mean intentionally contains underspecified color/number
-        prompts.  Those prompts are not solvable from geometry alone; the
-        correct behavior is to ask one concise semantic question, then build
-        after the evaluator/speaker supplies the missing color or quantity.
-
-        Set AEGISFORGE_BUILD_IT_FORCE_BUILD=1 only for offline smoke tests where
-        no question-answerer is available.
-        """
+        """Whether the Build-it adapter should ask instead of guessing underspecified clauses."""
         if _env_flag("AEGISFORGE_BUILD_IT_FORCE_BUILD", default=False):
             return False
         return _env_flag("AEGISFORGE_BUILD_IT_ASK_ON_AMBIGUITY", default=True)
@@ -2765,110 +2720,6 @@ class AegisForgeAgent:
             return "How many blocks high should the underspecified stack be?"
 
         return ""
-
-    def _build_it_best_effort_fallback_blocks(
-        self,
-        task_text_clean: str,
-        lowered: str,
-        initial_validated: list[dict[str, Any]],
-        colors: list[str],
-        primary_color: str,
-    ) -> list[dict[str, Any]]:
-        """Return a conservative [BUILD] candidate instead of a generic [ASK].
-
-        This is intentionally a reusable spatial prior, not an answer table:
-        when the instruction is underspecified, choose the smallest plausible
-        object on the canonical grid.  It prevents CI from getting stuck in
-        repeated clarification loops such as "Please provide Color,x,y,z".
-        """
-        lowered = self._coerce_text(lowered or task_text_clean).lower()
-        initial_validated = list(initial_validated or [])
-        colors = [c for c in (colors or []) if c]
-        primary_color = primary_color or (colors[0] if colors else "Green")
-        if not colors:
-            colors = [primary_color]
-
-        anchor = self._build_it_anchor(lowered, initial_validated)
-
-        def merged(new_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return self._build_it_unique_blocks(self._merge_build_blocks(initial_validated, new_blocks))
-
-        # If the task asks for a block above each existing/reference block, do
-        # that literally rather than asking for a color.  Use the first/primary
-        # color when no explicit top color is supplied.
-        if initial_validated and "each" in lowered and any(term in lowered for term in ("on top", "above", "over")):
-            top_color = colors[-1] if colors else primary_color
-            new_blocks: list[dict[str, Any]] = []
-            for ref in self._build_it_unique_columns(initial_validated):
-                x, z = int(ref["x"]), int(ref["z"])
-                y = self._build_it_top_y_at(initial_validated + new_blocks, x, z) + 100
-                if y < 150:
-                    y = 150
-                new_blocks.append(self._build_it_block(top_color, x, y, z))
-            return merged(new_blocks)
-
-        # Relative "above/on top" with one reference block: add one block above
-        # the best reference instead of asking for exact coordinates.
-        if initial_validated and any(term in lowered for term in ("on top", "above", "over")):
-            ref = self._build_it_reference_column(initial_validated, lowered, fallback=initial_validated[-1])
-            if ref:
-                top_color = colors[-1] if colors else primary_color
-                x, z = int(ref["x"]), int(ref["z"])
-                y = self._build_it_top_y_at(initial_validated, x, z) + 100
-                if y < 150:
-                    y = 150
-                return merged([self._build_it_block(top_color, x, y, z)])
-
-        # Keep explicit corner requests exact, but do not use corners as a
-        # generic fallback for small row/stack prompts.
-        if self._build_it_corner_requested(lowered) and not self._build_it_has_non_corner_structure(lowered):
-            return merged(self._corners_blocks(colors, lowered, fallback_color=primary_color))
-
-        # Rows/lines default to three blocks from the anchor in the requested
-        # direction.  Natural "place N blocks" uses the same line prior.
-        if "row" in lowered or "line" in lowered:
-            count = self._build_it_count_near(lowered, ("row", "line", "block", "blocks"), default=3)
-            direction = self._build_it_line_direction(lowered)
-            centered = any(term in lowered for term in ("centered", "center", "centre", "middle", "across"))
-            return merged(self._line_blocks(colors, count, anchor, direction, centered=centered, fallback_color=primary_color))
-
-        count = self._build_it_count_near(lowered, ("block", "blocks"), default=1)
-        if count > 1 and any(term in lowered for term in ("place", "put", "build", "make", "create", "add")):
-            direction = self._build_it_line_direction(lowered)
-            centered = any(term in lowered for term in ("centered", "center", "centre", "middle", "around"))
-            return merged(self._line_blocks(colors, count, anchor, direction, centered=centered, fallback_color=primary_color))
-
-        # Stacks/towers default to height three unless a local number is given.
-        tower_terms = ("stack", "tower", "column", "pillar")
-        if any(term in lowered for term in tower_terms):
-            height = self._build_it_parse_stack_height(lowered, default=3)
-            tower_count = 1
-            multi_tower_match = re.search(r"\b(one|two|three|four|five|\d+)\s+(?:towers|pillars|columns|stacks)\b", lowered)
-            if multi_tower_match:
-                tower_count = self._build_it_parse_number(multi_tower_match.group(1), default=1)
-            tower_count = max(1, min(5, tower_count))
-            blocks: list[dict[str, Any]] = []
-            if tower_count == 1:
-                blocks.extend(self._stack_blocks(colors, height, anchor, fallback_color=primary_color))
-            else:
-                for i, offset in enumerate(self._centered_offsets(tower_count)):
-                    tower_color = self._build_it_color_for_index(colors, i, fallback=primary_color)
-                    blocks.extend(self._stack_blocks([tower_color], height, (anchor[0] + offset, anchor[1], anchor[2]), fallback_color=tower_color))
-            return merged(blocks)
-
-        if any(term in lowered for term in ("square", "rectangle", "platform", "floor")) or self._build_it_is_explicit_large_structure(lowered):
-            width, depth = self._build_it_dimensions(lowered, default=(3, 3))
-            candidate = self._square_blocks(colors, width, depth, anchor, lowered, fallback_color=primary_color)
-            sanitized = self._build_it_sanitize_candidate_blocks(candidate, lowered)
-            if sanitized:
-                return merged(sanitized)
-
-        if initial_validated:
-            return self._build_it_unique_blocks(initial_validated)
-
-        # Last-resort deterministic answer: one primary-color block on the most
-        # natural anchor.  A single [BUILD] is preferable to a generic [ASK] loop.
-        return [self._build_it_block(primary_color, *anchor)]
 
     def _build_it_top_y_at(self, blocks: list[dict[str, Any]], x: int, z: int) -> int:
         ys = [int(b["y"]) for b in blocks if int(b["x"]) == int(x) and int(b["z"]) == int(z)]
@@ -3368,9 +3219,6 @@ class AegisForgeAgent:
 
     def _heuristic_build_it_response(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> str:
         task_text_clean = self._coerce_text(task_text).strip()
-        answers = [self._coerce_text(a).strip() for a in state.get("question_answers", []) if self._coerce_text(a).strip()]
-        if answers and "CLARIFICATION_ANSWER" not in task_text_clean:
-            task_text_clean = f"{task_text_clean}\nCLARIFICATION_ANSWER: {answers[-1]}".strip()
         lowered = task_text_clean.lower()
 
         # Only treat coordinates in task_text as a final answer when the text is
@@ -3513,90 +3361,19 @@ class AegisForgeAgent:
             return build_with_existing([self._build_it_block(primary_color, *anchor)])
 
         ask_markers = ("?", "clarify", "which", "what color", "what block", "where", "missing", "insufficient")
-        if any(marker in lowered for marker in ask_markers) and self._build_it_allow_ambiguity_ask():
+        if any(marker in lowered for marker in ask_markers):
             return self._format_build_it_ask("Please provide the missing block details in the format Color,x,y,z.")
 
-        fallback_blocks = self._build_it_best_effort_fallback_blocks(
-            task_text_clean, lowered, initial_validated, semantic_colors, primary_color
-        )
-        return self._format_build_it_build(fallback_blocks)
-
-    def _build_it_effective_task_text(
-        self,
-        task_text: str,
-        metadata: Mapping[str, Any],
-        state: Mapping[str, Any],
-    ) -> str:
-        """Recover the actual Build-it instruction from A2A text, metadata, and state.
-
-        In the AgentBeats gateway, the visible message text can be empty or only
-        transport-like while the real instruction lives in JSON metadata. Earlier
-        builds passed the empty base_text into the heuristic builder, which caused
-        generic [ASK] loops or one-block fallbacks and produced 0% accuracy. This
-        function builds the text that the spatial interpreter should actually see.
-        """
-        pieces: list[str] = []
-        seen: set[str] = set()
-
-        def add(label: str, value: Any) -> None:
-            raw = self._coerce_text(value).strip()
-            if not raw:
-                return
-            if label == "INSTRUCTION" and self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]"):
-                if raw == self._coerce_text(task_text).strip() and not re.search(
-                    r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
-                    raw.lower(),
-                ):
-                    return
-            key = re.sub(r"\s+", " ", raw.lower())[:500]
-            if key in seen:
-                return
-            seen.add(key)
-            pieces.append(f"{label}: {raw}" if label else raw)
-
-        for key in (
-            "instruction", "user_request", "task", "task_text", "prompt",
-            "sentenceW", "sentenceD", "utterance", "query", "description",
-            "goal", "objective", "formatted_input",
-        ):
-            if key in metadata:
-                add("INSTRUCTION", metadata.get(key))
-
-        add("INSTRUCTION", state.get("instruction_current"))
-
-        raw_text = self._coerce_text(task_text).strip()
-        if raw_text and (
-            not pieces
-            or re.search(r"\b(START[_\s-]*STRUCTURE|INSTRUCTION|USER_REQUEST|build|stack|place|put|corner|row|tower|block)\b", raw_text, re.I)
-        ):
-            add("", raw_text)
-
-        initial_blocks = []
-        if isinstance(state.get("initial_blocks"), list):
-            initial_blocks.extend(state.get("initial_blocks", []))
-        for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "existing_blocks", "structure", "blocks"):
-            if key in metadata:
-                initial_blocks.extend(self._extract_build_blocks_from_candidate(metadata.get(key)))
-        initial_validated, _ = self._validate_build_blocks(initial_blocks)
         if initial_validated:
-            start_line = ";".join(
-                f"{b['color']},{int(b['x'])},{int(b['y'])},{int(b['z'])}" for b in initial_validated
-            )
-            add("START_STRUCTURE", start_line)
+            return self._format_build_it_build(initial_validated)
 
-        answers = [self._coerce_text(a).strip() for a in state.get("question_answers", []) if self._coerce_text(a).strip()]
-        if answers:
-            add("CLARIFICATION_ANSWER", answers[-1])
-
-        return "\n".join(pieces).strip() or raw_text
+        return self._format_build_it_ask("Please provide the blocks in the format Color,x,y,z.")
 
     def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         state = self._build_it_state(safe_metadata, task_text)
-        effective_task_text = self._build_it_effective_task_text(task_text, safe_metadata, state)
-        effective_lower = effective_task_text.lower()
 
-        direct = self._parse_build_it_response(effective_task_text)
+        direct = self._parse_build_it_response(task_text)
         final_text = ""
         if direct.get("kind") == "build" and direct.get("blocks"):
             final_text = self._format_build_it_build(direct["blocks"])
@@ -3610,38 +3387,32 @@ class AegisForgeAgent:
             llm_first = _env_flag("AEGISFORGE_BUILD_IT_LLM_FIRST", default=False)
             if llm_first and self._llm_base_url():
                 llm_text = self._call_llm(
-                    messages=self._build_it_llm_messages(effective_task_text, safe_metadata, state),
+                    messages=self._build_it_llm_messages(task_text, safe_metadata, state),
                     temperature=0.0,
                     max_tokens=420,
                 )
                 if llm_text:
                     parsed = self._parse_build_it_response(llm_text)
                     if parsed.get("kind") == "build" and parsed.get("blocks"):
-                        clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], effective_lower)
+                        clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
                         if clean_blocks:
                             final_text = self._format_build_it_build(clean_blocks)
             if not final_text:
-                heuristic_text = self._heuristic_build_it_response(effective_task_text, safe_metadata, state)
+                heuristic_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
                 if heuristic_text.upper().startswith("[BUILD];"):
                     parsed_heuristic = self._parse_build_it_response(heuristic_text)
-                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), effective_lower)
-                    if clean_heuristic:
-                        final_text = self._format_build_it_build(clean_heuristic)
-                    else:
-                        fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                            effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
-                        )
-                        final_text = self._format_build_it_build(fallback_blocks)
+                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), task_text.lower())
+                    final_text = self._format_build_it_build(clean_heuristic) if clean_heuristic else self._format_build_it_ask("Please clarify the exact small structure; broad grid fills are disabled unless explicitly requested.")
                 elif self._llm_base_url() and not llm_first and _env_flag("AEGISFORGE_BUILD_IT_ALLOW_LLM_FALLBACK", default=False):
                     llm_text = self._call_llm(
-                        messages=self._build_it_llm_messages(effective_task_text, safe_metadata, state),
+                        messages=self._build_it_llm_messages(task_text, safe_metadata, state),
                         temperature=0.0,
                         max_tokens=420,
                     )
                     if llm_text:
                         parsed = self._parse_build_it_response(llm_text)
                         if parsed.get("kind") == "build" and parsed.get("blocks"):
-                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], effective_lower)
+                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
                             if clean_blocks:
                                 final_text = self._format_build_it_build(clean_blocks)
                         elif parsed.get("kind") == "ask":
@@ -3651,22 +3422,12 @@ class AegisForgeAgent:
 
         if final_text.upper().startswith("[BUILD];"):
             parsed_final = self._parse_build_it_response(final_text)
-            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), effective_lower)
+            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), task_text.lower())
             if clean_final:
                 final_text = self._format_build_it_build(clean_final)
-            elif self._build_it_expected_small_prompt(effective_lower):
-                fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                    effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
-                )
-                final_text = self._format_build_it_build(fallback_blocks)
+            elif self._build_it_expected_small_prompt(task_text.lower()):
+                final_text = self._format_build_it_ask("Please clarify the exact small structure; I avoided sending an overbuilt grid or corner fallback.")
 
-        if final_text.upper().startswith("[ASK]") and not self._build_it_allow_ambiguity_ask():
-            fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
-            )
-            final_text = self._format_build_it_build(fallback_blocks)
-
-        state["last_effective_task_text"] = effective_task_text
         state["last_result"] = final_text
         state["feedback"] = self._coerce_text(safe_metadata.get("feedback") or state.get("feedback")).strip()
         history = list(state.get("history", []))
@@ -3908,14 +3669,17 @@ class AegisForgeAgent:
             self._append_episodic_trace(execution, final_text)
             trace = self._build_trace(execution)
 
-        await updater.add_artifact(
-            parts=[Part(root=TextPart(kind="text", text=final_text))],
-            name="response" if (strict_protocol or build_it_protocol) else "AegisForgeResponse",
-        )
+        # In strict symbolic and Build-it modes the scorer reads the visible A2A
+        # transcript. Emitting the same payload as both an artifact and a status
+        # message makes the gateway concatenate duplicate directives such as
+        # "[BUILD];... [BUILD];...", which corrupts BWIM exact-structure parsing.
+        if not (strict_protocol or build_it_protocol):
+            await updater.add_artifact(
+                parts=[Part(root=TextPart(kind="text", text=final_text))],
+                name="AegisForgeResponse",
+            )
 
-        # AgentBeats green agents commonly read the visible A2A message, not only
-        # artifacts. In Build-it/strict modes this emits exactly the final token
-        # or build payload and no progress text.
+        # Emit one and only one visible final response for Build-it/strict modes.
         await updater.update_status(
             TaskState.completed,
             new_agent_text_message(final_text),
