@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v9_force_build_fallback_2026_05_20"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v10_metadata_instruction_adaptive_ask_2026_05_20"
 
 
 @dataclass(frozen=True)
@@ -1619,9 +1619,24 @@ class AegisForgeAgent:
             safe_metadata.get("instruction")
             or safe_metadata.get("user_request")
             or safe_metadata.get("task")
+            or safe_metadata.get("task_text")
+            or safe_metadata.get("prompt")
+            or safe_metadata.get("sentenceW")
+            or safe_metadata.get("sentenceD")
             or task_text
         ).strip()
-        if instruction:
+        previous_was_question_for_instruction = self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]")
+        incoming_for_instruction = self._coerce_text(task_text).strip()
+        incoming_looks_like_answer = (
+            previous_was_question_for_instruction
+            and incoming_for_instruction
+            and instruction == incoming_for_instruction
+            and not re.search(
+                r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
+                incoming_for_instruction.lower(),
+            )
+        )
+        if instruction and not incoming_looks_like_answer:
             state["instruction_current"] = instruction
 
         initial_candidates: list[Any] = []
@@ -1645,7 +1660,28 @@ class AegisForgeAgent:
         ).strip()
         if feedback:
             state["feedback"] = feedback
-        qa_answer = self._coerce_text(safe_metadata.get("answer") or safe_metadata.get("response_to_question")).strip()
+        incoming_text = self._coerce_text(task_text).strip()
+        previous_was_question = self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]")
+        looks_like_fresh_instruction = bool(re.search(
+            r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
+            incoming_text.lower(),
+        ))
+        qa_answer = self._coerce_text(
+            safe_metadata.get("answer")
+            or safe_metadata.get("response_to_question")
+            or safe_metadata.get("answer_to_question")
+            or safe_metadata.get("question_answer")
+            or safe_metadata.get("qa_answer")
+            or safe_metadata.get("clarification")
+            or safe_metadata.get("clarification_answer")
+            or safe_metadata.get("speaker_answer")
+        ).strip()
+        if not qa_answer and previous_was_question and incoming_text and not looks_like_fresh_instruction:
+            # The Build-it green speaker often answers a clarification as plain
+            # message text rather than as structured metadata. Treat short
+            # non-instruction replies such as "blue" or "three" as the answer
+            # while keeping the previous instruction_current intact.
+            qa_answer = incoming_text
         if qa_answer:
             answers = list(state.get("question_answers", []))
             answers.append(qa_answer)
@@ -2671,18 +2707,19 @@ class AegisForgeAgent:
         return blocks[-1]
 
     def _build_it_allow_ambiguity_ask(self) -> bool:
-        """Whether the Build-it adapter may ask instead of building.
+        """Whether the Build-it adapter may ask a clarification question.
 
-        The public AgentBeats Build-it runner rewards resolving underspecified
-        natural language into a best-effort structure.  A broad [ASK] fallback
-        caused repeated zero/negative rounds in CI because the evaluator expects
-        [BUILD] for most incomplete-looking prompts.  Therefore ASK is now an
-        explicit opt-in mode, while the normal benchmark path forces a safe,
-        deterministic build.
+        Build What I Mean intentionally contains underspecified color/number
+        prompts.  Those prompts are not solvable from geometry alone; the
+        correct behavior is to ask one concise semantic question, then build
+        after the evaluator/speaker supplies the missing color or quantity.
+
+        Set AEGISFORGE_BUILD_IT_FORCE_BUILD=1 only for offline smoke tests where
+        no question-answerer is available.
         """
-        if _env_flag("AEGISFORGE_BUILD_IT_FORCE_BUILD", default=True):
+        if _env_flag("AEGISFORGE_BUILD_IT_FORCE_BUILD", default=False):
             return False
-        return _env_flag("AEGISFORGE_BUILD_IT_ASK_ON_AMBIGUITY", default=False)
+        return _env_flag("AEGISFORGE_BUILD_IT_ASK_ON_AMBIGUITY", default=True)
 
     def _build_it_ambiguity_question(self, lowered: str, state: Mapping[str, Any] | None = None) -> str:
         """Detect BWIM color_under / number_under omissions without answer lookup tables."""
@@ -3331,6 +3368,9 @@ class AegisForgeAgent:
 
     def _heuristic_build_it_response(self, task_text: str, metadata: Mapping[str, Any], state: Mapping[str, Any]) -> str:
         task_text_clean = self._coerce_text(task_text).strip()
+        answers = [self._coerce_text(a).strip() for a in state.get("question_answers", []) if self._coerce_text(a).strip()]
+        if answers and "CLARIFICATION_ANSWER" not in task_text_clean:
+            task_text_clean = f"{task_text_clean}\nCLARIFICATION_ANSWER: {answers[-1]}".strip()
         lowered = task_text_clean.lower()
 
         # Only treat coordinates in task_text as a final answer when the text is
@@ -3481,11 +3521,82 @@ class AegisForgeAgent:
         )
         return self._format_build_it_build(fallback_blocks)
 
+    def _build_it_effective_task_text(
+        self,
+        task_text: str,
+        metadata: Mapping[str, Any],
+        state: Mapping[str, Any],
+    ) -> str:
+        """Recover the actual Build-it instruction from A2A text, metadata, and state.
+
+        In the AgentBeats gateway, the visible message text can be empty or only
+        transport-like while the real instruction lives in JSON metadata. Earlier
+        builds passed the empty base_text into the heuristic builder, which caused
+        generic [ASK] loops or one-block fallbacks and produced 0% accuracy. This
+        function builds the text that the spatial interpreter should actually see.
+        """
+        pieces: list[str] = []
+        seen: set[str] = set()
+
+        def add(label: str, value: Any) -> None:
+            raw = self._coerce_text(value).strip()
+            if not raw:
+                return
+            if label == "INSTRUCTION" and self._coerce_text(state.get("last_result", "")).upper().startswith("[ASK]"):
+                if raw == self._coerce_text(task_text).strip() and not re.search(
+                    r"\b(build|stack|place|put|add|extend|start|starting|finish|row|line|tower|pillar|column|corner|existing|highlighted|middle|origin)\b",
+                    raw.lower(),
+                ):
+                    return
+            key = re.sub(r"\s+", " ", raw.lower())[:500]
+            if key in seen:
+                return
+            seen.add(key)
+            pieces.append(f"{label}: {raw}" if label else raw)
+
+        for key in (
+            "instruction", "user_request", "task", "task_text", "prompt",
+            "sentenceW", "sentenceD", "utterance", "query", "description",
+            "goal", "objective", "formatted_input",
+        ):
+            if key in metadata:
+                add("INSTRUCTION", metadata.get(key))
+
+        add("INSTRUCTION", state.get("instruction_current"))
+
+        raw_text = self._coerce_text(task_text).strip()
+        if raw_text and (
+            not pieces
+            or re.search(r"\b(START[_\s-]*STRUCTURE|INSTRUCTION|USER_REQUEST|build|stack|place|put|corner|row|tower|block)\b", raw_text, re.I)
+        ):
+            add("", raw_text)
+
+        initial_blocks = []
+        if isinstance(state.get("initial_blocks"), list):
+            initial_blocks.extend(state.get("initial_blocks", []))
+        for key in ("START_STRUCTURE", "start_structure", "initial_blocks", "existing_blocks", "structure", "blocks"):
+            if key in metadata:
+                initial_blocks.extend(self._extract_build_blocks_from_candidate(metadata.get(key)))
+        initial_validated, _ = self._validate_build_blocks(initial_blocks)
+        if initial_validated:
+            start_line = ";".join(
+                f"{b['color']},{int(b['x'])},{int(b['y'])},{int(b['z'])}" for b in initial_validated
+            )
+            add("START_STRUCTURE", start_line)
+
+        answers = [self._coerce_text(a).strip() for a in state.get("question_answers", []) if self._coerce_text(a).strip()]
+        if answers:
+            add("CLARIFICATION_ANSWER", answers[-1])
+
+        return "\n".join(pieces).strip() or raw_text
+
     def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         state = self._build_it_state(safe_metadata, task_text)
+        effective_task_text = self._build_it_effective_task_text(task_text, safe_metadata, state)
+        effective_lower = effective_task_text.lower()
 
-        direct = self._parse_build_it_response(task_text)
+        direct = self._parse_build_it_response(effective_task_text)
         final_text = ""
         if direct.get("kind") == "build" and direct.get("blocks"):
             final_text = self._format_build_it_build(direct["blocks"])
@@ -3499,38 +3610,38 @@ class AegisForgeAgent:
             llm_first = _env_flag("AEGISFORGE_BUILD_IT_LLM_FIRST", default=False)
             if llm_first and self._llm_base_url():
                 llm_text = self._call_llm(
-                    messages=self._build_it_llm_messages(task_text, safe_metadata, state),
+                    messages=self._build_it_llm_messages(effective_task_text, safe_metadata, state),
                     temperature=0.0,
                     max_tokens=420,
                 )
                 if llm_text:
                     parsed = self._parse_build_it_response(llm_text)
                     if parsed.get("kind") == "build" and parsed.get("blocks"):
-                        clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
+                        clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], effective_lower)
                         if clean_blocks:
                             final_text = self._format_build_it_build(clean_blocks)
             if not final_text:
-                heuristic_text = self._heuristic_build_it_response(task_text, safe_metadata, state)
+                heuristic_text = self._heuristic_build_it_response(effective_task_text, safe_metadata, state)
                 if heuristic_text.upper().startswith("[BUILD];"):
                     parsed_heuristic = self._parse_build_it_response(heuristic_text)
-                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), task_text.lower())
+                    clean_heuristic = self._build_it_sanitize_candidate_blocks(parsed_heuristic.get("blocks", []), effective_lower)
                     if clean_heuristic:
                         final_text = self._format_build_it_build(clean_heuristic)
                     else:
                         fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                            task_text, task_text.lower(), list(state.get("initial_blocks", [])), [], "Green"
+                            effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
                         )
                         final_text = self._format_build_it_build(fallback_blocks)
                 elif self._llm_base_url() and not llm_first and _env_flag("AEGISFORGE_BUILD_IT_ALLOW_LLM_FALLBACK", default=False):
                     llm_text = self._call_llm(
-                        messages=self._build_it_llm_messages(task_text, safe_metadata, state),
+                        messages=self._build_it_llm_messages(effective_task_text, safe_metadata, state),
                         temperature=0.0,
                         max_tokens=420,
                     )
                     if llm_text:
                         parsed = self._parse_build_it_response(llm_text)
                         if parsed.get("kind") == "build" and parsed.get("blocks"):
-                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], task_text.lower())
+                            clean_blocks = self._build_it_sanitize_candidate_blocks(parsed["blocks"], effective_lower)
                             if clean_blocks:
                                 final_text = self._format_build_it_build(clean_blocks)
                         elif parsed.get("kind") == "ask":
@@ -3540,21 +3651,22 @@ class AegisForgeAgent:
 
         if final_text.upper().startswith("[BUILD];"):
             parsed_final = self._parse_build_it_response(final_text)
-            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), task_text.lower())
+            clean_final = self._build_it_sanitize_candidate_blocks(parsed_final.get("blocks", []), effective_lower)
             if clean_final:
                 final_text = self._format_build_it_build(clean_final)
-            elif self._build_it_expected_small_prompt(task_text.lower()):
+            elif self._build_it_expected_small_prompt(effective_lower):
                 fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                    task_text, task_text.lower(), list(state.get("initial_blocks", [])), [], "Green"
+                    effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
                 )
                 final_text = self._format_build_it_build(fallback_blocks)
 
         if final_text.upper().startswith("[ASK]") and not self._build_it_allow_ambiguity_ask():
             fallback_blocks = self._build_it_best_effort_fallback_blocks(
-                task_text, task_text.lower(), list(state.get("initial_blocks", [])), [], "Green"
+                effective_task_text, effective_lower, list(state.get("initial_blocks", [])), [], "Green"
             )
             final_text = self._format_build_it_build(fallback_blocks)
 
+        state["last_effective_task_text"] = effective_task_text
         state["last_result"] = final_text
         state["feedback"] = self._coerce_text(safe_metadata.get("feedback") or state.get("feedback")).strip()
         history = list(state.get("history", []))
