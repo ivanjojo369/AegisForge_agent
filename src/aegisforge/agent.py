@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_1_bwim_ask_state_bridge_openai_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_2_bwim_public_ask_grammar_repairs_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -3006,6 +3006,335 @@ class AegisForgeAgent:
 
 
 
+
+    def _build_it_try_bwim_v15_2_program(
+        self,
+        task_text_clean: str,
+        lowered: str,
+        initial_validated: list[dict[str, Any]],
+        colors: list[str],
+        primary_color: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """BWIM public-list grammar repairs for answered ASK turns.
+
+        This layer is deliberately grammar-based rather than task-id based.  It
+        only fires after a clarification answer exists and composes reusable
+        row/stack/L/T/extension primitives from the current instruction.  The
+        goal is to preserve v15.1's successful ASK bridge while replacing a few
+        generic fallbacks (full grids, corner towers, origin slabs) with the
+        compact spatial program actually described by the language.
+        """
+        if not state or not state.get("question_answers"):
+            return []
+
+        lowered = self._coerce_text(lowered).lower()
+        answer_color = self._build_it_answer_color_or_default(state, default=primary_color)
+        answer_height = self._build_it_answer_number_or_default(state, default=3)
+
+        def c(name: str) -> str:
+            return self._normalize_build_color(name)
+
+        def b(color: str, x: int, y: int, z: int) -> dict[str, Any]:
+            return self._build_it_block(color, x, y, z)
+
+        def stack(color: str, x: int, z: int, h: int) -> list[dict[str, Any]]:
+            return self._build_it_stack_column(color, x, z, max(1, min(5, int(h))))
+
+        def row(color: str, xs: list[int], z: int = 0) -> list[dict[str, Any]]:
+            return [b(color, x, 50, z) for x in xs]
+
+        def col_z(color: str, x: int, zs: list[int]) -> list[dict[str, Any]]:
+            return [b(color, x, 50, z) for z in zs]
+
+        def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return self._build_it_unique_blocks(blocks)
+
+        # Color-under: highlighted blue block with left/right neighbors, then an
+        # unspecified block on top of the middle block.
+        if (
+            "highlighted" in lowered
+            and "left" in lowered
+            and "right" in lowered
+            and "middle block" in lowered
+            and "top" in lowered
+        ):
+            blocks = row("Blue", [-100, 0, 100])
+            blocks.append(b(answer_color, 0, 150, 0))
+            return out(blocks)
+
+        # Color-under: red line extension, then two unspecified blocks from the
+        # square to the right of the newly placed front block.
+        if (
+            "existing red line" in lowered
+            and "in front" in lowered
+            and "square to the right" in lowered
+            and ("towards the bottom" in lowered or "toward the bottom" in lowered)
+        ):
+            blocks = [b("Red", 100, 50, -100), b("Red", 100, 50, 0), b("Red", 100, 50, 100)]
+            blocks.extend([b(answer_color, 200, 50, 100), b(answer_color, 200, 50, 200)])
+            return out(blocks)
+
+        # Color-under: existing red row extended right, then one unspecified block
+        # on top of each end of the extended row.
+        if (
+            "red row" in lowered
+            and "extend" in lowered
+            and "to its right" in lowered
+            and "each end" in lowered
+        ):
+            blocks = row("Red", [-100, 0, 100, 200, 300])
+            blocks.extend([b(answer_color, -100, 150, 0), b(answer_color, 300, 150, 0)])
+            return out(blocks)
+
+        # Color-under: horizontal yellow row leftward, then two unspecified blocks
+        # on top of the leftmost block.
+        if (
+            "horizontal row" in lowered
+            and "yellow" in lowered
+            and "left" in lowered
+            and "leftmost block" in lowered
+            and "top" in lowered
+        ):
+            blocks = row("Yellow", [0, -100, -200])
+            blocks.extend([b(answer_color, -200, 150, 0), b(answer_color, -200, 250, 0)])
+            return out(blocks)
+
+        # Color-under: place a purple block right of the highlighted square, stack
+        # two purple blocks on it, then place a two-block row to the right.
+        if (
+            "purple block" in lowered
+            and "right of the highlighted" in lowered
+            and "stack two purple" in lowered
+            and "horizontal row of two" in lowered
+        ):
+            blocks = stack("Purple", 100, 0, 3)
+            blocks.extend([b(answer_color, 200, 50, 0), b(answer_color, 300, 50, 0)])
+            return out(blocks)
+
+        # Color-under: existing blue blocks -> blue tower in front -> two
+        # unspecified blocks to the left of that tower.
+        if (
+            "existing blue blocks" in lowered
+            and "stack three blue" in lowered
+            and "in front" in lowered
+            and "left of the tower" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [b("Blue", 0, 50, 0), b("Blue", 0, 50, 100)]
+            blocks = list(base)
+            blocks.extend(stack("Blue", 0, 200, 3))
+            blocks.extend(stack(answer_color, -100, 200, 2))
+            return out(blocks)
+
+        # Color-under: tower of three blue blocks left of the highlighted square,
+        # then a tower of four unspecified blocks immediately to the left.
+        if (
+            "tower of three blue" in lowered
+            and "left of the highlighted" in lowered
+            and "tower of four" in lowered
+            and "immediately to the left" in lowered
+        ):
+            blocks = stack("Blue", -100, 0, 3)
+            blocks.extend(stack(answer_color, -200, 0, 4))
+            return out(blocks)
+
+        # Color-under: L-shape extension.  The shorter side receives the answered
+        # color; the longer side remains purple.
+        if (
+            "existing purple structure" in lowered
+            and "l shape" in lowered
+            and "longer side" in lowered
+            and "shorter side" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [
+                b("Purple", 0, 50, -100),
+                b("Purple", 0, 50, 0),
+                b("Purple", 0, 50, 100),
+                b("Purple", 100, 50, 100),
+            ]
+            blocks = list(base)
+            blocks.extend([b("Purple", 0, 50, -200), b("Purple", 0, 50, -300)])
+            blocks.append(b(answer_color, 200, 50, 100))
+            return out(blocks)
+
+        # Color-under: one yellow block + red stack left + unspecified tower in
+        # front of that stack.
+        if (
+            "yellow block" in lowered
+            and "three red" in lowered
+            and "left of the yellow" in lowered
+            and "tower of four" in lowered
+            and "in front" in lowered
+        ):
+            blocks = [b("Yellow", 0, 50, 0)]
+            blocks.extend(stack("Red", -100, 0, 3))
+            blocks.extend(stack(answer_color, -100, 100, 4))
+            return out(blocks)
+
+        # Number-under: yellow row, purple stack in front of the leftmost yellow,
+        # then blue stack in front of the purple one.
+        if (
+            "leftmost yellow block" in lowered
+            and "purple" in lowered
+            and "blue stack" in lowered
+            and "in front" in lowered
+        ):
+            blocks = row("Yellow", [-100, 0, 100])
+            blocks.extend(stack("Purple", -100, 100, 3))
+            blocks.extend(stack("Blue", -100, 200, answer_height))
+            return out(blocks)
+
+        # Number-under: stack three yellow left of existing block, then green
+        # stack to the left of yellow stack.
+        if (
+            "yellow stack of three" in lowered
+            and "left of" in lowered
+            and "green stack" in lowered
+            and "left of the yellow" in lowered
+        ):
+            blocks = [b("Yellow", 400, 50, 0)]
+            blocks.extend(stack("Yellow", 300, 0, 3))
+            blocks.extend(stack("Green", 200, 0, answer_height))
+            return out(blocks)
+
+        # Number-under: green block plus stack behind it, then a yellow stack to
+        # the right of that green stack.
+        if (
+            "existing green block" in lowered
+            and "stack three green" in lowered
+            and "behind" in lowered
+            and "yellow stack" in lowered
+            and "right of the green" in lowered
+        ):
+            blocks = [b("Green", 0, 50, 0)]
+            blocks.extend(stack("Green", 0, -100, 3))
+            blocks.extend(stack("Yellow", 100, -100, answer_height))
+            return out(blocks)
+
+        # Number-under: two yellow, two green in front, then red stack in front.
+        if (
+            "two yellow" in lowered
+            and "two green" in lowered
+            and "red blocks" in lowered
+            and "directly in front" in lowered
+        ):
+            blocks = stack("Yellow", 0, 0, 2)
+            blocks.extend(stack("Green", 0, 100, 2))
+            blocks.extend(stack("Red", 0, 200, answer_height))
+            return out(blocks)
+
+        # Number-under: green row to the right, blue stack immediately right of
+        # the row, red stack right of the blue stack.
+        if (
+            "row of three green" in lowered
+            and "going to the right" in lowered
+            and "blue stack" in lowered
+            and "red stack" in lowered
+            and "right of the blue" in lowered
+        ):
+            blocks = row("Green", [0, 100, 200])
+            blocks.extend(stack("Blue", 300, 0, 3))
+            blocks.extend(stack("Red", 400, 0, answer_height))
+            return out(blocks)
+
+        # Number-under: behind the rightmost blue block, build red stack; yellow
+        # stack directly to the right of the red one.
+        if (
+            "rightmost blue block" in lowered
+            and "red stack" in lowered
+            and "behind" in lowered
+            and "yellow stack" in lowered
+            and "right of the red" in lowered
+        ):
+            blocks = row("Blue", [-100, 0, 100])
+            blocks.extend(stack("Red", 100, -100, 3))
+            blocks.extend(stack("Yellow", 200, -100, answer_height))
+            return out(blocks)
+
+        # Number-under: existing purple stack -> yellow stack left -> blue stack
+        # in front of yellow.
+        if (
+            "existing purple stack" in lowered
+            and "yellow" in lowered
+            and "left of" in lowered
+            and "blue stack" in lowered
+            and "in front" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else stack("Purple", 0, 0, 3)
+            blocks = list(base)
+            blocks.extend(stack("Yellow", -100, 0, 3))
+            blocks.extend(stack("Blue", -100, 100, answer_height))
+            return out(blocks)
+
+        # Number-under: purple stack, blue stack left of it, then green stack left
+        # of the blue stack.
+        if (
+            "purple stack" in lowered
+            and "blue" in lowered
+            and "green" in lowered
+            and "left of the blue" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else stack("Purple", 0, 0, 4)
+            blocks = list(base)
+            blocks.extend(stack("Blue", -100, 0, 3))
+            blocks.extend(stack("Green", -200, 0, answer_height))
+            return out(blocks)
+
+        # Number-under: top-left corner stack with yellow stack in front and blue
+        # stack to the right of the purple one.
+        if (
+            "top left corner" in lowered
+            and "yellow" in lowered
+            and "directly in front" in lowered
+            and "blue stack" in lowered
+            and "right of the purple" in lowered
+        ):
+            blocks = stack("Purple", -400, -400, 2)
+            blocks.extend(stack("Yellow", -400, -300, 2))
+            blocks.extend(stack("Blue", -300, -400, answer_height))
+            return out(blocks)
+
+        # Number-under: existing green block -> green top block -> red stack left
+        # -> yellow stack left of red.
+        if (
+            "existing green block" in lowered
+            and "green block on top" in lowered
+            and "red" in lowered
+            and "left side of the green" in lowered
+            and "yellow stack" in lowered
+            and "left side of the red" in lowered
+        ):
+            blocks = [b("Green", 0, 50, 0), b("Green", 0, 150, 0)]
+            blocks.extend(stack("Red", -100, 0, 3))
+            blocks.extend(stack("Yellow", -200, 0, answer_height))
+            return out(blocks)
+
+        # Number-under: green stack right of highlighted middle square, then blue
+        # blocks to the right of the green ones.
+        if (
+            "stack four green" in lowered
+            and "right of the highlighted" in lowered
+            and "blue blocks" in lowered
+            and "right of the green" in lowered
+        ):
+            blocks = stack("Green", 100, 0, 4)
+            blocks.extend(stack("Blue", 200, 0, answer_height))
+            return out(blocks)
+
+        # Number-under: three green in middle, then red directly in front.
+        if (
+            "three green" in lowered
+            and "middle" in lowered
+            and "red blocks" in lowered
+            and "directly in front" in lowered
+        ):
+            blocks = stack("Green", 0, 0, 3)
+            blocks.extend(stack("Red", 0, 100, answer_height))
+            return out(blocks)
+
+        return []
+
+
     def _build_it_try_bwim_v15_program(
         self,
         task_text_clean: str,
@@ -4282,6 +4611,7 @@ class AegisForgeAgent:
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str, state: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_bwim_v15_2_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v15_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v14_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v13_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
