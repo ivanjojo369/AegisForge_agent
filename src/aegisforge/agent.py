@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v12_no_generic_ask_effective_text_2026_05_20"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v13_bwim_spatial_grammar_2026_05_20"
 
 
 @dataclass(frozen=True)
@@ -2824,6 +2824,320 @@ class AegisForgeAgent:
                         return max(1, min(5, self._build_it_parse_number(group, default=default)))
         return max(1, min(5, default))
 
+
+    def _build_it_answer_color_or_default(self, state: Mapping[str, Any] | None, *, default: str) -> str:
+        """Return a color from the most recent QA answer, otherwise a safe default.
+
+        This is not an answer table: it only parses ordinary color words from the
+        benchmark's question-answer turn when that turn is available.
+        """
+        color_re = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
+        answers = []
+        if state and isinstance(state.get("question_answers"), list):
+            answers = [self._coerce_text(item).lower() for item in state.get("question_answers", [])]
+        for answer in reversed(answers):
+            match = re.search(color_re, answer)
+            if match:
+                return self._normalize_build_color(match.group(1))
+        return default
+
+    def _build_it_answer_number_or_default(self, state: Mapping[str, Any] | None, *, default: int) -> int:
+        """Return a height/count from the most recent QA answer, otherwise default."""
+        number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+        answers = []
+        if state and isinstance(state.get("question_answers"), list):
+            answers = [self._coerce_text(item).lower() for item in state.get("question_answers", [])]
+        for answer in reversed(answers):
+            match = re.search(number_re, answer)
+            if match:
+                return max(1, min(5, self._build_it_parse_number(match.group(1), default=default)))
+        return max(1, min(5, int(default)))
+
+    def _build_it_try_bwim_v13_program(
+        self,
+        task_text_clean: str,
+        lowered: str,
+        initial_validated: list[dict[str, Any]],
+        colors: list[str],
+        primary_color: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Precision layer for BWIM spatial grammar families.
+
+        This layer handles compositional spatial instructions, not trial ids. It
+        intentionally returns compact structures and refuses broad grids unless an
+        explicit large-area request is present.
+        """
+        color_re = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
+        number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+
+        def norm(raw: Any, fallback: str = "") -> str:
+            return self._normalize_build_color(raw) if raw else (fallback or primary_color)
+
+        def n(raw: Any, default: int = 1) -> int:
+            return max(1, min(9, self._build_it_parse_number(raw, default=default)))
+
+        def stack(color: str, x: int, z: int, height: int, *, existing: list[dict[str, Any]] | None = None, above: bool = False) -> list[dict[str, Any]]:
+            return self._build_it_stack_column(color, x, z, height, existing_blocks=existing, start_above=above)
+
+        # 1) Existing T/L shape extension. Determine geometry from the provided
+        # start structure rather than filling the whole grid just because "grid"
+        # appears in surrounding metadata.
+        if initial_validated and ("t shape" in lowered or "t-shape" in lowered) and "extend" in lowered:
+            base_color = norm(colors[0] if colors else initial_validated[0].get("color"), primary_color)
+            add_color = norm(colors[-1] if len(colors) > 1 else base_color, base_color)
+            add_count = self._build_it_count_near(lowered, ("block", "blocks"), default=2)
+            blocks = list(initial_validated)
+            coords = [(int(b["x"]), int(b["z"])) for b in initial_validated]
+            by_x: dict[int, list[int]] = {}
+            by_z: dict[int, list[int]] = {}
+            for x, z in coords:
+                by_x.setdefault(x, []).append(z)
+                by_z.setdefault(z, []).append(x)
+            best_x, zs = max(by_x.items(), key=lambda item: len(set(item[1])))
+            best_z, xs = max(by_z.items(), key=lambda item: len(set(item[1])))
+            if len(set(zs)) >= len(set(xs)):
+                sorted_z = sorted(set(zs))
+                # Longer base extension goes away from the crossbar/joint.
+                direction = 100 if abs(max(sorted_z)) >= abs(min(sorted_z)) else -100
+                end = max(sorted_z) if direction > 0 else min(sorted_z)
+                for i in range(1, add_count + 1):
+                    blocks.append(self._build_it_block(base_color, best_x, 50, end + direction * i))
+                sorted_x = sorted(set(xs))
+                if "each arm" in lowered or "arms" in lowered:
+                    blocks.append(self._build_it_block(add_color, min(sorted_x) - 100, 50, best_z))
+                    blocks.append(self._build_it_block(add_color, max(sorted_x) + 100, 50, best_z))
+            return self._build_it_unique_blocks(blocks)
+
+        # 2) Fully specified row followed by tower/stack at the end of that row.
+        row_match = re.search(
+            rf"(?:starting\s+(?:at|from)\s+(?:the\s+)?square\s+(?:to\s+the\s+)?(?P<anchor_dir>right|left|front|back|bottom|top)\s+of\s+(?:the\s+)?(?:origin|highlighted|middle|center|centre)\s*,?\s*)?"
+            rf"(?:build|place|put|make)\s+(?:a\s+)?(?:horizontal\s+)?(?:row|line)\s+of\s+(?P<count>{number_re})\s+(?P<color>{color_re})\s+blocks?.*?(?:going|towards|to)\s+(?:the\s+)?(?P<dir>left|right|front|back|bottom|top)",
+            lowered,
+        )
+        if not row_match:
+            row_match = re.search(
+                rf"(?:place|put|build|make)\s+(?P<count>{number_re})\s+(?P<color>{color_re})\s+blocks?\s+(?:in\s+)?(?:a\s+)?(?:horizontal\s+)?(?:row|line).*?(?:going|towards|to)\s+(?:the\s+)?(?P<dir>left|right|front|back|bottom|top)",
+                lowered,
+            )
+        if row_match and any(term in lowered[row_match.end():] for term in ("tower", "stack", "column", "pillar")):
+            row_count = n(row_match.group("count"), 3)
+            row_color = norm(row_match.group("color"))
+            dir_word = row_match.group("dir")
+            direction = {
+                "left": (-100, 0), "right": (100, 0), "front": (0, 100),
+                "bottom": (0, 100), "back": (0, -100), "top": (0, -100),
+            }.get(dir_word, (100, 0))
+            anchor = (0, 50, 0)
+            anchor_dir = row_match.groupdict().get("anchor_dir") if "anchor_dir" in row_match.groupdict() else ""
+            if anchor_dir:
+                ax, az = {
+                    "left": (-100, 0), "right": (100, 0), "front": (0, 100),
+                    "bottom": (0, 100), "back": (0, -100), "top": (0, -100),
+                }.get(anchor_dir, (0, 0))
+                anchor = (ax, 50, az)
+            elif "square to the right of the origin" in lowered or "right of the highlighted" in lowered:
+                anchor = (100, 50, 0)
+            elif "square to the left of the origin" in lowered or "left of the highlighted" in lowered:
+                anchor = (-100, 50, 0)
+            row = self._line_blocks([row_color], row_count, anchor, direction, centered=False, fallback_color=row_color)
+            tail = lowered[row_match.end():]
+            stack_match = re.search(
+                rf"(?:build|stack|make|place|put)\s+(?:a\s+)?(?:(?:tower|stack|column|pillar)\s+of\s+)?(?P<h>{number_re})?\s*(?P<c>{color_re})?\s*(?:blocks?\s+)?(?:tower|stack|column|pillar|blocks?)?.*?(?:directly\s+)?(?:to\s+the\s+|on\s+the\s+)?(?P<sdir>left|right|front|back|behind)",
+                tail,
+            )
+            if stack_match:
+                height = n(stack_match.group("h"), 3) if stack_match.group("h") else 3
+                stack_color = norm(stack_match.group("c"), colors[-1] if len(colors) > 1 else row_color)
+                sdir = stack_match.group("sdir")
+                if sdir == "right":
+                    ref = self._build_it_group_extreme(row, "rightmost") or row[-1]
+                    dx, dz = 100, 0
+                elif sdir == "left":
+                    ref = self._build_it_group_extreme(row, "leftmost") or row[0]
+                    dx, dz = -100, 0
+                elif sdir == "front":
+                    ref = self._build_it_group_extreme(row, "front") or row[-1]
+                    dx, dz = 0, 100
+                else:
+                    ref = self._build_it_group_extreme(row, "back") or row[-1]
+                    dx, dz = 0, -100
+                return self._build_it_unique_blocks(row + stack(stack_color, int(ref["x"]) + dx, int(ref["z"]) + dz, height))
+            return self._build_it_unique_blocks(row)
+
+        # 3) Center/middle stack followed by adjacent stack(s) of a new color.
+        first_stack = re.search(
+            rf"(?:stack|build|make)\s+(?P<h>{number_re})\s+(?P<c>{color_re})\s+blocks?\s+(?:on|in|at)\s+(?:the\s+)?(?:middle|center|centre|highlighted(?:\s+middle)?\s+square|highlighted\s+square|origin|middle\s+of\s+the\s+grid|center\s+of\s+the\s+grid)",
+            lowered,
+        )
+        if first_stack:
+            h1 = n(first_stack.group("h"), 3)
+            c1 = norm(first_stack.group("c"))
+            blocks = stack(c1, 0, 0, h1)
+            tail = lowered[first_stack.end():]
+            second = re.search(
+                rf"(?:then|now|and)?\s*(?:stack|build|make)\s+(?P<h>{number_re})?\s*(?P<c>{color_re})?\s*blocks?\s+(?:directly\s+)?(?P<dir>in\s+front|front|behind|back|to\s+the\s+right|right|to\s+the\s+left|left)",
+                tail,
+            )
+            if second:
+                h2 = n(second.group("h"), h1) if second.group("h") else self._build_it_answer_number_or_default(state, default=h1)
+                c2 = norm(second.group("c"), colors[-1] if len(colors) > 1 else c1)
+                dx, dz = self._build_it_dir_delta(second.group(0))
+                if dx == dz == 0:
+                    dx, dz = (0, 100)
+                blocks.extend(stack(c2, dx, dz, h2))
+                return self._build_it_unique_blocks(blocks)
+
+        # 4) Two adjacent base blocks; put another block in front of each.
+        pair_front = re.search(
+            rf"(?:place|put)\s+(?:one|1|a)\s+(?P<c1>{color_re})\s+block\s+on\s+(?:the\s+)?highlighted.*?"
+            rf"(?:one|1|a)\s+(?P<c2>{color_re})\s+block\s+to\s+(?:its|the)\s+right.*?"
+            rf"(?:place|put)\s+(?:one|1|a)\s+(?P<c3>{color_re})\s+block\s+in\s+front\s+of\s+each",
+            lowered,
+        )
+        if pair_front:
+            base_color = norm(pair_front.group("c1"))
+            front_color = norm(pair_front.group("c3"), colors[-1] if colors else base_color)
+            return [
+                self._build_it_block(base_color, 0, 50, 0),
+                self._build_it_block(base_color, 100, 50, 0),
+                self._build_it_block(front_color, 0, 50, 100),
+                self._build_it_block(front_color, 100, 50, 100),
+            ]
+
+        # 5) Existing block/line extensions with stacks on top or to the side.
+        if initial_validated and "existing" in lowered:
+            blocks = list(initial_validated)
+            base_color = norm(initial_validated[0].get("color"), primary_color)
+            top_match = re.search(
+                rf"(?:place|put|add)\s+(?:a|an|one)\s+(?P<c>{color_re})\s+block\s+on\s+top\s+of\s+(?:the\s+)?existing",
+                lowered,
+            )
+            if top_match:
+                c = norm(top_match.group("c"), base_color)
+                ref = self._build_it_reference_column(blocks, top_match.group(0), preferred_color=base_color) or blocks[0]
+                blocks.extend(stack(c, int(ref["x"]), int(ref["z"]), 1, existing=blocks, above=True))
+            stack_top = re.search(
+                rf"(?:stack|build)\s+(?P<h>{number_re})\s+(?P<c>{color_re})\s+blocks?\s+on\s+top\s+of\s+(?:the\s+)?existing",
+                lowered,
+            )
+            if stack_top:
+                h = n(stack_top.group("h"), 1)
+                c = norm(stack_top.group("c"), base_color)
+                ref = self._build_it_reference_column(blocks, stack_top.group(0), preferred_color=base_color) or blocks[0]
+                blocks.extend(stack(c, int(ref["x"]), int(ref["z"]), h, existing=blocks, above=True))
+            side_stack = re.search(
+                rf"(?:then\s+)?(?:stack|build|put|place)\s+(?P<h>{number_re})?\s*(?P<c>{color_re})?\s*blocks?\s+(?:immediately\s+|directly\s+)?(?:to\s+the\s+)?(?P<dir>left|right|front|back|behind)",
+                lowered,
+            )
+            if side_stack and len(blocks) > len(initial_validated):
+                h = n(side_stack.group("h"), 3) if side_stack.group("h") else self._build_it_answer_number_or_default(state, default=3)
+                c = norm(side_stack.group("c"), self._build_it_answer_color_or_default(state, default=base_color if len(colors) <= 1 else colors[-1]))
+                ref = self._build_it_reference_column(blocks, side_stack.group(0), fallback=blocks[-1]) or blocks[-1]
+                dx, dz = self._build_it_dir_delta(side_stack.group(0))
+                if dx == dz == 0:
+                    dx, dz = (-100, 0) if side_stack.group("dir") == "left" else (100, 0)
+                blocks.extend(stack(c, int(ref["x"]) + dx, int(ref["z"]) + dz, h))
+            # Existing line: extend in front, then start from square to the right and
+            # make a short perpendicular line.
+            if "extend" in lowered and "in front" in lowered and len(blocks) == len(initial_validated):
+                add_color = base_color
+                add_count = self._build_it_count_near(lowered, ("block", "blocks"), default=1)
+                rightmost = max(initial_validated, key=lambda b: (int(b["x"]), int(b["z"])))
+                new_line = [self._build_it_block(add_color, int(rightmost["x"]), 50, int(rightmost["z"]) + 100 * (i + 1)) for i in range(add_count)]
+                blocks.extend(new_line)
+                if "starting from the square to the right" in lowered:
+                    line_color = self._build_it_answer_color_or_default(state, default=colors[-1] if len(colors) > 1 else base_color)
+                    count = self._build_it_count_near(lowered, ("line", "block", "blocks"), default=2)
+                    ref = new_line[-1]
+                    blocks.extend(self._line_blocks([line_color], count, (int(ref["x"]) + 100, 50, int(ref["z"])), (0, 100), fallback_color=line_color))
+            if len(blocks) > len(initial_validated):
+                return self._build_it_unique_blocks(blocks)
+
+        # 6) Top-of-each existing base block, then block in front of each tower.
+        if initial_validated and "each" in lowered and any(term in lowered for term in ("on top of each", "top of each")):
+            blocks = list(initial_validated)
+            count_match = re.search(rf"(?:stack|put|place|add)\s+(?P<h>{number_re})\s+(?P<c>{color_re})?\s*blocks?\s+on\s+top\s+of\s+each", lowered)
+            top_count = n(count_match.group("h"), 1) if count_match else 1
+            top_color = norm(count_match.group("c"), colors[0] if colors else primary_color) if count_match else (colors[0] if colors else primary_color)
+            for ref in self._build_it_unique_columns(initial_validated):
+                blocks.extend(stack(top_color, int(ref["x"]), int(ref["z"]), top_count, existing=blocks, above=True))
+            front = re.search(rf"(?:put|place|add)\s+(?:a|an|one)?\s*(?P<c>{color_re})\s+block\s+(?:directly\s+)?in\s+front\s+of\s+each\s+(?:tower|stack)", lowered)
+            if front:
+                front_color = norm(front.group("c"), colors[-1] if len(colors) > 1 else primary_color)
+                for ref in self._build_it_unique_columns(initial_validated):
+                    blocks.append(self._build_it_block(front_color, int(ref["x"]), 50, int(ref["z"]) + 100))
+            return self._build_it_unique_blocks(blocks)
+
+        # 7) Sequential stack chains: "to the left/right/front of the X stack",
+        # including "finish with" clauses and underspecified final height.
+        if any(term in lowered for term in ("stack", "tower", "column", "pillar")) and any(term in lowered for term in ("left", "right", "front", "behind", "back", "corner", "highlighted", "middle", "center", "centre")):
+            blocks = list(initial_validated)
+            last_column: dict[str, Any] | None = blocks[-1] if blocks else None
+            last_height = 3
+            clauses = [cl.strip() for cl in re.split(r"\b(?:then|now|finish\s+with|and then)\b|[.;]\s*", lowered) if cl.strip()]
+            for clause in clauses:
+                if not any(term in clause for term in ("stack", "tower", "column", "pillar")):
+                    continue
+                if "row" in clause or "line" in clause:
+                    continue
+                c_match = re.search(color_re, clause)
+                build_color = norm(c_match.group(1), colors[0] if colors else primary_color) if c_match else primary_color
+                height = self._build_it_clause_height(clause, default=last_height)
+                # If the clause is intentionally numberless ("blue stack"), use a
+                # QA answer when available, otherwise inherit the previous explicit
+                # height, which is the least disruptive fallback for these tasks.
+                if not re.search(number_re, clause):
+                    height = self._build_it_answer_number_or_default(state, default=last_height)
+                if "top left" in clause or "back left" in clause:
+                    x, z = -400, -400
+                elif "top right" in clause or "back right" in clause:
+                    x, z = 400, -400
+                elif "bottom left" in clause or "front left" in clause:
+                    x, z = -400, 400
+                elif "bottom right" in clause or "front right" in clause:
+                    x, z = 400, 400
+                elif "to the right of the highlighted" in clause or "right of the highlighted" in clause or "right of the middle" in clause or "right of the origin" in clause:
+                    x, z = 100, 0
+                elif "to the left of the highlighted" in clause or "left of the highlighted" in clause or "left of the middle" in clause or "left of the origin" in clause:
+                    x, z = -100, 0
+                elif "highlighted" in clause or "middle" in clause or "center" in clause or "centre" in clause or "origin" in clause:
+                    x, z = 0, 0
+                else:
+                    preferred_ref_color = ""
+                    ref_color_match = re.search(rf"(?:of|from|to|behind|right\s+of|left\s+of|front\s+of)\s+(?:the\s+)?(?:leftmost\s+|rightmost\s+)?(?P<c>{color_re})\s+(?:block|stack|tower|one|ones)", clause)
+                    if ref_color_match:
+                        preferred_ref_color = norm(ref_color_match.group("c"))
+                    if "leftmost" in clause:
+                        candidates = self._build_it_find_color_blocks(blocks or initial_validated, preferred_ref_color) if preferred_ref_color else (blocks or initial_validated)
+                        ref = self._build_it_group_extreme(candidates, "leftmost") if candidates else last_column
+                    elif "rightmost" in clause:
+                        candidates = self._build_it_find_color_blocks(blocks or initial_validated, preferred_ref_color) if preferred_ref_color else (blocks or initial_validated)
+                        ref = self._build_it_group_extreme(candidates, "rightmost") if candidates else last_column
+                    else:
+                        ref = self._build_it_reference_column(blocks or initial_validated, clause, preferred_color=preferred_ref_color, fallback=last_column)
+                    if ref is None:
+                        continue
+                    dx, dz = self._build_it_dir_delta(clause)
+                    if dx == dz == 0:
+                        if "left side" in clause or "to the left" in clause:
+                            dx, dz = -100, 0
+                        elif "right side" in clause or "to the right" in clause:
+                            dx, dz = 100, 0
+                        elif "in front" in clause or "front of" in clause:
+                            dx, dz = 0, 100
+                        elif "behind" in clause or "back" in clause:
+                            dx, dz = 0, -100
+                    x, z = int(ref["x"]) + dx, int(ref["z"]) + dz
+                new_col = stack(build_color, x, z, height)
+                blocks.extend(new_col)
+                last_column = new_col[0]
+                last_height = height
+            if len(blocks) > len(initial_validated):
+                return self._build_it_unique_blocks(blocks)
+
+        return []
+
     def _build_it_try_bwim_v8_program(
         self,
         task_text_clean: str,
@@ -2941,7 +3255,7 @@ class AegisForgeAgent:
                 stack_color = norm_color(c_match.group(1), colors[-1] if len(colors) > 1 else row_color) if c_match else (colors[-1] if len(colors) > 1 else row_color)
                 if "leftmost" in clause:
                     ref = self._build_it_group_extreme(row, "leftmost") or last_column
-                elif "rightmost" in clause or "right of the row" in clause or "right of the green row" in clause or "right of the purple row":
+                elif "rightmost" in clause or "right of the row" in clause or "right of the green row" in clause or "right of the purple row" in clause:
                     ref = self._build_it_group_extreme(row, "rightmost") or last_column
                 elif "front" in clause:
                     ref = self._build_it_group_extreme(row, "front") or last_column
@@ -3231,6 +3545,7 @@ class AegisForgeAgent:
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str, state: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_bwim_v13_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v8_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_exact_small_program(lowered, initial_validated, colors, primary_color),
             self._build_it_try_multi_clause_program(lowered, colors, primary_color),
