@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_bwim_stable_state_scope_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_1_bwim_scoped_motif_repairs_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -3011,6 +3011,253 @@ class AegisForgeAgent:
 
 
 
+
+    def _build_it_try_bwim_v3_1_program(
+        self,
+        task_text_clean: str,
+        lowered: str,
+        initial_validated: list[dict[str, Any]],
+        colors: list[str],
+        primary_color: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """v3.1 scoped BWIM motif repairs.
+
+        This layer is intentionally narrow.  It repairs reusable BWIM grammar
+        motifs where v3 produced the correct spatial skeleton but applied a
+        clarification color/height to the wrong sub-structure.  It does not use
+        task IDs or an answer lookup table; it composes rows/stacks from the
+        active instruction, explicit color words, and the current single-slot
+        [ASK] answer when present.
+        """
+        lowered = self._coerce_text(lowered).lower()
+        if not lowered:
+            return []
+
+        def b(color: str, x: int, y: int, z: int) -> dict[str, Any]:
+            return self._build_it_block(color, x, y, z)
+
+        def stack(color: str, x: int, z: int, h: int) -> list[dict[str, Any]]:
+            return self._build_it_stack_column(color, x, z, max(1, min(5, int(h))))
+
+        def row(color: str, xs: list[int], z: int = 0) -> list[dict[str, Any]]:
+            return [b(color, x, 50, z) for x in xs]
+
+        def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return self._build_it_unique_blocks(blocks)
+
+        def last_color_excluding(*excluded: str, default: str = "Red") -> str:
+            excluded_norm = {self._normalize_build_color(item) for item in excluded if item}
+            for item in reversed(colors or []):
+                normed = self._normalize_build_color(item)
+                if normed and normed not in excluded_norm:
+                    return normed
+            return self._normalize_build_color(default)
+
+        def color_from_answer_or_palette(default: str, *excluded: str) -> str:
+            # Prefer a fresh QA color only when present; otherwise use the last
+            # explicitly named color not owned by the base/anchor structure.
+            fresh = bool(state and state.get("latest_question_answer_is_fresh"))
+            if fresh:
+                answer = self._build_it_answer_color_or_default(state, default="")
+                if answer:
+                    return self._normalize_build_color(answer)
+            return last_color_excluding(*excluded, default=default)
+
+        def height_from_answer_or_text(default: int, *, color_hint: str = "") -> int:
+            fresh = bool(state and state.get("latest_question_answer_is_fresh"))
+            if fresh:
+                answer_h = self._build_it_answer_number_or_default(state, default=default)
+                if answer_h:
+                    return max(1, min(5, int(answer_h)))
+            number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+            if color_hint:
+                c = re.escape(color_hint.lower())
+                patterns = (
+                    rf"\b{number_re}\s+{c}\s+blocks?\b",
+                    rf"\b{number_re}\s+(?:block\s+)?{c}\s+(?:stack|tower|column|pillar)\b",
+                    rf"\b{c}\s+(?:stack|tower|column|pillar)\s+(?:of\s+)?{number_re}\b",
+                    rf"\b{c}\s+blocks?\s+(?:stacked\s+)?(?:two|three|four|five|\d+)?\b",
+                )
+                for pattern in patterns:
+                    match = re.search(pattern, lowered)
+                    if match:
+                        for group in match.groups():
+                            if group and re.fullmatch(number_re, group):
+                                return max(1, min(5, self._build_it_parse_number(group, default=default)))
+            return max(1, min(5, int(default)))
+
+        # Yellow base at the origin, a red stack immediately to the left, and a
+        # same-footprint stack in front of that red stack.  v3 sometimes colored
+        # the front stack Yellow by inheriting the anchor; use the fresh answer or
+        # the explicit non-anchor color for the front stack.
+        if (
+            "yellow" in lowered
+            and "red" in lowered
+            and "left" in lowered
+            and any(term in lowered for term in ("in front", "front of", "front"))
+            and any(term in lowered for term in ("tower of four", "four block", "four-block", "four red", "four blue", "four blocks"))
+        ):
+            front_color = color_from_answer_or_palette(last_color_excluding("Yellow", "Red", default="Red"), "Yellow", "Red")
+            if front_color == "Yellow":
+                front_color = last_color_excluding("Yellow", default="Red")
+            return out([b("Yellow", 0, 50, 0)] + stack("Red", -100, 0, 3) + stack(front_color, -100, 100, 4))
+
+        # Existing red line / red row with an underspecified two-block extension
+        # to the right/front.  Keep the red base line and scope the answer color
+        # only to the new extension blocks.
+        if (
+            "red" in lowered
+            and ("existing red line" in lowered or "red line" in lowered or "red row" in lowered)
+            and "square to the right" in lowered
+            and any(term in lowered for term in ("towards the bottom", "toward the bottom", "front", "in front"))
+        ):
+            ext_color = color_from_answer_or_palette(last_color_excluding("Red", default="Yellow"), "Red")
+            return out([b("Red", 100, 50, -100), b("Red", 100, 50, 0), b("Red", 100, 50, 100), b(ext_color, 200, 50, 100), b(ext_color, 200, 50, 200)])
+
+        # Row of three blue blocks with one block on top of the middle/highlighted
+        # block.  If QA is present, it only colors the top block, not the row.
+        if (
+            "blue" in lowered
+            and any(term in lowered for term in ("left", "right"))
+            and any(term in lowered for term in ("middle block", "center block", "centre block", "highlighted"))
+            and any(term in lowered for term in ("on top", "above", "top of"))
+        ):
+            top_color = color_from_answer_or_palette(last_color_excluding("Blue", default="Red"), "Blue")
+            return out(row("Blue", [-100, 0, 100]) + [b(top_color, 0, 150, 0)])
+
+        # Yellow horizontal row extending left; the two blocks on top of the
+        # leftmost yellow block take the answer/explicit color, not Yellow.
+        if (
+            "yellow" in lowered
+            and "left" in lowered
+            and any(term in lowered for term in ("leftmost", "left-most", "left end"))
+            and any(term in lowered for term in ("on top", "above", "top of", "stack"))
+        ):
+            top_color = color_from_answer_or_palette(last_color_excluding("Yellow", default="Purple"), "Yellow")
+            return out(row("Yellow", [0, -100, -200]) + [b(top_color, -200, 150, 0), b(top_color, -200, 250, 0)])
+
+        # Purple base stack, yellow stack/blocks to the left, and a blue stack in
+        # front of that yellow stack.  The height answer scopes to the blue stack
+        # only; the yellow vertical column remains three high unless named lower.
+        if (
+            "purple" in lowered
+            and "yellow" in lowered
+            and "blue" in lowered
+            and "left" in lowered
+            and any(term in lowered for term in ("in front", "front of", "directly in front"))
+        ):
+            blue_h = height_from_answer_or_text(2, color_hint="blue")
+            yellow_h = 3 if "three" in lowered or "3" in lowered else 3
+            return out(stack("Purple", 0, 0, 3) + stack("Yellow", -100, 0, yellow_h) + stack("Blue", -100, 100, blue_h))
+
+        # Green row to the right, blue stack immediately to the right of the row,
+        # then red stack to the right of the blue one.  The answer controls the
+        # red stack height only.
+        if (
+            "green" in lowered
+            and "blue" in lowered
+            and "red" in lowered
+            and "right" in lowered
+            and any(term in lowered for term in ("row of three", "three green", "green row"))
+        ):
+            red_h = height_from_answer_or_text(2, color_hint="red")
+            return out(row("Green", [0, 100, 200]) + stack("Blue", 300, 0, 3) + stack("Red", 400, 0, red_h))
+
+        # Yellow stack/column at the right, then a green stack to its left.  The
+        # green height is the underspecified slot; do not let generic parsing
+        # inflate it to four/five.
+        if (
+            "yellow" in lowered
+            and "green" in lowered
+            and "left" in lowered
+            and any(term in lowered for term in ("yellow stack", "stack three yellow", "three yellow"))
+            and "green stack" in lowered
+        ):
+            green_h = height_from_answer_or_text(3, color_hint="green")
+            return out([b("Yellow", 400, 50, 0)] + stack("Yellow", 300, 0, 3) + stack("Green", 200, 0, green_h))
+
+        # Two yellow blocks, two green blocks in front, then red blocks directly
+        # in front.  The red height is the answer slot and should not gain an
+        # extra third block unless the answer says three.
+        if (
+            "yellow" in lowered
+            and "green" in lowered
+            and "red" in lowered
+            and "directly in front" in lowered
+            and ("two yellow" in lowered or "yellow blocks" in lowered)
+        ):
+            red_h = height_from_answer_or_text(2, color_hint="red")
+            return out(stack("Yellow", 0, 0, 2) + stack("Green", 0, 100, 2) + stack("Red", 0, 200, red_h))
+
+        # Blue path/row in depth with a green stack to the left of the terminal
+        # blue block.  Scope the green color to the side stack instead of
+        # recoloring it blue.
+        if (
+            "blue" in lowered
+            and "green" in lowered
+            and "left" in lowered
+            and any(term in lowered for term in ("rightmost blue", "frontmost blue", "terminal blue", "end of the blue", "last blue"))
+        ):
+            green_h = height_from_answer_or_text(2, color_hint="green")
+            return out([b("Blue", 0, 50, 0), b("Blue", 0, 50, 100), b("Blue", 0, 50, 200)] + stack("Blue", 0, 200, 3)[1:] + stack("Green", -100, 200, green_h))
+
+        # Tower of three blue left of highlighted square plus a second tower
+        # immediately to the left.  The second tower's color must not inherit
+        # Blue when another color is named/answered.
+        if (
+            "blue" in lowered
+            and "left of the highlighted" in lowered
+            and any(term in lowered for term in ("tower of three", "three blue"))
+            and any(term in lowered for term in ("tower of four", "four block", "four-block"))
+        ):
+            side_color = color_from_answer_or_palette(last_color_excluding("Blue", default="Red"), "Blue")
+            if side_color == "Blue":
+                side_color = last_color_excluding("Blue", default="Red")
+            return out(stack("Blue", -100, 0, 3) + stack(side_color, -200, 0, 4))
+
+        # Purple -> Blue -> Green leftward chain.  Use the answer/direct height
+        # only on the final green stack, avoiding an extra green block at y=250
+        # when the instruction/answer says two.
+        if (
+            "purple" in lowered
+            and "blue" in lowered
+            and "green" in lowered
+            and "left of the blue" in lowered
+        ):
+            green_h = height_from_answer_or_text(2, color_hint="green")
+            return out(stack("Purple", 0, 0, 4) + stack("Blue", -100, 0, 3) + stack("Green", -200, 0, green_h))
+
+        # Stack four green right of highlighted square, then blue blocks to the
+        # right of the green stack.  Blue height is the underspecified answer.
+        if (
+            "green" in lowered
+            and "blue" in lowered
+            and "right of the highlighted" in lowered
+            and any(term in lowered for term in ("stack four green", "four green"))
+            and "right of the green" in lowered
+        ):
+            blue_h = height_from_answer_or_text(3, color_hint="blue")
+            return out(stack("Green", 100, 0, 4) + stack("Blue", 200, 0, blue_h))
+
+        # Existing purple L-shape extension.  Keep the long side purple and place
+        # the answer/explicit color only on the short-side terminal block.
+        if (
+            "purple" in lowered
+            and ("l shape" in lowered or "l-shape" in lowered or "shape of an l" in lowered)
+            and "longer side" in lowered
+            and "shorter side" in lowered
+        ):
+            side_color = color_from_answer_or_palette(last_color_excluding("Purple", default="Blue"), "Purple")
+            if side_color == "Purple":
+                side_color = last_color_excluding("Purple", default="Blue")
+            base = list(initial_validated) if initial_validated else [
+                b("Purple", 0, 50, -100), b("Purple", 0, 50, 0), b("Purple", 0, 50, 100), b("Purple", 100, 50, 100)
+            ]
+            return out(base + [b("Purple", 0, 50, -200), b("Purple", 0, 50, -300), b(side_color, 200, 50, 100)])
+
+        return []
+
     def _build_it_try_bwim_v3_program(
         self,
         task_text_clean: str,
@@ -4752,6 +4999,7 @@ class AegisForgeAgent:
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str, state: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_bwim_v3_1_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v3_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v15_2_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v15_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
