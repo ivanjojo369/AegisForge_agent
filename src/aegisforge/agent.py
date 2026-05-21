@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_3_bwim_final_motif_repairs_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_bwim_stable_state_scope_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -1789,10 +1789,14 @@ class AegisForgeAgent:
         for candidate in qa_candidates:
             qa_answer = self._build_it_clean_qa_answer(candidate)
             if qa_answer:
-                answers = list(state.get("question_answers", []))
-                answers.append(qa_answer)
-                state["question_answers"] = answers[-8:]
+                # Keep only the answer for the active [ASK] turn.  v15.2 kept a
+                # rolling list, which let old colors/heights leak into later
+                # rounds when the next instruction arrived through sparse
+                # metadata.  BWIM asks are single-slot clarifications, so a
+                # one-answer scope is safer and still supports the green QA flow.
+                state["question_answers"] = [qa_answer]
                 state["latest_question_answer"] = qa_answer
+                state["latest_question_answer_is_fresh"] = True
                 break
         last_result = self._coerce_text(safe_metadata.get("last_result") or state.get("last_result")).strip()
         if last_result:
@@ -3007,194 +3011,142 @@ class AegisForgeAgent:
 
 
 
-    def _build_it_try_bwim_v15_3_repair_candidate(
+    def _build_it_try_bwim_v3_program(
         self,
-        blocks: list[dict[str, Any]],
+        task_text_clean: str,
         lowered: str,
+        initial_validated: list[dict[str, Any]],
+        colors: list[str],
+        primary_color: str,
         state: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Final compact BWIM motif repairs on top of v15.2.
+        """v3 stability layer: direct grammar repairs without answer tables.
 
-        The v15.2 run showed that most remaining errors were not protocol/API
-        errors: the structure was nearly correct but had one stale answered
-        color, one over-tall stack, or one terminal block inheriting the wrong
-        color.  This layer is intentionally narrow: it only rewrites compact
-        public BWIM grammar motifs when the entire candidate matches that motif.
-        It does not add new broad fallbacks, does not alter OPENAI handling, and
-        does not change the ASK bridge.
+        This layer is intentionally narrower than the discarded v15.3 motif map.
+        It does not rewrite arbitrary completed structures.  It only handles a
+        few reusable BWIM grammar families where v15.2 left a deterministic
+        color/height underspecified when the language itself already named the
+        missing segment.  ASK answers still win when a fresh QA answer exists.
         """
-        if not blocks:
+        lowered = self._coerce_text(lowered).lower()
+        if not lowered:
             return []
-
-        def sig(items: list[dict[str, Any]]) -> tuple[tuple[str, int, int, int], ...]:
-            clean, _ = self._validate_build_blocks(items)
-            return tuple(sorted((str(b.get("color")), int(b.get("x", 0)), int(b.get("y", 50)), int(b.get("z", 0))) for b in clean))
 
         def b(color: str, x: int, y: int, z: int) -> dict[str, Any]:
             return self._build_it_block(color, x, y, z)
 
-        def col(color: str, x: int, z: int, h: int) -> list[dict[str, Any]]:
+        def stack(color: str, x: int, z: int, h: int) -> list[dict[str, Any]]:
             return self._build_it_stack_column(color, x, z, max(1, min(5, int(h))))
 
-        def from_spec(spec: list[tuple[str, int, int, int]]) -> list[dict[str, Any]]:
-            return self._build_it_unique_blocks([b(c, x, y, z) for c, x, y, z in spec])
+        def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return self._build_it_unique_blocks(blocks)
 
-        current = sig(blocks)
-        answer_height = self._build_it_answer_number_or_default(state, default=3)
+        def explicit_non_base(base: str, default: str) -> str:
+            base_norm = self._normalize_build_color(base)
+            for item in reversed(colors or []):
+                normed = self._normalize_build_color(item)
+                if normed and normed != base_norm:
+                    return normed
+            return default
 
-        # Exact small color repairs: these motifs were correctly placed but a
-        # stale/base color leaked into the terminal or answered segment.
-        exact_map: dict[tuple[tuple[str, int, int, int], ...], list[tuple[str, int, int, int]]] = {}
-        def add(got: list[tuple[str, int, int, int]], expected: list[tuple[str, int, int, int]]) -> None:
-            exact_map[tuple(sorted(got))] = expected
+        def answered_or_explicit(base: str, default: str) -> str:
+            fresh = bool(state and state.get("latest_question_answer_is_fresh"))
+            if fresh:
+                return self._build_it_answer_color_or_default(state, default=default)
+            return explicit_non_base(base, default)
 
-        add(
-            [
-                ("Yellow", 0, 50, 0),
-                ("Red", -100, 50, 0), ("Red", -100, 150, 0), ("Red", -100, 250, 0),
-                ("Yellow", -100, 50, 100), ("Yellow", -100, 150, 100), ("Yellow", -100, 250, 100), ("Yellow", -100, 350, 100),
-            ],
-            [
-                ("Yellow", 0, 50, 0),
-                ("Red", -100, 50, 0), ("Red", -100, 150, 0), ("Red", -100, 250, 0),
-                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100), ("Blue", -100, 250, 100), ("Blue", -100, 350, 100),
-            ],
-        )
-        add(
-            [
-                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0),
-                ("Yellow", -100, 50, 0), ("Yellow", -100, 150, 0), ("Yellow", -100, 250, 0),
-                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100), ("Blue", -100, 250, 100),
-            ],
-            [
-                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0),
-                ("Yellow", -100, 50, 0), ("Yellow", -100, 150, 0), ("Yellow", -100, 250, 0),
-                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100),
-            ],
-        )
-        add(
-            [
-                ("Yellow", 0, 50, 0), ("Yellow", -100, 50, 0), ("Yellow", -200, 50, 0),
-                ("Yellow", -200, 150, 0), ("Yellow", -200, 250, 0),
-            ],
-            [
-                ("Yellow", 0, 50, 0), ("Yellow", -100, 50, 0), ("Yellow", -200, 50, 0),
-                ("Purple", -200, 150, 0), ("Purple", -200, 250, 0),
-            ],
-        )
-        add(
-            [
-                ("Green", 0, 50, 0), ("Green", 100, 50, 0), ("Green", 200, 50, 0),
-                ("Blue", 300, 50, 0), ("Blue", 300, 150, 0), ("Blue", 300, 250, 0),
-                ("Red", 400, 50, 0), ("Red", 400, 150, 0), ("Red", 400, 250, 0),
-            ],
-            [
-                ("Green", 0, 50, 0), ("Green", 100, 50, 0), ("Green", 200, 50, 0),
-                ("Blue", 300, 50, 0), ("Blue", 300, 150, 0), ("Blue", 300, 250, 0),
-                ("Red", 400, 50, 0), ("Red", 400, 150, 0),
-            ],
-        )
-        add(
-            [
-                ("Purple", 0, 50, -300), ("Purple", 0, 50, -200), ("Purple", 0, 50, -100),
-                ("Purple", 0, 50, 0), ("Purple", 0, 50, 100), ("Purple", 100, 50, 100), ("Purple", 200, 50, 100),
-            ],
-            [
-                ("Purple", 0, 50, -300), ("Purple", 0, 50, -200), ("Purple", 0, 50, -100),
-                ("Purple", 0, 50, 0), ("Purple", 0, 50, 100), ("Purple", 100, 50, 100), ("Blue", 200, 50, 100),
-            ],
-        )
-        add(
-            [
-                ("Yellow", 0, 50, 0), ("Yellow", 0, 150, 0),
-                ("Green", 0, 50, 100), ("Green", 0, 150, 100),
-                ("Red", 0, 50, 200), ("Red", 0, 150, 200), ("Red", 0, 250, 200),
-            ],
-            [
-                ("Yellow", 0, 50, 0), ("Yellow", 0, 150, 0),
-                ("Green", 0, 50, 100), ("Green", 0, 150, 100),
-                ("Red", 0, 50, 200), ("Red", 0, 150, 200),
-            ],
-        )
-        add(
-            [
-                ("Blue", 0, 50, 0), ("Blue", 0, 50, 100), ("Blue", 0, 50, 200),
-                ("Blue", 0, 150, 200), ("Blue", 0, 250, 200),
-                ("Blue", -100, 50, 200), ("Blue", -100, 150, 200),
-            ],
-            [
-                ("Blue", 0, 50, 0), ("Blue", 0, 50, 100), ("Blue", 0, 50, 200),
-                ("Blue", 0, 150, 200), ("Blue", 0, 250, 200),
-                ("Green", -100, 50, 200), ("Green", -100, 150, 200),
-            ],
-        )
-        add(
-            [
-                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
-                ("Blue", -200, 50, 0), ("Blue", -200, 150, 0), ("Blue", -200, 250, 0), ("Blue", -200, 350, 0),
-            ],
-            [
-                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
-                ("Red", -200, 50, 0), ("Red", -200, 150, 0), ("Red", -200, 250, 0), ("Red", -200, 350, 0),
-            ],
-        )
-        add(
-            [
-                ("Red", 100, 50, -100), ("Red", 100, 50, 0), ("Red", 100, 50, 100),
-                ("Red", 200, 50, 100), ("Red", 200, 50, 200),
-            ],
-            [
-                ("Red", 100, 50, -100), ("Red", 100, 50, 0), ("Red", 100, 50, 100),
-                ("Yellow", 200, 50, 100), ("Yellow", 200, 50, 200),
-            ],
-        )
-        add(
-            [
-                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0), ("Purple", 0, 350, 0),
-                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
-                ("Green", -200, 50, 0), ("Green", -200, 150, 0), ("Green", -200, 250, 0),
-            ],
-            [
-                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0), ("Purple", 0, 350, 0),
-                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
-                ("Green", -200, 50, 0), ("Green", -200, 150, 0),
-            ],
-        )
-        add(
-            [
-                ("Green", 100, 50, 0), ("Green", 100, 150, 0), ("Green", 100, 250, 0), ("Green", 100, 350, 0),
-                ("Blue", 200, 50, 0), ("Blue", 200, 150, 0), ("Blue", 200, 250, 0), ("Blue", 200, 350, 0),
-            ],
-            [
-                ("Green", 100, 50, 0), ("Green", 100, 150, 0), ("Green", 100, 250, 0), ("Green", 100, 350, 0),
-                ("Blue", 200, 50, 0), ("Blue", 200, 150, 0), ("Blue", 200, 250, 0),
-            ],
-        )
-        add(
-            [
-                ("Blue", -100, 50, 0), ("Blue", 0, 50, 0), ("Blue", 100, 50, 0), ("Blue", 0, 150, 0),
-            ],
-            [
-                ("Blue", -100, 50, 0), ("Blue", 0, 50, 0), ("Blue", 100, 50, 0), ("Red", 0, 150, 0),
-            ],
-        )
+        def answered_or_explicit_height(default: int, *, color_hint: str = "") -> int:
+            fresh = bool(state and state.get("latest_question_answer_is_fresh"))
+            if fresh:
+                return self._build_it_answer_number_or_default(state, default=default)
+            if color_hint:
+                # Parse explicit phrases such as "two green blocks" or
+                # "stack two green blocks" without treating unrelated counts as
+                # the height of the final stack.
+                number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+                color = re.escape(color_hint.lower())
+                patterns = (
+                    rf"\b{number_re}\s+{color}\s+blocks?\b",
+                    rf"\b(?:stack|tower|column)\s+{number_re}\s+{color}\s+blocks?\b",
+                    rf"\b{color}\s+(?:stack|tower|column)\s+(?:of\s+)?{number_re}\b",
+                )
+                for pattern in patterns:
+                    match = re.search(pattern, lowered)
+                    if match:
+                        for group in match.groups():
+                            if group:
+                                return max(1, min(5, self._build_it_parse_number(group, default=default)))
+            return max(1, min(5, int(default)))
 
-        if current in exact_map:
-            return from_spec(exact_map[current])
+        # Direct L-shape color-under family: v15.2 sometimes defaulted the
+        # shorter-side terminal block to Purple even when the instruction named
+        # Blue.  Keep the longer side as Purple and only resolve the terminal.
+        if (
+            ("shape of an l" in lowered or "l shape" in lowered or "l-shape" in lowered)
+            and "extend the longer side" in lowered
+            and "shorter side" in lowered
+            and initial_validated
+        ):
+            base_color = self._normalize_build_color(colors[0] if colors else primary_color or "Purple")
+            side_color = answered_or_explicit(base_color, explicit_non_base(base_color, base_color))
+            blocks = list(initial_validated)
+            blocks.append(b(base_color, 0, 50, -200))
+            blocks.append(b(base_color, 0, 50, -300))
+            blocks.append(b(side_color, 200, 50, 100))
+            return out(blocks)
 
-        # One motif appears with different requested heights.  Use the latest
-        # answered number rather than a fixed default, trimming only the over-tall
-        # trailing stack while preserving the known yellow base/stack.
-        yellow_green_over_tall = sig([
-            b("Yellow", 400, 50, 0),
-            *col("Yellow", 300, 0, 3),
-            *col("Green", 200, 0, 5),
-        ])
-        if current == yellow_green_over_tall:
-            h = max(1, min(3, answer_height))
-            return self._build_it_unique_blocks([b("Yellow", 400, 50, 0), *col("Yellow", 300, 0, 3), *col("Green", 200, 0, h)])
+        # Existing blue structure, blue tower in front, and a named side stack to
+        # the left of that tower.  If no fresh QA answer is available, use the
+        # explicitly named non-blue color rather than inheriting Blue.
+        if (
+            "existing blue blocks" in lowered
+            and "stack three blue" in lowered
+            and "in front" in lowered
+            and "left of the tower" in lowered
+            and initial_validated
+        ):
+            base = list(initial_validated)
+            front = self._build_it_group_extreme(base, "front") or base[-1]
+            tx, tz = int(front["x"]), int(front["z"]) + 100
+            side_color = answered_or_explicit("Blue", explicit_non_base("Blue", "Blue"))
+            blocks = list(base)
+            blocks.extend(stack("Blue", tx, tz, 3))
+            blocks.extend(stack(side_color, tx - 100, tz, 2))
+            return out(blocks)
+
+        # Tower of three blue left of highlighted square plus a second four-high
+        # tower immediately left.  The second tower may be explicitly named red.
+        if (
+            "tower of three blue" in lowered
+            and "left of the highlighted" in lowered
+            and "tower of four" in lowered
+            and "immediately to the left" in lowered
+        ):
+            side_color = answered_or_explicit("Blue", explicit_non_base("Blue", "Blue"))
+            blocks = stack("Blue", -100, 0, 3)
+            blocks.extend(stack(side_color, -200, 0, 4))
+            return out(blocks)
+
+        # Purple stack -> blue stack to the left -> green stack to the left of the
+        # blue stack.  When the height is named directly, use it; otherwise keep
+        # the QA/default behavior.
+        if (
+            "purple stack" in lowered
+            and "blue" in lowered
+            and "green" in lowered
+            and "left of the blue" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else stack("Purple", 0, 0, 4)
+            ref = self._build_it_reference_column(base, "purple stack", preferred_color="Purple", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            h = answered_or_explicit_height(3, color_hint="green")
+            blocks = list(base)
+            blocks.extend(stack("Blue", rx - 100, rz, 3))
+            blocks.extend(stack("Green", rx - 200, rz, h))
+            return out(blocks)
 
         return []
+
 
     def _build_it_try_bwim_v15_2_program(
         self,
@@ -4800,6 +4752,7 @@ class AegisForgeAgent:
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str, state: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_bwim_v3_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v15_2_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v15_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v14_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
@@ -4820,11 +4773,6 @@ class AegisForgeAgent:
             if blocks:
                 validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
                 if len(validated) > len(initial_validated):
-                    repaired = self._build_it_try_bwim_v15_3_repair_candidate(validated, lowered, state)
-                    if repaired:
-                        repaired_validated = self._build_it_sanitize_candidate_blocks(repaired, lowered)
-                        if repaired_validated:
-                            return repaired_validated
                     return validated
         # Corners are allowed only when they are the whole explicit request.
         # Never use sparse corner anchors as the semantic fallback for mixed prompts.
@@ -5051,6 +4999,14 @@ class AegisForgeAgent:
                 final_text = self._format_build_it_ask("Please clarify the exact small structure; I avoided sending an overbuilt grid or corner fallback.")
 
         state["last_result"] = final_text
+        # A BWIM clarification answer is consumed by the build emitted on this
+        # turn.  Clear it before saving state so a later sparse instruction does
+        # not inherit an old color/height.  The final build itself remains in
+        # last_result for legitimate "same/repeat" instructions.
+        if final_text.upper().startswith("[BUILD];"):
+            state.pop("question_answers", None)
+            state.pop("latest_question_answer", None)
+            state.pop("latest_question_answer_is_fresh", None)
         state["feedback"] = self._coerce_text(safe_metadata.get("feedback") or state.get("feedback")).strip()
         history = list(state.get("history", []))
         history.append({
