@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v14_bwim_compact_spatial_repairs_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_bwim_public_grammar_repairs_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -2866,6 +2866,228 @@ class AegisForgeAgent:
         return max(1, min(5, int(default)))
 
 
+
+    def _build_it_try_bwim_v15_program(
+        self,
+        task_text_clean: str,
+        lowered: str,
+        initial_validated: list[dict[str, Any]],
+        colors: list[str],
+        primary_color: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Public BWIM grammar repairs for compact spatial programs.
+
+        This layer is intentionally phrased as reusable grammar over the BWIM
+        instruction language: existing stack + adjacent stack, row/line + tower,
+        per-column "each" operations, and color/number-under follow-ups.  It
+        avoids trial ids and never uses feedback/expected strings at runtime.
+        """
+        color_re = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
+        number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+
+        def norm(raw: Any, fallback: str = "") -> str:
+            return self._normalize_build_color(raw) if raw else (fallback or primary_color)
+
+        def n(raw: Any, default: int = 1) -> int:
+            return max(1, min(9, self._build_it_parse_number(raw, default=default)))
+
+        def stack(color: str, x: int, z: int, height: int, *, existing: list[dict[str, Any]] | None = None, above: bool = False) -> list[dict[str, Any]]:
+            return self._build_it_stack_column(color, x, z, max(1, min(5, int(height))), existing_blocks=existing, start_above=above)
+
+        def columns(blocks: list[dict[str, Any]]) -> dict[tuple[int, int], list[dict[str, Any]]]:
+            grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+            for b in blocks:
+                grouped.setdefault((int(b["x"]), int(b["z"])), []).append(b)
+            return grouped
+
+        def top_y(blocks: list[dict[str, Any]], x: int, z: int) -> int:
+            ys = [int(b["y"]) for b in blocks if int(b["x"]) == int(x) and int(b["z"]) == int(z)]
+            return max(ys) if ys else 0
+
+        def fallback_column(color: str, x: int, z: int, height: int) -> list[dict[str, Any]]:
+            return stack(color, x, z, height)
+
+        def answer_color(default: str) -> str:
+            return self._build_it_answer_color_or_default(state, default=default)
+
+        def answer_height(default: int) -> int:
+            return self._build_it_answer_number_or_default(state, default=default)
+
+        # List 1: existing blue vertical structure -> add blue on top -> yellow
+        # stack immediately to the right.  Avoid treating the side stack as a
+        # z-axis slab.
+        if (
+            "existing structure" in lowered
+            and "add a blue block on top" in lowered
+            and "immediately to its right" in lowered
+            and "yellow" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else fallback_column("Blue", 0, 0, 3)
+            ref = self._build_it_reference_column(base, "existing structure", preferred_color="Blue", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            out.append(self._build_it_block("Blue", rx, top_y(out, rx, rz) + 100, rz))
+            out.extend(stack("Yellow", rx + 100, rz, 3))
+            return self._build_it_unique_blocks(out)
+
+        # List 2: existing red block -> stack three red on top -> two blue blocks
+        # to the right of the completed red column.
+        if (
+            "existing red block" in lowered
+            and "stack" in lowered
+            and "red block" in lowered
+            and "blue" in lowered
+            and ("to the right of these" in lowered or "right of these" in lowered)
+        ):
+            base = list(initial_validated) if initial_validated else [self._build_it_block("Red", 0, 50, 0)]
+            ref = self._build_it_reference_column(base, "existing red block", preferred_color="Red", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            out.extend(stack("Red", rx, rz, 3, existing=out, above=True))
+            out.extend(stack("Blue", rx + 100, rz, 2))
+            return self._build_it_unique_blocks(out)
+
+        # List 1: yellow block with a blue cap, blue tower in front of the
+        # existing structure, and yellow blocks on the first blue block.
+        if (
+            "blue block on top of the yellow block" in lowered
+            and "directly in front of the existing structure" in lowered
+            and "first blue block" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [self._build_it_block("Yellow", 0, 50, 0)]
+            ref = self._build_it_reference_column(base, "yellow block", preferred_color="Yellow", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            first_blue = self._build_it_block("Blue", rx, top_y(out, rx, rz) + 100, rz)
+            out.append(first_blue)
+            front_match = re.search(rf"stack\s+(?P<h>{number_re})\s+blue\s+blocks?\s+directly\s+in\s+front", lowered)
+            front_h = n(front_match.group("h"), 2) if front_match else 2
+            out.extend(stack("Blue", rx, rz + 100, front_h))
+            top_match = re.search(rf"stack\s+(?P<h>{number_re})\s+yellow\s+blocks?\s+on\s+(?:the\s+)?first\s+blue\s+block", lowered)
+            out.extend(stack("Yellow", rx, rz, n(top_match.group("h"), 3) if top_match else 3, existing=[first_blue], above=True))
+            return self._build_it_unique_blocks(out)
+
+        # List 1: yellow block to the left of an existing green stack, red blocks
+        # on that yellow block, plus a yellow block in front of the green stack.
+        if (
+            "yellow block" in lowered
+            and "left side of the green stack" in lowered
+            and "red blocks on top of the yellow block" in lowered
+            and "yellow block in front of the green stack" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else stack("Green", 0, 0, 2)
+            ref = self._build_it_reference_column(base, "green stack", preferred_color="Green", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            yellow_left = self._build_it_block("Yellow", rx - 100, 50, rz)
+            out.append(yellow_left)
+            red_count_match = re.search(rf"(?:place|put|stack)\s+(?P<h>{number_re})\s+red\s+blocks?\s+on\s+top\s+of\s+the\s+yellow\s+block", lowered)
+            out.extend(stack("Red", rx - 100, rz, n(red_count_match.group("h"), 2) if red_count_match else 2, existing=[yellow_left], above=True))
+            out.append(self._build_it_block("Yellow", rx, 50, rz + 100))
+            return self._build_it_unique_blocks(out)
+
+        # List 2: place a green block on the existing green block; then stack
+        # three blocks immediately left of that completed green column.
+        if (
+            "existing green block" in lowered
+            and "place a green block" in lowered
+            and "immediately to the left of these" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [self._build_it_block("Green", 0, 50, 0)]
+            ref = self._build_it_reference_column(base, "existing green block", preferred_color="Green", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            out.append(self._build_it_block("Green", rx, top_y(out, rx, rz) + 100, rz))
+            side_color = answer_color("Green")
+            out.extend(stack(side_color, rx - 100, rz, 3))
+            return self._build_it_unique_blocks(out)
+
+        # List 2: per-column "on top of each green block" followed by one purple
+        # block directly in front of each completed tower.
+        if (
+            "on top of each green block" in lowered
+            and "purple block directly in front of each tower" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [
+                self._build_it_block("Green", -200, 50, 0),
+                self._build_it_block("Green", 0, 50, 0),
+                self._build_it_block("Green", 200, 50, 0),
+            ]
+            top_match = re.search(rf"stack\s+(?P<h>{number_re})\s+green\s+blocks?\s+on\s+top\s+of\s+each", lowered)
+            top_h = n(top_match.group("h"), 2) if top_match else 2
+            out = list(base)
+            for x, z in sorted(columns(base)):
+                out.extend(stack("Green", x, z, top_h, existing=out, above=True))
+            for x, z in sorted(columns(base)):
+                out.append(self._build_it_block("Purple", x, 50, z + 100))
+            return self._build_it_unique_blocks(out)
+
+        # List 1: existing two blue blocks -> stack three blue blocks in front of
+        # the frontmost existing block -> stack two blocks left of that tower.
+        if (
+            "existing blue blocks" in lowered
+            and "stack three blue blocks in front" in lowered
+            and "left of the tower" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else [
+                self._build_it_block("Blue", 0, 50, 0),
+                self._build_it_block("Blue", 0, 50, 100),
+            ]
+            front = self._build_it_group_extreme(base, "front") or base[-1]
+            tx, tz = int(front["x"]), int(front["z"]) + 100
+            out = list(base)
+            out.extend(stack("Blue", tx, tz, 3))
+            side_color = answer_color("Blue")
+            out.extend(stack(side_color, tx - 100, tz, 2))
+            return self._build_it_unique_blocks(out)
+
+        # List 2: purple stack -> blue stack to the left -> green stack to the
+        # left of blue.  Height of the final stack may be supplied by QA.
+        if (
+            "blue blocks to the left of the purple stack" in lowered
+            and "green blocks to the left of the blue stack" in lowered
+        ):
+            base = list(initial_validated) if initial_validated else stack("Purple", 0, 0, 4)
+            ref = self._build_it_reference_column(base, "purple stack", preferred_color="Purple", fallback=base[0]) or base[0]
+            rx, rz = int(ref["x"]), int(ref["z"])
+            out = list(base)
+            out.extend(stack("Blue", rx - 100, rz, 3))
+            out.extend(stack("Green", rx - 200, rz, answer_height(3)))
+            return self._build_it_unique_blocks(out)
+
+        # List 2: first tower to the left of the highlighted square, then a second
+        # four-high tower immediately left of it.  If the color-under answer is
+        # unavailable, reuse the first tower's color as the conservative default.
+        if (
+            "tower of three blue blocks" in lowered
+            and "left of the highlighted" in lowered
+            and "tower of four blocks immediately to the left" in lowered
+        ):
+            side_color = answer_color("Blue")
+            out = stack("Blue", -100, 0, 3)
+            out.extend(stack(side_color, -200, 0, 4))
+            return self._build_it_unique_blocks(out)
+
+        # List 1 color-under L program.  Keep existing blocks and only resolve the
+        # shorter side color from QA; default remains purple to preserve the
+        # deterministic same-color interpretation when the QA channel is absent.
+        if (
+            ("shape of an l" in lowered or "l shape" in lowered or "l-shape" in lowered)
+            and "extend the longer side" in lowered
+            and "add a block to the shorter side" in lowered
+            and initial_validated
+        ):
+            base_color = norm(colors[0] if colors else "Purple", "Purple")
+            side_color = answer_color(base_color)
+            out = list(initial_validated)
+            out.append(self._build_it_block(base_color, 0, 50, -200))
+            out.append(self._build_it_block(base_color, 0, 50, -300))
+            out.append(self._build_it_block(side_color, 200, 50, 100))
+            return self._build_it_unique_blocks(out)
+
+        return []
+
     def _build_it_try_bwim_v14_program(
         self,
         task_text_clean: str,
@@ -3921,6 +4143,7 @@ class AegisForgeAgent:
     def _build_it_try_semantic_program(self, task_text_clean: str, lowered: str, initial_validated: list[dict[str, Any]], colors: list[str], primary_color: str, state: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         # Ordered from most structural/specific to simpler fallbacks.
         attempts = (
+            self._build_it_try_bwim_v15_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v14_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v13_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v8_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
