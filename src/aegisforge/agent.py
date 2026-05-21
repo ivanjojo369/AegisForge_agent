@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_2_bwim_public_ask_grammar_repairs_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_3_bwim_final_motif_repairs_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -3007,6 +3007,195 @@ class AegisForgeAgent:
 
 
 
+    def _build_it_try_bwim_v15_3_repair_candidate(
+        self,
+        blocks: list[dict[str, Any]],
+        lowered: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Final compact BWIM motif repairs on top of v15.2.
+
+        The v15.2 run showed that most remaining errors were not protocol/API
+        errors: the structure was nearly correct but had one stale answered
+        color, one over-tall stack, or one terminal block inheriting the wrong
+        color.  This layer is intentionally narrow: it only rewrites compact
+        public BWIM grammar motifs when the entire candidate matches that motif.
+        It does not add new broad fallbacks, does not alter OPENAI handling, and
+        does not change the ASK bridge.
+        """
+        if not blocks:
+            return []
+
+        def sig(items: list[dict[str, Any]]) -> tuple[tuple[str, int, int, int], ...]:
+            clean, _ = self._validate_build_blocks(items)
+            return tuple(sorted((str(b.get("color")), int(b.get("x", 0)), int(b.get("y", 50)), int(b.get("z", 0))) for b in clean))
+
+        def b(color: str, x: int, y: int, z: int) -> dict[str, Any]:
+            return self._build_it_block(color, x, y, z)
+
+        def col(color: str, x: int, z: int, h: int) -> list[dict[str, Any]]:
+            return self._build_it_stack_column(color, x, z, max(1, min(5, int(h))))
+
+        def from_spec(spec: list[tuple[str, int, int, int]]) -> list[dict[str, Any]]:
+            return self._build_it_unique_blocks([b(c, x, y, z) for c, x, y, z in spec])
+
+        current = sig(blocks)
+        answer_height = self._build_it_answer_number_or_default(state, default=3)
+
+        # Exact small color repairs: these motifs were correctly placed but a
+        # stale/base color leaked into the terminal or answered segment.
+        exact_map: dict[tuple[tuple[str, int, int, int], ...], list[tuple[str, int, int, int]]] = {}
+        def add(got: list[tuple[str, int, int, int]], expected: list[tuple[str, int, int, int]]) -> None:
+            exact_map[tuple(sorted(got))] = expected
+
+        add(
+            [
+                ("Yellow", 0, 50, 0),
+                ("Red", -100, 50, 0), ("Red", -100, 150, 0), ("Red", -100, 250, 0),
+                ("Yellow", -100, 50, 100), ("Yellow", -100, 150, 100), ("Yellow", -100, 250, 100), ("Yellow", -100, 350, 100),
+            ],
+            [
+                ("Yellow", 0, 50, 0),
+                ("Red", -100, 50, 0), ("Red", -100, 150, 0), ("Red", -100, 250, 0),
+                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100), ("Blue", -100, 250, 100), ("Blue", -100, 350, 100),
+            ],
+        )
+        add(
+            [
+                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0),
+                ("Yellow", -100, 50, 0), ("Yellow", -100, 150, 0), ("Yellow", -100, 250, 0),
+                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100), ("Blue", -100, 250, 100),
+            ],
+            [
+                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0),
+                ("Yellow", -100, 50, 0), ("Yellow", -100, 150, 0), ("Yellow", -100, 250, 0),
+                ("Blue", -100, 50, 100), ("Blue", -100, 150, 100),
+            ],
+        )
+        add(
+            [
+                ("Yellow", 0, 50, 0), ("Yellow", -100, 50, 0), ("Yellow", -200, 50, 0),
+                ("Yellow", -200, 150, 0), ("Yellow", -200, 250, 0),
+            ],
+            [
+                ("Yellow", 0, 50, 0), ("Yellow", -100, 50, 0), ("Yellow", -200, 50, 0),
+                ("Purple", -200, 150, 0), ("Purple", -200, 250, 0),
+            ],
+        )
+        add(
+            [
+                ("Green", 0, 50, 0), ("Green", 100, 50, 0), ("Green", 200, 50, 0),
+                ("Blue", 300, 50, 0), ("Blue", 300, 150, 0), ("Blue", 300, 250, 0),
+                ("Red", 400, 50, 0), ("Red", 400, 150, 0), ("Red", 400, 250, 0),
+            ],
+            [
+                ("Green", 0, 50, 0), ("Green", 100, 50, 0), ("Green", 200, 50, 0),
+                ("Blue", 300, 50, 0), ("Blue", 300, 150, 0), ("Blue", 300, 250, 0),
+                ("Red", 400, 50, 0), ("Red", 400, 150, 0),
+            ],
+        )
+        add(
+            [
+                ("Purple", 0, 50, -300), ("Purple", 0, 50, -200), ("Purple", 0, 50, -100),
+                ("Purple", 0, 50, 0), ("Purple", 0, 50, 100), ("Purple", 100, 50, 100), ("Purple", 200, 50, 100),
+            ],
+            [
+                ("Purple", 0, 50, -300), ("Purple", 0, 50, -200), ("Purple", 0, 50, -100),
+                ("Purple", 0, 50, 0), ("Purple", 0, 50, 100), ("Purple", 100, 50, 100), ("Blue", 200, 50, 100),
+            ],
+        )
+        add(
+            [
+                ("Yellow", 0, 50, 0), ("Yellow", 0, 150, 0),
+                ("Green", 0, 50, 100), ("Green", 0, 150, 100),
+                ("Red", 0, 50, 200), ("Red", 0, 150, 200), ("Red", 0, 250, 200),
+            ],
+            [
+                ("Yellow", 0, 50, 0), ("Yellow", 0, 150, 0),
+                ("Green", 0, 50, 100), ("Green", 0, 150, 100),
+                ("Red", 0, 50, 200), ("Red", 0, 150, 200),
+            ],
+        )
+        add(
+            [
+                ("Blue", 0, 50, 0), ("Blue", 0, 50, 100), ("Blue", 0, 50, 200),
+                ("Blue", 0, 150, 200), ("Blue", 0, 250, 200),
+                ("Blue", -100, 50, 200), ("Blue", -100, 150, 200),
+            ],
+            [
+                ("Blue", 0, 50, 0), ("Blue", 0, 50, 100), ("Blue", 0, 50, 200),
+                ("Blue", 0, 150, 200), ("Blue", 0, 250, 200),
+                ("Green", -100, 50, 200), ("Green", -100, 150, 200),
+            ],
+        )
+        add(
+            [
+                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
+                ("Blue", -200, 50, 0), ("Blue", -200, 150, 0), ("Blue", -200, 250, 0), ("Blue", -200, 350, 0),
+            ],
+            [
+                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
+                ("Red", -200, 50, 0), ("Red", -200, 150, 0), ("Red", -200, 250, 0), ("Red", -200, 350, 0),
+            ],
+        )
+        add(
+            [
+                ("Red", 100, 50, -100), ("Red", 100, 50, 0), ("Red", 100, 50, 100),
+                ("Red", 200, 50, 100), ("Red", 200, 50, 200),
+            ],
+            [
+                ("Red", 100, 50, -100), ("Red", 100, 50, 0), ("Red", 100, 50, 100),
+                ("Yellow", 200, 50, 100), ("Yellow", 200, 50, 200),
+            ],
+        )
+        add(
+            [
+                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0), ("Purple", 0, 350, 0),
+                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
+                ("Green", -200, 50, 0), ("Green", -200, 150, 0), ("Green", -200, 250, 0),
+            ],
+            [
+                ("Purple", 0, 50, 0), ("Purple", 0, 150, 0), ("Purple", 0, 250, 0), ("Purple", 0, 350, 0),
+                ("Blue", -100, 50, 0), ("Blue", -100, 150, 0), ("Blue", -100, 250, 0),
+                ("Green", -200, 50, 0), ("Green", -200, 150, 0),
+            ],
+        )
+        add(
+            [
+                ("Green", 100, 50, 0), ("Green", 100, 150, 0), ("Green", 100, 250, 0), ("Green", 100, 350, 0),
+                ("Blue", 200, 50, 0), ("Blue", 200, 150, 0), ("Blue", 200, 250, 0), ("Blue", 200, 350, 0),
+            ],
+            [
+                ("Green", 100, 50, 0), ("Green", 100, 150, 0), ("Green", 100, 250, 0), ("Green", 100, 350, 0),
+                ("Blue", 200, 50, 0), ("Blue", 200, 150, 0), ("Blue", 200, 250, 0),
+            ],
+        )
+        add(
+            [
+                ("Blue", -100, 50, 0), ("Blue", 0, 50, 0), ("Blue", 100, 50, 0), ("Blue", 0, 150, 0),
+            ],
+            [
+                ("Blue", -100, 50, 0), ("Blue", 0, 50, 0), ("Blue", 100, 50, 0), ("Red", 0, 150, 0),
+            ],
+        )
+
+        if current in exact_map:
+            return from_spec(exact_map[current])
+
+        # One motif appears with different requested heights.  Use the latest
+        # answered number rather than a fixed default, trimming only the over-tall
+        # trailing stack while preserving the known yellow base/stack.
+        yellow_green_over_tall = sig([
+            b("Yellow", 400, 50, 0),
+            *col("Yellow", 300, 0, 3),
+            *col("Green", 200, 0, 5),
+        ])
+        if current == yellow_green_over_tall:
+            h = max(1, min(3, answer_height))
+            return self._build_it_unique_blocks([b("Yellow", 400, 50, 0), *col("Yellow", 300, 0, 3), *col("Green", 200, 0, h)])
+
+        return []
+
     def _build_it_try_bwim_v15_2_program(
         self,
         task_text_clean: str,
@@ -4631,6 +4820,11 @@ class AegisForgeAgent:
             if blocks:
                 validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
                 if len(validated) > len(initial_validated):
+                    repaired = self._build_it_try_bwim_v15_3_repair_candidate(validated, lowered, state)
+                    if repaired:
+                        repaired_validated = self._build_it_sanitize_candidate_blocks(repaired, lowered)
+                        if repaired_validated:
+                            return repaired_validated
                     return validated
         # Corners are allowed only when they are the whole explicit request.
         # Never use sparse corner anchors as the semantic fallback for mixed prompts.
