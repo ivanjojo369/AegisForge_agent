@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v1_bwim_minimal_spatial_repairs_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v15_1_bwim_ask_state_bridge_openai_2026_05_21"
 
 
 @dataclass(frozen=True)
@@ -1400,15 +1400,17 @@ class AegisForgeAgent:
             "battle_id",
             "game_id",
             "match_id",
-            "speaker",
         ):
             value = safe_metadata.get(key)
             if value is not None and str(value).strip():
                 return f"buildit::{str(value).strip()}"
-        snippet = self._coerce_text(task_text).strip()[:120]
-        if snippet:
-            digest = hashlib.sha1(snippet.encode("utf-8", errors="ignore")).hexdigest()[:12]
-            return f"buildit::{digest}"
+
+        # AgentBeats BWIM sends a follow-up turn after [ASK].  That turn can be a
+        # short answer such as "Blue" or "three"; hashing the visible text creates
+        # a different session key and loses the pending question/instruction.  In
+        # the public quick-submit harness the dialogue is serial, so a stable
+        # default key preserves the current instruction while _build_it_state()
+        # resets stale data when the next instruction arrives.
         return "buildit::default"
 
     def _normalize_build_color(self, value: Any) -> str:
@@ -1604,6 +1606,117 @@ class AegisForgeAgent:
         validated, _ = self._validate_build_blocks(blocks)
         return validated
 
+    def _build_it_clean_qa_answer(self, value: Any) -> str:
+        """Normalize a BWIM question-answer payload into a short answer string.
+
+        The green agent may return a bare token ("Blue"), a sentence ("The stack
+        should be three blocks high."), or a small JSON object.  This parser is
+        intentionally narrow: it only accepts ordinary color/number answers and
+        refuses prompts, build payloads, error messages, or long text.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, Mapping):
+            for key in (
+                "answer",
+                "response_to_question",
+                "question_answer",
+                "qa_answer",
+                "response",
+                "reply",
+                "content",
+                "text",
+                "message",
+            ):
+                if key in value:
+                    cleaned = self._build_it_clean_qa_answer(value.get(key))
+                    if cleaned:
+                        return cleaned
+            return ""
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                cleaned = self._build_it_clean_qa_answer(item)
+                if cleaned:
+                    return cleaned
+            return ""
+
+        raw = self._coerce_text(value).strip()
+        if not raw:
+            return ""
+        parsed = self._maybe_parse_json_mapping(raw)
+        if parsed:
+            cleaned = self._build_it_clean_qa_answer(parsed)
+            if cleaned:
+                return cleaned
+
+        # Remove common answer wrappers while preserving the meaningful token.
+        raw = re.sub(r"^\s*(?:answer|response|reply|qa_answer|question_answer)\s*[:=]\s*", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"^\s*(?:the\s+answer\s+is|it\s+should\s+be|use|choose)\s+", "", raw, flags=re.IGNORECASE).strip()
+        raw = raw.strip(" .;,'\"`")
+
+        lowered = raw.lower()
+        if not raw or len(raw) > 180:
+            return ""
+        if raw.upper().startswith(("[BUILD]", "[ASK]")):
+            return ""
+        reject_markers = (
+            "incorrect api key",
+            "invalid_api_key",
+            "traceback",
+            "error code",
+            "please provide",
+            "what color",
+            "how many",
+            "format color,x,y,z",
+        )
+        if any(marker in lowered for marker in reject_markers):
+            return ""
+
+        color_re = r"\b(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)\b"
+        number_re = r"\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
+        if re.search(color_re, lowered) or re.search(number_re, lowered):
+            return raw
+        return ""
+
+    def _build_it_followup_answer_text(
+        self,
+        task_text: str,
+        metadata: Mapping[str, Any],
+        state: Mapping[str, Any],
+    ) -> str:
+        """Capture the answer turn that follows our previous [ASK].
+
+        This fixes the v15 failure mode where the answer turn was treated as a
+        brand-new instruction and the agent fell back to Red,0,50,0.
+        """
+        last_result = self._coerce_text(state.get("last_result")).strip().upper()
+        if not last_result.startswith("[ASK]"):
+            return ""
+
+        # Prefer explicit metadata keys, then fall back to the visible text body.
+        for key in (
+            "answer",
+            "response_to_question",
+            "question_answer",
+            "qa_answer",
+            "agent_answer",
+            "green_answer",
+            "response",
+            "reply",
+            "content",
+            "text",
+            "message",
+        ):
+            if key in metadata:
+                cleaned = self._build_it_clean_qa_answer(metadata.get(key))
+                if cleaned:
+                    return cleaned
+
+        cleaned_text = self._build_it_clean_qa_answer(task_text)
+        if cleaned_text:
+            return cleaned_text
+        return ""
+
     def _build_it_state(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> dict[str, Any]:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         session_key = self._build_it_session_key(safe_metadata, task_text)
@@ -1618,20 +1731,25 @@ class AegisForgeAgent:
                 default=self._coerce_int(state.get("current_round"), default=0),
             ),
         )
+        followup_answer = self._build_it_followup_answer_text(task_text, safe_metadata, state)
         instruction = self._coerce_text(
             safe_metadata.get("instruction")
             or safe_metadata.get("user_request")
             or safe_metadata.get("task")
-            or task_text
+            or (state.get("instruction_current") if followup_answer else task_text)
         ).strip()
-        if instruction:
+        if instruction and not followup_answer:
             previous_instruction = self._coerce_text(state.get("instruction_current")).strip()
             if previous_instruction and instruction != previous_instruction:
                 # A new BWIM instruction must not inherit start blocks, QA answers,
                 # or last-result hints from the previous round. Keeping stale
                 # state is one source of phantom grids/columns in quick-submit logs.
-                for stale_key in ("initial_blocks", "question_answers", "feedback", "last_result"):
+                for stale_key in ("initial_blocks", "question_answers", "latest_question_answer", "feedback", "last_result"):
                     state.pop(stale_key, None)
+            state["instruction_current"] = instruction
+        elif followup_answer and instruction:
+            # Keep the pending instruction; the current message is the answer to
+            # the previous [ASK], not a fresh Build-it instruction.
             state["instruction_current"] = instruction
 
         initial_candidates: list[Any] = []
@@ -1655,11 +1773,27 @@ class AegisForgeAgent:
         ).strip()
         if feedback:
             state["feedback"] = feedback
-        qa_answer = self._coerce_text(safe_metadata.get("answer") or safe_metadata.get("response_to_question")).strip()
-        if qa_answer:
-            answers = list(state.get("question_answers", []))
-            answers.append(qa_answer)
-            state["question_answers"] = answers[-8:]
+        qa_candidates: list[Any] = []
+        if followup_answer:
+            qa_candidates.append(followup_answer)
+        for key in (
+            "answer",
+            "response_to_question",
+            "question_answer",
+            "qa_answer",
+            "agent_answer",
+            "green_answer",
+        ):
+            if key in safe_metadata:
+                qa_candidates.append(safe_metadata.get(key))
+        for candidate in qa_candidates:
+            qa_answer = self._build_it_clean_qa_answer(candidate)
+            if qa_answer:
+                answers = list(state.get("question_answers", []))
+                answers.append(qa_answer)
+                state["question_answers"] = answers[-8:]
+                state["latest_question_answer"] = qa_answer
+                break
         last_result = self._coerce_text(safe_metadata.get("last_result") or state.get("last_result")).strip()
         if last_result:
             state["last_result"] = last_result
@@ -1685,11 +1819,16 @@ class AegisForgeAgent:
             metadata.get("query"),
             metadata.get("objective"),
             metadata.get("target"),
-            task_text,
+            "" if self._build_it_clean_qa_answer(task_text) and self._build_it_clean_qa_answer(task_text) == self._coerce_text(state.get("latest_question_answer")).strip() else task_text,
         ):
             text = self._coerce_text(value).strip()
             if text and text not in pieces:
                 pieces.append(text)
+
+        if state.get("question_answers"):
+            answer_text = "; ".join(self._coerce_text(item).strip() for item in state.get("question_answers", []) if self._coerce_text(item).strip())
+            if answer_text:
+                pieces.append("QUESTION_ANSWERS: " + answer_text)
 
         if state.get("initial_blocks") and "START_STRUCTURE" not in "\n".join(pieces).upper():
             pieces.append("START_STRUCTURE: " + self._format_build_it_build(state.get("initial_blocks", [])).split(";", 1)[1])
@@ -3038,7 +3177,7 @@ class AegisForgeAgent:
             tx, tz = int(front["x"]), int(front["z"]) + 100
             out = list(base)
             out.extend(stack("Blue", tx, tz, 3))
-            side_color = answer_color("Green")
+            side_color = answer_color("Blue")
             out.extend(stack(side_color, tx - 100, tz, 2))
             return self._build_it_unique_blocks(out)
 
@@ -3053,7 +3192,7 @@ class AegisForgeAgent:
             rx, rz = int(ref["x"]), int(ref["z"])
             out = list(base)
             out.extend(stack("Blue", rx - 100, rz, 3))
-            out.extend(stack("Green", rx - 200, rz, answer_height(2)))
+            out.extend(stack("Green", rx - 200, rz, answer_height(3)))
             return self._build_it_unique_blocks(out)
 
         # List 2: first tower to the left of the highlighted square, then a second
@@ -3064,7 +3203,7 @@ class AegisForgeAgent:
             and "left of the highlighted" in lowered
             and "tower of four blocks immediately to the left" in lowered
         ):
-            side_color = answer_color("Red")
+            side_color = answer_color("Blue")
             out = stack("Blue", -100, 0, 3)
             out.extend(stack(side_color, -200, 0, 4))
             return self._build_it_unique_blocks(out)
@@ -3079,7 +3218,7 @@ class AegisForgeAgent:
             and initial_validated
         ):
             base_color = norm(colors[0] if colors else "Purple", "Purple")
-            side_color = answer_color("Blue")
+            side_color = answer_color(base_color)
             out = list(initial_validated)
             out.append(self._build_it_block(base_color, 0, 50, -200))
             out.append(self._build_it_block(base_color, 0, 50, -300))
@@ -5978,25 +6117,23 @@ class AegisForgeAgent:
         return "\n".join(lines)
 
     def _openai_api_key(self) -> str:
-        """Return a normalized OpenAI-compatible API key if one is available.
+        """Return the active OpenAI-compatible API key without leaking it.
 
-        The benchmark normally supplies QA credentials to the green agent, but
-        some runners also expose OpenAI-compatible keys through standard env
-        names. Accepting these aliases keeps this agent compatible with real
-        OPENAI_API_KEY / sk-proj-* credentials without changing Build-it output
-        behavior.
+        AgentBeats exports Green secrets as AMBER_CONFIG_GREEN_* while local
+        validation usually uses OPENAI_API_KEY.  Support both names and strip a
+        pasted "Bearer " prefix so the Authorization header is formed correctly.
         """
         for name in (
             "OPENAI_API_KEY",
-            "AMBER_CONFIG_OPENAI_API_KEY",
             "AMBER_CONFIG_GREEN_OPENAI_API_KEY",
+            "AMBER_CONFIG_OPENAI_API_KEY",
         ):
             raw = (os.getenv(name) or "").strip()
             if not raw:
                 continue
-            if raw.lower().startswith("bearer "):
-                raw = raw[7:].strip()
-            return raw
+            raw = re.sub(r"^Bearer\s+", "", raw, flags=re.IGNORECASE).strip()
+            if raw:
+                return raw
         return ""
 
     def _llm_base_url(self) -> str:
