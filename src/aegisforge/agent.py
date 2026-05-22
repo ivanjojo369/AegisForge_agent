@@ -23,6 +23,7 @@ across benchmarks without answer hardcoding or task-specific lookup tables.
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import asdict, dataclass, is_dataclass, replace
@@ -71,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_2_context_llm_bridge_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_3_hybrid_solver_endpoint_scan_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -3228,12 +3229,14 @@ class AegisForgeAgent:
         if year_range:
             start_year, end_year = int(year_range.group(1)), int(year_range.group(2))
         pairs = self._officeqa_year_value_pairs(question, context)
+        if len(pairs) < 3:
+            wide = self._officeqa_best_values_by_year(question, context)
+            if start_year is not None and end_year is not None:
+                pairs = [(year, wide[year][0], wide[year][1]) for year in range(start_year, end_year + 1) if year in wide and wide[year][2] >= 1]
         if start_year is not None and end_year is not None:
             pairs = [item for item in pairs if start_year <= item[0] <= end_year]
         if len(pairs) < 3:
             return None
-        # Use one value per year.  For OLS questions this is the intended row
-        # series; if context is ambiguous, decline rather than guess.
         xy = [(year, value) for year, value, _ in pairs]
         result = self._officeqa_ols(xy)
         if result is None:
@@ -3243,8 +3246,9 @@ class AegisForgeAgent:
         return {
             "answer": answer,
             "reasoning": f"Deterministic OfficeQA OLS over {len(xy)} year/value rows from provided context.",
-            "confidence": 0.76,
+            "confidence": 0.74,
         }
+
 
     def _officeqa_try_total_for_year_answer(self, question: str, context: str) -> dict[str, Any] | None:
         lowered = question.lower()
@@ -3439,15 +3443,460 @@ class AegisForgeAgent:
                     }
         return None
 
+
+    def _officeqa_month_number(self, value: Any) -> int | None:
+        text = self._coerce_text(value).strip().lower()
+        if not text:
+            return None
+        month_map = {
+            "jan": 1, "january": 1,
+            "feb": 2, "february": 2,
+            "mar": 3, "march": 3,
+            "apr": 4, "april": 4,
+            "may": 5,
+            "jun": 6, "june": 6,
+            "jul": 7, "july": 7,
+            "aug": 8, "august": 8,
+            "sep": 9, "sept": 9, "september": 9,
+            "oct": 10, "october": 10,
+            "nov": 11, "november": 11,
+            "dec": 12, "december": 12,
+        }
+        for key, month in month_map.items():
+            if re.search(rf"\b{re.escape(key)}\.?\b", text):
+                return month
+        return None
+
+    def _officeqa_question_months(self, question: str) -> list[int]:
+        months: list[int] = []
+        for match in re.finditer(
+            r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\b",
+            self._coerce_text(question),
+            flags=re.IGNORECASE,
+        ):
+            month = self._officeqa_month_number(match.group(0))
+            if month is not None and month not in months:
+                months.append(month)
+        return months
+
+    def _officeqa_record_text(self, record: Mapping[str, Any]) -> str:
+        pieces: list[str] = []
+        for key, value in record.items():
+            key_l = str(key).lower()
+            if any(part in key_l for part in ("ground_truth", "gold", "answer", "solution", "label", "score", "predicted")):
+                continue
+            pieces.append(f"{key}: {self._coerce_text(value)}")
+        return " | ".join(pieces)
+
+    def _officeqa_topic_terms_for_matching(self, question: str) -> set[str]:
+        generic = {
+            "absolute", "difference", "average", "arithmetic", "mean", "geometric",
+            "nearest", "rounded", "round", "value", "values", "nominal", "dollars",
+            "dollar", "million", "millions", "billion", "billions", "calendar",
+            "fiscal", "year", "years", "month", "months", "report", "answer",
+            "calculate", "using", "data", "table", "reported", "total", "sum",
+            "single", "final", "number", "percentage", "percent", "points",
+        }
+        return {term for term in self._officeqa_keyword_terms(question) if term not in generic and len(term) >= 4}
+
+    def _officeqa_record_topic_score(self, question: str, record_text: str) -> int:
+        lower = record_text.lower()
+        terms = self._officeqa_topic_terms_for_matching(question)
+        score = sum(2 for term in terms if term in lower)
+        phrase_boosts = (
+            "national defense",
+            "gross interest",
+            "interest cost",
+            "budget outlays",
+            "federal debt",
+            "public debt",
+            "income tax",
+            "receipts",
+            "outlays",
+            "expenditures",
+            "treasury",
+            "savings bonds",
+            "exchange stabilization fund",
+            "currency in circulation",
+            "coin and currency",
+            "cpi",
+            "consumer price",
+            "irs",
+            "internal revenue",
+            "liabilities",
+            "assets",
+            "yield",
+            "bond",
+            "bill",
+            "note",
+        )
+        q_lower = self._coerce_text(question).lower()
+        for phrase in phrase_boosts:
+            if phrase in q_lower and phrase in lower:
+                score += 4
+        # Rows that contain only dates and generic totals are weak unless some
+        # domain phrase overlaps.
+        if score == 0 and any(marker in lower for marker in ("treasury", "fiscal", "federal", "receipts", "outlays", "debt", "assets")):
+            score = 1
+        return score
+
+    def _officeqa_record_year_values(self, record: Mapping[str, Any]) -> dict[int, list[tuple[float, str]]]:
+        values: dict[int, list[tuple[float, str]]] = {}
+        record_text = self._officeqa_record_text(record)
+
+        for key, raw in record.items():
+            key_text = self._coerce_text(key)
+            key_l = key_text.lower()
+            if any(part in key_l for part in ("ground_truth", "gold", "answer", "solution", "label", "score", "predicted")):
+                continue
+            parsed = self._officeqa_parse_number(raw)
+            for year_match in re.finditer(r"\b((?:18|19|20)\d{2})\b", key_text):
+                if parsed is None:
+                    continue
+                year = int(year_match.group(1))
+                if abs(parsed - year) < 0.001:
+                    continue
+                if abs(parsed - round(parsed)) < 1e-9 and 1800 <= abs(parsed) <= 2099 and "$" not in self._coerce_text(raw):
+                    continue
+                values.setdefault(year, []).append((parsed, key_text))
+
+            raw_text = self._coerce_text(raw)
+            for match in re.finditer(
+                r"\b((?:18|19|20)\d{2})\b[^\n\r\d$()-]{0,35}(\(?[-+]?\$?\s*\d[\d,]*(?:\.\d+)?\)?)",
+                raw_text,
+            ):
+                year = int(match.group(1))
+                parsed_pair = self._officeqa_parse_number(match.group(2))
+                if parsed_pair is None or abs(parsed_pair - year) < 0.001:
+                    continue
+                if abs(parsed_pair - round(parsed_pair)) < 1e-9 and 1800 <= abs(parsed_pair) <= 2099 and "$" not in match.group(2):
+                    continue
+                values.setdefault(year, []).append((parsed_pair, key_text or "text_pair"))
+
+        # A frequent table shape is: label columns + one date/year column + one
+        # amount column.  Use it only when exactly one year and one non-year
+        # numeric amount appear in the row.
+        row_years = [int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", record_text)]
+        if len(set(row_years)) == 1:
+            year = row_years[0]
+            numeric_values: list[float] = []
+            for match in re.finditer(r"\(?[-+]?\$?\s*\d[\d,]*(?:\.\d+)?\)?", record_text):
+                parsed = self._officeqa_parse_number(match.group(0))
+                if parsed is None:
+                    continue
+                if abs(parsed - year) < 0.001:
+                    continue
+                if abs(parsed - round(parsed)) < 1e-9 and 1800 <= abs(parsed) <= 2099 and "$" not in match.group(0):
+                    continue
+                numeric_values.append(parsed)
+            if len(numeric_values) == 1:
+                values.setdefault(year, []).append((numeric_values[0], "single_year_row"))
+
+        return values
+
+    def _officeqa_wide_year_values(self, question: str, context: str) -> list[tuple[int, float, str, int]]:
+        records = self._officeqa_structured_records_from_context(context)
+        rows: list[tuple[int, float, str, int]] = []
+        for record in records:
+            record_text = self._officeqa_record_text(record)
+            score = self._officeqa_record_topic_score(question, record_text)
+            if score <= 0:
+                continue
+            year_values = self._officeqa_record_year_values(record)
+            for year, value_items in year_values.items():
+                for value, source_key in value_items:
+                    if value is None:
+                        continue
+                    rows.append((year, value, f"{source_key}: {record_text[:350]}", score))
+        # Fall back to line-level year/value extraction, preserving a score.
+        for year, value, source in self._officeqa_year_value_pairs(question, context):
+            score = self._officeqa_record_topic_score(question, source)
+            if score > 0:
+                rows.append((year, value, source, score))
+        dedup: dict[tuple[int, float], tuple[int, float, str, int]] = {}
+        for item in rows:
+            key = (item[0], round(item[1], 8))
+            prior = dedup.get(key)
+            if prior is None or item[3] > prior[3]:
+                dedup[key] = item
+        return sorted(dedup.values(), key=lambda item: (item[0], -item[3]))
+
+    def _officeqa_best_values_by_year(self, question: str, context: str) -> dict[int, tuple[float, str, int]]:
+        best: dict[int, tuple[float, str, int]] = {}
+        for year, value, source, score in self._officeqa_wide_year_values(question, context):
+            prior = best.get(year)
+            if prior is None or score > prior[2]:
+                best[year] = (value, source, score)
+        return best
+
+    def _officeqa_record_month_values(self, record: Mapping[str, Any]) -> dict[int, list[tuple[float, str]]]:
+        output: dict[int, list[tuple[float, str]]] = {}
+        for key, raw in record.items():
+            key_text = self._coerce_text(key)
+            if any(part in key_text.lower() for part in ("ground_truth", "gold", "answer", "solution", "label", "score", "predicted")):
+                continue
+            month = self._officeqa_month_number(key_text)
+            if month is None:
+                continue
+            parsed = self._officeqa_parse_number(raw)
+            if parsed is None:
+                continue
+            if abs(parsed - round(parsed)) < 1e-9 and 1800 <= abs(parsed) <= 2099 and "$" not in self._coerce_text(raw):
+                continue
+            output.setdefault(month, []).append((parsed, key_text))
+        return output
+
+    def _officeqa_monthly_sums_by_year(self, question: str, context: str) -> dict[int, tuple[float, str, int]]:
+        records = self._officeqa_structured_records_from_context(context)
+        q_years = self._officeqa_question_years(question)
+        monthly: dict[int, tuple[float, str, int]] = {}
+        for record in records:
+            record_text = self._officeqa_record_text(record)
+            score = self._officeqa_record_topic_score(question, record_text)
+            if score <= 0:
+                continue
+            row_years = set(int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", record_text))
+            if q_years:
+                row_years &= set(q_years)
+            if not row_years:
+                # Some tables put year in a key like fiscal_year.
+                for key, raw in record.items():
+                    if "year" in str(key).lower():
+                        parsed = self._officeqa_parse_number(raw)
+                        if parsed is not None and abs(parsed - round(parsed)) < 1e-9:
+                            row_years.add(int(round(parsed)))
+            month_values = self._officeqa_record_month_values(record)
+            if len(month_values) < 6:
+                continue
+            total = sum(values[0][0] for month, values in month_values.items() if values)
+            for year in row_years:
+                prior = monthly.get(year)
+                if prior is None or score > prior[2]:
+                    monthly[year] = (total, record_text[:350], score)
+        return monthly
+
+    def _officeqa_try_wide_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "ordinary least squares" not in lowered and "linear regression" not in lowered and "ols" not in lowered:
+            return None
+        year_range = re.search(r"(?:fiscal\s+years?|years?)\s+((?:18|19|20)\d{2})\s*[–\-]\s*((?:18|19|20)\d{2})", question, flags=re.IGNORECASE)
+        if not year_range:
+            return None
+        start_year, end_year = int(year_range.group(1)), int(year_range.group(2))
+        best = self._officeqa_best_values_by_year(question, context)
+        xy = [(year, best[year][0]) for year in range(start_year, end_year + 1) if year in best and best[year][2] >= 1]
+        if len(xy) < max(4, (end_year - start_year + 1) // 2):
+            return None
+        result = self._officeqa_ols(xy)
+        if result is None:
+            return None
+        slope, intercept = result
+        answer = f"[{self._officeqa_format_number(slope, decimals=3)}, {self._officeqa_format_number(intercept, decimals=3)}]"
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA OLS over {len(xy)} extracted year/value rows.",
+            "confidence": 0.73,
+        }
+
+    def _officeqa_try_month_sum_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if not any(marker in lowered for marker in ("individual calendar months", "monthly values", "calendar months", "month")):
+            return None
+        years = self._officeqa_question_years(question)
+        if not years:
+            return None
+        sums = self._officeqa_monthly_sums_by_year(question, context)
+        available = {year: sums[year][0] for year in years if year in sums}
+        if not available:
+            return None
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 2 if "hundredth" in lowered or "percent" in lowered else 0
+        if len(available) >= 2 and any(marker in lowered for marker in ("difference", "change")):
+            y1, y2 = years[0], years[-1]
+            if y1 not in available or y2 not in available:
+                return None
+            v1, v2 = available[y1], available[y2]
+            if "percent" in lowered and "percentage point" not in lowered:
+                if abs(v1) <= 1e-12:
+                    return None
+                value = abs(v2 - v1) / abs(v1) * 100.0
+                answer = self._officeqa_format_number(value, decimals=decimals) + ("%" if "percent value" not in lowered else "")
+            else:
+                value = abs(v2 - v1)
+                answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+            return {
+                "answer": answer,
+                "reasoning": f"Deterministic OfficeQA month-sum comparison for years {y1} and {y2}.",
+                "confidence": 0.72,
+            }
+        if len(available) == 1:
+            year, value = next(iter(available.items()))
+            answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+            return {
+                "answer": answer,
+                "reasoning": f"Deterministic OfficeQA sum of monthly values for {year}.",
+                "confidence": 0.70,
+            }
+        return None
+
+    def _officeqa_try_difference_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if not any(marker in lowered for marker in ("absolute difference", "difference", "change from", "change between")):
+            return None
+        years = self._officeqa_question_years(question)
+        if len(years) < 2:
+            return None
+        best = self._officeqa_best_values_by_year(question, context)
+        y1, y2 = years[0], years[-1]
+        if y1 not in best or y2 not in best:
+            return None
+        if min(best[y1][2], best[y2][2]) <= 0:
+            return None
+        v1, v2 = best[y1][0], best[y2][0]
+        if "percent difference" in lowered or "relative difference" in lowered:
+            if abs(v1) <= 1e-12:
+                return None
+            value = abs(v2 - v1) / abs(v1) * 100.0
+            decimals = self._officeqa_requested_decimals(question)
+            if decimals is None:
+                decimals = 2
+            answer = self._officeqa_format_number(value, decimals=decimals)
+            if "12.34%" in lowered or "reported as a percent" in lowered:
+                answer += "%"
+        else:
+            value = abs(v2 - v1)
+            decimals = self._officeqa_requested_decimals(question)
+            if decimals is None:
+                decimals = 0 if abs(value - round(value)) < 1e-9 else 3
+            use_commas = abs(value) >= 1000 and "without commas" not in lowered and "no commas" not in lowered
+            answer = self._officeqa_format_number(value, decimals=decimals, use_commas=use_commas)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA difference between extracted values for {y1} and {y2}.",
+            "confidence": 0.69,
+        }
+
+    def _officeqa_try_average_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if not any(marker in lowered for marker in ("average", "arithmetic mean", "mean of")) or "geometric mean" in lowered:
+            return None
+        years = self._officeqa_question_years(question)
+        best = self._officeqa_best_values_by_year(question, context)
+        values: list[float] = []
+        if years:
+            for year in years:
+                item = best.get(year)
+                if item is not None and item[2] >= 1:
+                    values.append(item[0])
+        else:
+            values = [item[0] for item in best.values() if item[2] >= 2]
+        if len(values) < 2:
+            return None
+        value = sum(values) / len(values)
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 1 if "one decimal" in lowered else 3
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA arithmetic mean over {len(values)} extracted values.",
+            "confidence": 0.69,
+        }
+
+    def _officeqa_try_range_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "range" not in lowered:
+            return None
+        years = self._officeqa_question_years(question)
+        best = self._officeqa_best_values_by_year(question, context)
+        values = [best[year][0] for year in years if year in best and best[year][2] >= 1] if years else [item[0] for item in best.values() if item[2] >= 2]
+        if len(values) < 2:
+            return None
+        value = max(values) - min(values)
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 2
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA range over {len(values)} extracted values.",
+            "confidence": 0.68,
+        }
+
+    def _officeqa_try_geometric_mean_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "geometric mean" not in lowered:
+            return None
+        years = self._officeqa_question_years(question)
+        best = self._officeqa_best_values_by_year(question, context)
+        values = [best[year][0] for year in years if year in best and best[year][2] >= 1] if years else [item[0] for item in best.values() if item[2] >= 2]
+        values = [value for value in values if value > 0]
+        if len(values) < 2:
+            return None
+        value = math.exp(sum(math.log(v) for v in values) / len(values))
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 3
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA geometric mean over {len(values)} extracted positive values.",
+            "confidence": 0.68,
+        }
+
+    def _officeqa_try_wide_year_lookup_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if any(marker in lowered for marker in ("difference", "average", "mean", "range", "regression", "ols", "weighted average", "percent")):
+            return None
+        years = self._officeqa_question_years(question)
+        if not years:
+            return None
+        target_year = years[-1]
+        if "highest" in lowered or "maximum" in lowered or "largest" in lowered:
+            candidates = [(value, source, score) for year, value, source, score in self._officeqa_wide_year_values(question, context) if year == target_year and score >= 1]
+            if not candidates:
+                return None
+            value, source, score = max(candidates, key=lambda item: item[0])
+        else:
+            best = self._officeqa_best_values_by_year(question, context)
+            if target_year not in best or best[target_year][2] < 2:
+                return None
+            value, source, score = best[target_year]
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 0 if abs(value - round(value)) < 1e-9 else 3
+        use_commas = abs(value) >= 1000 and "without commas" not in lowered and "no commas" not in lowered
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=use_commas)
+        if "million" in lowered and "million" in self._coerce_text(source).lower() and "no words" not in lowered and "single numeric" not in lowered:
+            if "enter the final full number" not in lowered:
+                # Keep evaluator-friendly numeric answers by default; only add unit
+                # when the prompt explicitly expects a worded amount.
+                if re.search(r"\b\d[\d,]* million\b", self._coerce_text(source), flags=re.IGNORECASE):
+                    answer = f"{answer} million"
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA year lookup for {target_year} from high-overlap table evidence.",
+            "confidence": 0.70,
+        }
+
+
     def _officeqa_try_deterministic_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if not self._officeqa_context_has_real_evidence(question, context):
             return None
 
         solvers = (
+            self._officeqa_try_wide_ols_answer,
             self._officeqa_try_ols_answer,
+            self._officeqa_try_month_sum_answer,
             self._officeqa_try_weighted_average_answer,
             self._officeqa_try_percent_answer,
+            self._officeqa_try_difference_answer,
+            self._officeqa_try_average_answer,
+            self._officeqa_try_range_answer,
+            self._officeqa_try_geometric_mean_answer,
             self._officeqa_try_total_for_year_answer,
+            self._officeqa_try_wide_year_lookup_answer,
         )
         for solver in solvers:
             try:
@@ -3645,8 +4094,8 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.2 preserved the clean answer-only final channel, "
-                "added recursive evidence scanning, and used packed context for any configured LLM bridge. "
+                "OfficeQA answer engine v0.5.3 preserved the clean answer-only final channel, "
+                "added hybrid deterministic Treasury solvers, recursive evidence scanning, and wider endpoint discovery. "
                 f"{evidence_note}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
@@ -9264,7 +9713,43 @@ class AegisForgeAgent:
         return ""
 
     def _llm_base_url(self) -> str:
-        raw = (os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
+        """Return an OpenAI-compatible chat-completions endpoint if configured.
+
+        v0.5.3 keeps authentication untouched, but widens endpoint discovery to
+        common OpenAI-compatible environment names used by local gateways,
+        Amber/AgentBeats wrappers, and self-hosted inference servers.  OIDC,
+        AgentBeats result endpoints, and generic backend URLs are deliberately
+        ignored because they are not LLM chat-completions APIs.
+        """
+        candidates = (
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "OPENAI_API_URL",
+            "OPENAI_BASE",
+            "AEGISFORGE_LLM_BASE_URL",
+            "AEGISFORGE_OPENAI_BASE_URL",
+            "LOCAL_LLM_BASE_URL",
+            "LOCAL_LLM_OPENAI_BASE_URL",
+            "LLM_BASE_URL",
+            "VLLM_OPENAI_BASE_URL",
+            "OLLAMA_OPENAI_BASE_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_API_BASE",
+            "AMBER_CONFIG_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OPENAI_API_BASE",
+        )
+        raw = ""
+        for name in candidates:
+            value = (os.getenv(name) or "").strip().rstrip("/")
+            if not value:
+                continue
+            lowered = value.lower()
+            if "agentbeats.dev" in lowered or lowered.endswith("/results") or "/quick-submit/" in lowered:
+                continue
+            if lowered.startswith(("http://", "https://")):
+                raw = value
+                break
+
         if not raw:
             if self._openai_api_key():
                 raw = "https://api.openai.com/v1"
@@ -9277,6 +9762,7 @@ class AegisForgeAgent:
         if "/v1/" in raw:
             return raw
         return f"{raw}/v1/chat/completions"
+
 
     def _call_llm(self, *, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
         if self._current_llm_calls >= self.max_llm_calls_per_response:
