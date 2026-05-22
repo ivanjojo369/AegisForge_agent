@@ -71,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_4_absolute_bwim_escape_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_0_retrieval_calc_bridge_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -1601,6 +1601,9 @@ class AegisForgeAgent:
         self._last_loop_escape_action: dict[str, Any] | None = None
         self._browser_action_settle_seconds = 0.5
         self._dom_max_chars = 12000
+        self._officeqa_local_corpus_cache: list[dict[str, Any]] | None = None
+        self._officeqa_local_corpus_error: str = ""
+        self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
 
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
@@ -2561,6 +2564,637 @@ class AegisForgeAgent:
         context = "\n\n".join(piece for piece in pieces if piece).strip()
         return context[:limit]
 
+
+    def _officeqa_context_has_real_evidence(self, question: str, context: str) -> bool:
+        """Return True when OfficeQA context appears to contain evidence beyond the prompt itself."""
+        q = re.sub(r"\s+", " ", self._coerce_text(question)).strip().lower()
+        raw = self._coerce_text(context)
+        if not raw.strip():
+            return False
+        stripped = re.sub(r"\s+", " ", raw).strip().lower()
+        if q and stripped in {q, f"[visible_task] {q}"}:
+            return False
+        # The visible task is always present in our context bundle; require
+        # additional rows, documents, pages, tables, or corpus snippets before
+        # deterministic answering.
+        evidence_markers = (
+            "[metadata.",
+            "[payload.",
+            "[parsed_task.",
+            "[officeqa_local_file:",
+            "[officeqa_adapter",
+            "[document",
+            "[table",
+            "[rows",
+            "[records",
+            "[csv",
+            "[page",
+            "[context",
+            "[evidence",
+            "|",
+            "\t",
+        )
+        if any(marker in raw.lower() for marker in evidence_markers):
+            return True
+        # Multiple numeric rows are a weak but useful signal for tabular evidence.
+        numeric_lines = 0
+        for line in raw.splitlines():
+            if re.search(r"\b(?:18|19|20)\d{2}\b", line) and re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", line):
+                numeric_lines += 1
+            if numeric_lines >= 3:
+                return True
+        return False
+
+    def _officeqa_parse_number(self, value: Any) -> float | None:
+        text = self._coerce_text(value)
+        if not text:
+            return None
+        text = text.replace("\u2212", "-").replace("−", "-")
+        # Parentheses denote negative values in many financial tables.
+        neg = bool(re.search(r"\(\s*\$?\s*[-+]?\d", text))
+        match = re.search(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", text)
+        if not match:
+            return None
+        raw = match.group(0).replace("$", "").replace(",", "").replace(" ", "")
+        try:
+            number = float(raw)
+        except Exception:
+            return None
+        return -abs(number) if neg and number >= 0 else number
+
+    def _officeqa_requested_decimals(self, question: str) -> int | None:
+        lowered = self._coerce_text(question).lower()
+        if "nearest thousandth" in lowered or "nearest thousandths" in lowered or "three decimal" in lowered:
+            return 3
+        if "nearest hundredth" in lowered or "nearest hundredths" in lowered or "two decimal" in lowered:
+            return 2
+        if "nearest tenth" in lowered or "one decimal" in lowered:
+            return 1
+        if "nearest nominal dollar" in lowered or "nearest dollar" in lowered or "nearest integer" in lowered:
+            return 0
+        return None
+
+    def _officeqa_format_number(self, value: float, *, decimals: int | None = None, use_commas: bool = False, percent: bool = False) -> str:
+        if decimals is None:
+            decimals = 2 if percent else 3
+        if decimals <= 0:
+            rounded = int(round(value))
+            return f"{rounded:,}" if use_commas else str(rounded)
+        fmt = f"{{:,.{decimals}f}}" if use_commas else f"{{:.{decimals}f}}"
+        return fmt.format(value)
+
+    def _officeqa_requested_bracket_answer(self, question: str) -> bool:
+        lowered = self._coerce_text(question).lower()
+        return "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered
+
+    def _officeqa_keyword_terms(self, question: str) -> list[str]:
+        text = re.sub(r"[^a-z0-9\s]+", " ", self._coerce_text(question).lower())
+        stop = {
+            "the", "and", "for", "with", "from", "that", "this", "what", "were", "was", "are", "using",
+            "according", "return", "answer", "rounded", "nearest", "place", "value", "values", "reported",
+            "year", "years", "month", "months", "fiscal", "calendar", "total", "sum", "all", "individual",
+            "question", "subquestions", "order", "number", "numbers", "million", "millions", "billion", "billions",
+        }
+        terms = [term for term in text.split() if len(term) >= 3 and term not in stop]
+        # Preserve domain terms even if duplicated; scoring later dedupes.
+        return self._dedupe(terms)[:48]
+
+    def _officeqa_local_corpus_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        for env_name in (
+            "AEGISFORGE_OFFICEQA_CORPUS_DIR",
+            "OFFICEQA_CORPUS_DIR",
+            "OFFICEQA_DATA_DIR",
+            "AGENTBEATS_DATA_DIR",
+            "A2A_DATA_DIR",
+        ):
+            raw = os.getenv(env_name, "").strip()
+            if raw:
+                roots.append(Path(raw))
+        try:
+            cwd = Path.cwd()
+            candidates = [
+                cwd,
+                cwd / "data",
+                cwd / "datasets",
+                cwd / "officeqa",
+                cwd / "OfficeQA",
+                cwd / "resources",
+                cwd / "src" / "aegisforge" / "adapters" / "officeqa",
+                cwd.parent / "officeqa-agentbeats-leaderboard",
+                cwd.parent / "data",
+            ]
+            roots.extend(candidates)
+        except Exception:
+            pass
+        clean: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                resolved = root.expanduser().resolve()
+            except Exception:
+                continue
+            key = str(resolved)
+            if key in seen or not resolved.exists() or not resolved.is_dir():
+                continue
+            seen.add(key)
+            clean.append(resolved)
+        return clean
+
+    def _officeqa_path_is_safe_context(self, path: Path) -> bool:
+        lowered = str(path).lower()
+        blocked_parts = (
+            ".git",
+            "__pycache__",
+            ".venv",
+            "site-packages",
+            "node_modules",
+            "ground_truth",
+            "gold",
+            "answer_key",
+            "answers",
+            "solution",
+            "solutions",
+            "submission",
+            "results",
+            "provenance",
+            "run-scenario",
+            "eval",
+            "summary",
+            "leaderboard",
+            "private",
+            "secret",
+            "token",
+        )
+        return not any(part in lowered for part in blocked_parts)
+
+    def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
+        if self._officeqa_local_corpus_cache is not None:
+            return self._officeqa_local_corpus_cache
+
+        enabled = _env_flag("AEGISFORGE_OFFICEQA_LOCAL_RETRIEVAL", default=True)
+        if not enabled:
+            self._officeqa_local_corpus_cache = []
+            return self._officeqa_local_corpus_cache
+
+        max_files = max(0, min(240, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "120") or "120")))
+        max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "900000") or "900000")))
+        exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml"}
+        records: list[dict[str, Any]] = []
+        visited: set[str] = set()
+
+        try:
+            for root in self._officeqa_local_corpus_roots():
+                if len(records) >= max_files:
+                    break
+                try:
+                    iterator = root.rglob("*")
+                except Exception:
+                    continue
+                for path in iterator:
+                    if len(records) >= max_files:
+                        break
+                    try:
+                        if not path.is_file() or path.suffix.lower() not in exts:
+                            continue
+                        resolved = str(path.resolve())
+                        if resolved in visited:
+                            continue
+                        visited.add(resolved)
+                        if not self._officeqa_path_is_safe_context(path):
+                            continue
+                        size = path.stat().st_size
+                        if size <= 0 or size > max_bytes:
+                            continue
+                        text = path.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    if not text.strip():
+                        continue
+                    lower = text[:50000].lower()
+                    path_l = str(path).lower()
+                    # Keep only plausible OfficeQA/document-data files unless
+                    # the user explicitly sets a corpus dir.
+                    plausible = any(
+                        marker in path_l or marker in lower
+                        for marker in (
+                            "officeqa",
+                            "treasury",
+                            "bulletin",
+                            "fiscal",
+                            "receipts",
+                            "outlays",
+                            "public debt",
+                            "cpi",
+                            "currency",
+                            "irs",
+                            "internal revenue",
+                            "federal reserve",
+                            "csv",
+                            "table",
+                        )
+                    )
+                    if not plausible:
+                        continue
+                    records.append(
+                        {
+                            "path": resolved,
+                            "name": path.name,
+                            "text": text[:max_bytes],
+                        }
+                    )
+        except Exception as exc:
+            self._officeqa_local_corpus_error = str(exc)[:240]
+
+        self._officeqa_local_corpus_cache = records
+        return records
+
+    def _officeqa_score_context_text(self, question: str, text: str, path: str = "") -> int:
+        lowered = self._coerce_text(text).lower()
+        path_l = self._coerce_text(path).lower()
+        if not lowered:
+            return 0
+        score = 0
+        for term in self._officeqa_keyword_terms(question):
+            if term in lowered:
+                score += 3
+            if term in path_l:
+                score += 2
+        for marker in ("treasury", "bulletin", "fiscal", "table", "csv", "receipts", "outlays", "cpi", "irs"):
+            if marker in lowered or marker in path_l:
+                score += 1
+        return score
+
+    def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 24000) -> str:
+        cache = self._officeqa_load_local_corpus_cache()
+        if not cache:
+            return ""
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for record in cache:
+            score = self._officeqa_score_context_text(question, self._coerce_text(record.get("text")), self._coerce_text(record.get("path")))
+            if score > 0:
+                scored.append((score, record))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        pieces: list[str] = []
+        for score, record in scored[:8]:
+            text = self._coerce_text(record.get("text"))
+            if not text:
+                continue
+            terms = self._officeqa_keyword_terms(question)
+            lower = text.lower()
+            anchors = [lower.find(term) for term in terms if term in lower]
+            anchors = [idx for idx in anchors if idx >= 0]
+            if anchors:
+                center = min(anchors)
+                start = max(0, center - 3500)
+                end = min(len(text), center + 8500)
+                excerpt = text[start:end]
+            else:
+                excerpt = text[:8000]
+            pieces.append(f"[officeqa_local_file:{record.get('name')} score={score}]\n{excerpt}")
+            if sum(len(piece) for piece in pieces) > limit:
+                break
+        return "\n\n".join(pieces)[:limit]
+
+    def _officeqa_structured_records_from_context(self, context: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        raw = self._coerce_text(context)
+
+        # JSON/JSONL records.  We only use generic table-like keys and skip any
+        # evaluator answer/ground-truth keys by construction.
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped or len(stripped) > 20000:
+                continue
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    obj = json.loads(stripped)
+                except Exception:
+                    continue
+                queue = obj if isinstance(obj, list) else [obj]
+                for item in queue[:200]:
+                    if isinstance(item, Mapping):
+                        safe: dict[str, Any] = {}
+                        for key, value in item.items():
+                            key_l = str(key).lower()
+                            if any(part in key_l for part in ("ground_truth", "gold", "answer", "solution", "label", "score", "predicted")):
+                                continue
+                            safe[str(key)] = value
+                        if safe:
+                            records.append(safe)
+
+        # Markdown/CSV-like rows.
+        header: list[str] | None = None
+        for line in raw.splitlines():
+            clean = line.strip()
+            if not clean or len(clean) > 4000:
+                continue
+            if re.match(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$", clean):
+                continue
+            delimiter = "|" if "|" in clean else ("\t" if "\t" in clean else ("," if clean.count(",") >= 2 else None))
+            if not delimiter:
+                continue
+            cells = [cell.strip() for cell in clean.strip("|").split(delimiter)]
+            if len(cells) < 2:
+                continue
+            alpha_cells = sum(1 for cell in cells if re.search(r"[A-Za-z]", cell))
+            num_cells = sum(1 for cell in cells if self._officeqa_parse_number(cell) is not None)
+            if alpha_cells >= 2 and num_cells == 0:
+                header = [re.sub(r"\s+", "_", cell.strip().lower()) or f"col_{idx}" for idx, cell in enumerate(cells)]
+                continue
+            if header and len(header) == len(cells):
+                records.append({header[idx]: cells[idx] for idx in range(len(cells))})
+            else:
+                records.append({f"col_{idx}": cell for idx, cell in enumerate(cells)})
+
+        return records[:1000]
+
+    def _officeqa_year_value_pairs(self, question: str, context: str) -> list[tuple[int, float, str]]:
+        q_terms = set(self._officeqa_keyword_terms(question))
+        pairs: list[tuple[int, float, str]] = []
+        for line in self._coerce_text(context).splitlines():
+            if len(line) > 5000:
+                continue
+            lowered = line.lower()
+            if any(blocked in lowered for blocked in ("ground_truth", "gold", "correct_answer", "solution", "expected_answer")):
+                continue
+            year_matches = list(re.finditer(r"\b((?:18|19|20)\d{2})\b", line))
+            if not year_matches:
+                continue
+            # Prefer lines that overlap the question domain, but still keep
+            # numeric rows because many tables use terse row labels.
+            line_terms = set(re.findall(r"[a-z]{3,}", lowered))
+            term_overlap = len(q_terms & line_terms)
+            if term_overlap == 0 and not re.search(r"\b(?:receipts|outlays|expenditures|debt|cpi|income|tax|treasury|federal|defense)\b", lowered):
+                continue
+            numbers = list(re.finditer(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?|\(\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*\)", line))
+            for ym in year_matches:
+                year = int(ym.group(1))
+                candidates: list[tuple[int, float]] = []
+                for nm in numbers:
+                    if nm.start() == ym.start():
+                        continue
+                    parsed = self._officeqa_parse_number(nm.group(0))
+                    if parsed is None:
+                        continue
+                    # Avoid reusing the year as value.
+                    if abs(parsed - year) < 0.001:
+                        continue
+                    distance = abs(nm.start() - ym.end())
+                    candidates.append((distance, parsed))
+                if candidates:
+                    candidates.sort(key=lambda item: item[0])
+                    pairs.append((year, candidates[0][1], line.strip()[:500]))
+        # Deduplicate by year, preferring the first plausible value.
+        by_year: dict[int, tuple[int, float, str]] = {}
+        for year, value, source in pairs:
+            if year not in by_year:
+                by_year[year] = (year, value, source)
+        return [by_year[key] for key in sorted(by_year)]
+
+    def _officeqa_ols(self, pairs: list[tuple[int, float]]) -> tuple[float, float] | None:
+        if len(pairs) < 2:
+            return None
+        xs = [float(x) for x, _ in pairs]
+        ys = [float(y) for _, y in pairs]
+        n = float(len(xs))
+        x_mean = sum(xs) / n
+        y_mean = sum(ys) / n
+        denom = sum((x - x_mean) ** 2 for x in xs)
+        if abs(denom) < 1e-12:
+            return None
+        slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denom
+        intercept = y_mean - slope * x_mean
+        return slope, intercept
+
+    def _officeqa_try_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "ordinary least squares" not in lowered and "linear regression" not in lowered and "ols" not in lowered:
+            return None
+        year_range = re.search(r"(?:fiscal\s+years?|years?)\s+((?:18|19|20)\d{2})\s*[–\-]\s*((?:18|19|20)\d{2})", question, flags=re.IGNORECASE)
+        start_year = end_year = None
+        if year_range:
+            start_year, end_year = int(year_range.group(1)), int(year_range.group(2))
+        pairs = self._officeqa_year_value_pairs(question, context)
+        if start_year is not None and end_year is not None:
+            pairs = [item for item in pairs if start_year <= item[0] <= end_year]
+        if len(pairs) < 3:
+            return None
+        # Use one value per year.  For OLS questions this is the intended row
+        # series; if context is ambiguous, decline rather than guess.
+        xy = [(year, value) for year, value, _ in pairs]
+        result = self._officeqa_ols(xy)
+        if result is None:
+            return None
+        slope, intercept = result
+        answer = f"[{self._officeqa_format_number(slope, decimals=3)}, {self._officeqa_format_number(intercept, decimals=3)}]"
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA OLS over {len(xy)} year/value rows from provided context.",
+            "confidence": 0.76,
+        }
+
+    def _officeqa_try_total_for_year_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if not any(marker in lowered for marker in ("what were", "what was", "total", "sum")):
+            return None
+        years = [int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", question)]
+        if not years:
+            return None
+        target_year = years[-1]
+        pairs = self._officeqa_year_value_pairs(question, context)
+        matches = [item for item in pairs if item[0] == target_year]
+        if not matches:
+            return None
+        value = matches[0][1]
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 0 if abs(value - round(value)) < 1e-9 else 3
+        use_commas = "comma" in lowered or abs(value) >= 1000
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=use_commas)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA extraction for year {target_year} from provided tabular context.",
+            "confidence": 0.64,
+        }
+
+    def _officeqa_try_weighted_average_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "weighted average" not in lowered and "average denomination" not in lowered:
+            return None
+        records = self._officeqa_structured_records_from_context(context)
+        total_count = 0.0
+        total_value = 0.0
+        used = 0
+        for rec in records:
+            denomination: float | None = None
+            count: float | None = None
+            value: float | None = None
+            for key, raw in rec.items():
+                key_l = str(key).lower()
+                parsed = self._officeqa_parse_number(raw)
+                if parsed is None:
+                    continue
+                if any(marker in key_l for marker in ("denomination", "denom", "note", "bill")):
+                    denomination = parsed
+                elif any(marker in key_l for marker in ("number", "count", "quantity", "pieces", "volume")):
+                    count = parsed
+                elif any(marker in key_l for marker in ("value", "amount", "outstanding", "dollar")):
+                    value = parsed
+            if count is not None and value is not None and count > 0:
+                total_count += count
+                total_value += value
+                used += 1
+            elif denomination is not None and count is not None and count > 0:
+                total_count += count
+                total_value += denomination * count
+                used += 1
+        if used == 0 or total_count <= 0:
+            return None
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 3
+        answer = self._officeqa_format_number(total_value / total_count, decimals=decimals)
+        return {
+            "answer": answer,
+            "reasoning": f"Deterministic OfficeQA weighted average from {used} denomination/count rows.",
+            "confidence": 0.7,
+        }
+
+    def _officeqa_try_percent_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = question.lower()
+        if "percent" not in lowered and "percentage" not in lowered:
+            return None
+        if not self._officeqa_requested_bracket_answer(question):
+            return None
+        numbers = []
+        for line in context.splitlines():
+            if any(term in line.lower() for term in ("ground_truth", "correct_answer", "solution", "expected_answer")):
+                continue
+            if any(term in line.lower() for term in ("total", "submitted", "accepted", "tender", "rollover", "noncash", "non cash")):
+                parsed_values = [self._officeqa_parse_number(match.group(0)) for match in re.finditer(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", line)]
+                numbers.extend([value for value in parsed_values if value is not None])
+        # Conservative: only solve when exactly two natural values appear, such
+        # as accepted/submitted.  Otherwise let the LLM/adapter handle it.
+        unique = []
+        for value in numbers:
+            if value is None or any(abs(value - prior) < 1e-9 for prior in unique):
+                continue
+            unique.append(value)
+        if len(unique) < 2:
+            return None
+        submitted = max(unique)
+        accepted = min(unique)
+        if submitted <= 0 or accepted < 0:
+            return None
+        pct = accepted / submitted * 100.0
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 2
+        first = self._officeqa_format_number(submitted, decimals=0, use_commas=False)
+        second = self._officeqa_format_number(pct, decimals=decimals)
+        return {
+            "answer": f"[{first}, {second}]",
+            "reasoning": "Deterministic OfficeQA percent calculation from submitted/accepted values in context.",
+            "confidence": 0.52,
+        }
+
+    def _officeqa_answer_candidate_from_obj(self, obj: Any) -> tuple[str, str]:
+        if obj is None:
+            return "", ""
+        if isinstance(obj, str):
+            return self._officeqa_clean_final_answer(obj), self._officeqa_reasoning_from_text(obj)
+        if isinstance(obj, Mapping):
+            forbidden = ("ground_truth", "gold", "correct_answer", "expected_answer", "solution", "label", "score")
+            answer = ""
+            reasoning = ""
+            for key in ("final_answer", "answer", "result", "prediction", "output"):
+                if key in obj and not any(part in key.lower() for part in forbidden):
+                    answer = self._officeqa_clean_final_answer(obj.get(key))
+                    break
+            for key in ("reasoning", "rationale", "trace", "explanation"):
+                if key in obj and not any(part in key.lower() for part in forbidden):
+                    reasoning = self._sanitize_text(obj.get(key))
+                    break
+            return answer, reasoning
+        if hasattr(obj, "as_dict"):
+            try:
+                return self._officeqa_answer_candidate_from_obj(obj.as_dict())
+            except Exception:
+                return "", ""
+        return "", ""
+
+    def _officeqa_try_adapter_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        adapter = getattr(self, "officeqa_adapter", None)
+        if adapter is None:
+            return None
+        payload = {
+            "question": question,
+            "context": context,
+            "metadata": dict(metadata or {}),
+            "response_protocol": "final_answer_xml",
+        }
+        method_names = (
+            "answer_question",
+            "answer",
+            "solve",
+            "query",
+            "run",
+            "handle",
+            "process",
+        )
+        for name in method_names:
+            method = getattr(adapter, name, None)
+            if not callable(method):
+                continue
+            attempts = (
+                lambda: method(question=question, context=context, metadata=metadata),
+                lambda: method(question, context, metadata),
+                lambda: method(payload),
+                lambda: method(question),
+            )
+            for attempt in attempts:
+                try:
+                    result = attempt()
+                except TypeError:
+                    continue
+                except Exception:
+                    break
+                answer, reasoning = self._officeqa_answer_candidate_from_obj(result)
+                if answer and answer != "INSUFFICIENT_INFORMATION":
+                    return {
+                        "answer": answer,
+                        "reasoning": reasoning or f"OfficeQA adapter method {name} produced a grounded candidate.",
+                        "confidence": 0.84,
+                    }
+        return None
+
+    def _officeqa_try_deterministic_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not self._officeqa_context_has_real_evidence(question, context):
+            return None
+
+        solvers = (
+            self._officeqa_try_ols_answer,
+            self._officeqa_try_weighted_average_answer,
+            self._officeqa_try_percent_answer,
+            self._officeqa_try_total_for_year_answer,
+        )
+        for solver in solvers:
+            try:
+                result = solver(question, context)
+            except Exception:
+                result = None
+            if not result:
+                continue
+            answer = self._officeqa_clean_final_answer(result.get("answer"))
+            if answer and answer != "INSUFFICIENT_INFORMATION":
+                return {
+                    "answer": answer,
+                    "reasoning": result.get("reasoning") or "Deterministic OfficeQA calculation from provided evidence.",
+                    "confidence": result.get("confidence", 0.6),
+                }
+        return None
+
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
             "You are AegisForge OfficeQA AgentBeats mode. "
@@ -2587,22 +3221,51 @@ class AegisForgeAgent:
         question = self._officeqa_extract_question(task_text, safe_metadata)
         context = self._officeqa_collect_context(task_text, safe_metadata)
 
+        local_context = self._officeqa_local_retrieval_context(question, safe_metadata)
+        if local_context:
+            context = (context + "\n\n" + local_context).strip() if context else local_context
+
+        adapter_result = self._officeqa_try_adapter_answer(question, context, safe_metadata)
+        if adapter_result:
+            return self._officeqa_output_firewall(
+                self._officeqa_format_response(
+                    reasoning=adapter_result.get("reasoning") or "OfficeQA adapter produced a grounded answer.",
+                    final_answer=adapter_result.get("answer"),
+                ),
+                task_text=task_text,
+                metadata=safe_metadata,
+            )
+
+        deterministic_result = self._officeqa_try_deterministic_answer(question, context, safe_metadata)
+        if deterministic_result:
+            return self._officeqa_output_firewall(
+                self._officeqa_format_response(
+                    reasoning=deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from context.",
+                    final_answer=deterministic_result.get("answer"),
+                ),
+                task_text=task_text,
+                metadata=safe_metadata,
+            )
+
         llm_text = self._call_llm(
             messages=self._build_officeqa_llm_messages(question=question, context=context, metadata=safe_metadata),
             temperature=0.0,
-            max_tokens=max(512, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1200") or "1200"))),
+            max_tokens=max(512, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1600") or "1600"))),
         )
         if llm_text:
             return self._officeqa_output_firewall(llm_text, task_text=task_text, metadata=safe_metadata)
 
+        evidence_note = "No OpenAI-compatible model response, adapter answer, local corpus hit, or deterministic document calculation was available."
+        if self._officeqa_context_has_real_evidence(question, context):
+            evidence_note = "Evidence/context was present, but no deterministic OfficeQA solver could produce a sufficiently grounded answer."
+
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA protocol detected before Build-it routing. No OpenAI-compatible model response or grounded "
-                "document answer was available, so the agent emitted the required OfficeQA tag structure instead of BWIM tokens."
+                "OfficeQA answer engine v0.5.0 kept the valid <FINAL_ANSWER> protocol. "
+                f"{evidence_note}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
         )
-
 
 
     def _build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
