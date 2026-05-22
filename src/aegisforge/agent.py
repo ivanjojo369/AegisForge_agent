@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_0_3_bwim_fresh_qa_only_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_3_bwim_answer_color_top_stack_repair_2026_05_21"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -3041,7 +3041,79 @@ class AegisForgeAgent:
             if match:
                 return max(1, min(5, self._build_it_parse_number(match.group(1), default=default)))
         return max(1, min(5, int(default)))
+    
+    def _build_it_repair_answer_color_top_stack(
+        self,
+        blocks: list[dict[str, Any]],
+        state: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Recolor only an answered-ASK top stack above the end of a base row.
 
+        This keeps the geometry from the winning builder candidate. It only fires
+        when a fresh color answer exists and the candidate has a ground-level row
+        plus a same-colored vertical segment above one end of that row.
+        """
+        if not blocks or not state or not bool(state.get("latest_question_answer_is_fresh")):
+            return blocks
+
+        answer_color = self._build_it_answer_color_or_default(state, default="")
+        if not answer_color:
+            return blocks
+
+        candidate = [dict(block) for block in blocks]
+        ground_by_color_z: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for block in candidate:
+            if self._coerce_int(block.get("y"), default=50) != 50:
+                continue
+            color = self._normalize_build_color(block.get("color"))
+            z = self._coerce_int(block.get("z"), default=0)
+            ground_by_color_z.setdefault((color, z), []).append(block)
+
+        for (base_color, z), ground_blocks in ground_by_color_z.items():
+            if base_color == answer_color:
+                continue
+
+            xs = sorted({self._coerce_int(block.get("x"), default=0) for block in ground_blocks})
+            if len(xs) < 3:
+                continue
+            if any((right - left) != 100 for left, right in zip(xs, xs[1:])):
+                continue
+
+            end_xs = {xs[0], xs[-1]}
+            misplaced_top = [
+                block
+                for block in candidate
+                if self._normalize_build_color(block.get("color")) == base_color
+                and self._coerce_int(block.get("z"), default=0) == z
+                and self._coerce_int(block.get("y"), default=50) > 50
+                and self._coerce_int(block.get("x"), default=0) in end_xs
+            ]
+            if not misplaced_top:
+                continue
+
+            top_columns = {
+                self._coerce_int(block.get("x"), default=0)
+                for block in misplaced_top
+            }
+            if len(top_columns) != 1:
+                continue
+
+            has_inner_same_color_top = any(
+                self._normalize_build_color(block.get("color")) == base_color
+                and self._coerce_int(block.get("z"), default=0) == z
+                and self._coerce_int(block.get("y"), default=50) > 50
+                and self._coerce_int(block.get("x"), default=0) not in end_xs
+                for block in candidate
+            )
+            if has_inner_same_color_top:
+                continue
+
+            for block in misplaced_top:
+                block["color"] = answer_color
+            return self._build_it_unique_blocks(candidate)
+
+        return blocks
+    
     def _build_it_try_bwim_v3_program(
         self,
         task_text_clean: str,
@@ -4806,7 +4878,8 @@ class AegisForgeAgent:
             if blocks:
                 validated = self._build_it_sanitize_candidate_blocks(blocks, lowered)
                 if len(validated) > len(initial_validated):
-                    return validated
+                    repaired = self._build_it_repair_answer_color_top_stack(validated, state)
+                    return repaired if repaired else validated
         # Corners are allowed only when they are the whole explicit request.
         # Never use sparse corner anchors as the semantic fallback for mixed prompts.
         if self._build_it_corner_requested(lowered) and not self._build_it_has_non_corner_structure(lowered):
