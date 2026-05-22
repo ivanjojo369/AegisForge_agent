@@ -68,7 +68,356 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_3_protocol_first_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_global_protocol_firewall_2026_05_22"
+
+
+def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
+    """Build a compact, non-authoritative text blob for OfficeQA routing only.
+
+    This helper is intentionally used only for protocol detection.  It must not
+    be used as a source of answer truth and it does not change model/auth logic.
+    """
+    if value is None or depth > 5 or limit <= 0:
+        return ""
+    if isinstance(value, Mapping):
+        pieces: list[str] = []
+        for key, child in value.items():
+            key_text = str(key)
+            if key_text:
+                pieces.append(key_text)
+            child_text = _officeqa_stringify_for_signal(child, depth=depth + 1, limit=max(1000, limit // 2))
+            if child_text:
+                pieces.append(child_text)
+            if sum(len(piece) for piece in pieces) > limit:
+                break
+        return "\n".join(pieces)[:limit]
+    if isinstance(value, (list, tuple, set)):
+        pieces = []
+        for child in list(value)[:120]:
+            child_text = _officeqa_stringify_for_signal(child, depth=depth + 1, limit=max(1000, limit // 2))
+            if child_text:
+                pieces.append(child_text)
+            if sum(len(piece) for piece in pieces) > limit:
+                break
+        return "\n".join(pieces)[:limit]
+    return str(value)[:limit]
+
+
+def _officeqa_env_repo_workflow_signal() -> bool:
+    """Detect OfficeQA from runner/repository/workflow context without touching auth.
+
+    The quick-submit image can carry stale Build-it variables; this detector
+    looks for explicit OfficeQA naming in stable runner metadata only.
+    """
+    env_keys = (
+        "AEGISFORGE_OFFICEQA_MODE",
+        "OFFICEQA_AGENT_MODE",
+        "OFFICEQA_RESPONSE_PROTOCOL",
+        "OFFICEQA_TRACK",
+        "OFFICEQA_BENCHMARK",
+        "AGENTBEATS_TRACK",
+        "AGENTBEATS_BENCHMARK",
+        "AGENTBEATS_SCENARIO",
+        "AGENTBEATS_WORKFLOW",
+        "GITHUB_WORKFLOW",
+        "GITHUB_JOB",
+        "GITHUB_ACTION",
+        "GITHUB_REPOSITORY",
+        "GITHUB_REPOSITORY_OWNER",
+        "GITHUB_REF_NAME",
+        "GITHUB_HEAD_REF",
+        "GITHUB_BASE_REF",
+        "AMBER_COMPOSE_PROJECT",
+        "PYTHONPATH",
+        "PWD",
+    )
+    chunks = [os.getenv(key, "") for key in env_keys]
+    try:
+        chunks.extend([str(Path.cwd()), str(Path(__file__).resolve())])
+    except Exception:
+        pass
+    blob = "\n".join(chunk for chunk in chunks if chunk).lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", blob).strip("_")
+    explicit = (
+        "officeqa",
+        "office_qa",
+        "officeqa_agentbeats",
+        "officeqa_leaderboard",
+        "officeqa_quick_submit",
+        "treasury_bulletin_qa",
+        "treasury_bulletins_qa",
+        "financial_document_qa",
+        "document_finance_qa",
+    )
+    return any(marker in normalized for marker in explicit)
+
+
+def _officeqa_strong_question_signal(*values: Any, metadata: Mapping[str, Any] | None = None) -> bool:
+    """Global high-recall OfficeQA question/protocol detector.
+
+    The detector is deliberately broad for Treasury/public-finance/statistics
+    questions because OfficeQA failures are catastrophic when a turn is routed
+    into the Build-it exact-output protocol.  It is still conservative around
+    pure block-building prompts: Build-it-only language does not trigger unless
+    OfficeQA/finance/document-QA evidence is present too.
+    """
+    chunks: list[str] = []
+    if metadata is not None:
+        chunks.append(_officeqa_stringify_for_signal(metadata))
+    for value in values:
+        chunks.append(_officeqa_stringify_for_signal(value))
+    try:
+        # Include explicit OfficeQA runner/repo/workflow signals, but do not
+        # read or modify credentials.
+        env_probe = (
+            os.getenv("AEGISFORGE_OFFICEQA_MODE", ""),
+            os.getenv("OFFICEQA_AGENT_MODE", ""),
+            os.getenv("OFFICEQA_RESPONSE_PROTOCOL", ""),
+            os.getenv("OFFICEQA_TRACK", ""),
+            os.getenv("OFFICEQA_BENCHMARK", ""),
+            os.getenv("AGENTBEATS_TRACK", ""),
+            os.getenv("AGENTBEATS_BENCHMARK", ""),
+            os.getenv("AGENTBEATS_WORKFLOW", ""),
+            os.getenv("GITHUB_WORKFLOW", ""),
+            os.getenv("GITHUB_JOB", ""),
+            os.getenv("GITHUB_REPOSITORY", ""),
+            os.getenv("AMBER_COMPOSE_PROJECT", ""),
+        )
+        chunks.append("\n".join(value for value in env_probe if value))
+        chunks.append(str(Path.cwd()))
+        chunks.append(str(Path(__file__).resolve()))
+    except Exception:
+        pass
+
+    blob = "\n".join(chunk for chunk in chunks if chunk)
+    if not blob.strip():
+        return _officeqa_env_repo_workflow_signal()
+
+    lowered = blob.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", lowered)
+
+    explicit_officeqa_markers = (
+        "officeqa",
+        "office qa",
+        "office qa agentbeats",
+        "officeqa agentbeats",
+        "officeqa leaderboard",
+        "officeqa evaluation",
+        "officeqa quick submit",
+        "officeqa_payload",
+        "officeqa payload",
+        "officeqa_agent",
+        "officeqa agent",
+        "treasury bulletin",
+        "treasury bulletins",
+        "u.s. treasury bulletin",
+        "u.s treasury bulletin",
+        "us treasury bulletin",
+        "monthly treasury statement",
+        "monthly treasury statements",
+        "<final_answer>",
+        "</final_answer>",
+    )
+    if any(marker in lowered for marker in explicit_officeqa_markers):
+        return True
+
+    if _officeqa_env_repo_workflow_signal():
+        return True
+
+    # These are common in OfficeQA's Treasury/public-finance/document-statistics
+    # tasks and intentionally broader than the v0.3 detector.
+    treasury_finance_markers = (
+        "treasury",
+        "u s treasury",
+        "us treasury",
+        "u s federal",
+        "us federal",
+        "federal individual income tax",
+        "individual income tax receipts",
+        "income tax receipts",
+        "tax receipts",
+        "receipts net of refunds",
+        "net of refunds",
+        "refunds",
+        "fiscal year",
+        "fiscal years",
+        "calendar year",
+        "calendar months",
+        "nominal dollar",
+        "nominal dollars",
+        "millions of dollars",
+        "billions of dollars",
+        "federal receipts",
+        "budget receipts",
+        "budget outlays",
+        "net outlays",
+        "federal expenditures",
+        "expenditures",
+        "national defense",
+        "associated activities",
+        "gross interest",
+        "public debt",
+        "public debt bureau",
+        "bureau of the public debt",
+        "bureau of fiscal service",
+        "bureau of the fiscal service",
+        "fiscal service",
+        "treasury bill",
+        "treasury bills",
+        "treasury note",
+        "treasury notes",
+        "treasury bond",
+        "treasury bonds",
+        "marketable treasury debt",
+        "maturing",
+        "bids submitted",
+        "tenders accepted",
+        "noncash rollover",
+        "non cash rollover",
+        "global non domestic investors",
+        "non domestic investors",
+        "coin and currency",
+        "currency circulation",
+        "currency in circulation",
+        "outstanding values",
+        "weighted average denomination",
+        "denomination",
+        "internal revenue",
+        "irs",
+        "customs",
+        "trust fund",
+        "exchange stabilization fund",
+        "foreign exchange operations",
+        "yield spread",
+        "federal reserve",
+        "federal reserve bank",
+        "minneapolis",
+        "bls",
+        "cpi",
+        "cpi u",
+        "consumer price index",
+        "inflation",
+        "payroll employment",
+        "profile of the economy",
+        "gross domestic product",
+        "unemployment",
+        "seasonally adjusted",
+        "without seasonal adjustment",
+    )
+    statistics_markers = (
+        "ordinary least squares",
+        "ols",
+        "linear regression",
+        "regression",
+        "slope",
+        "intercept",
+        "predictor",
+        "outcome",
+        "forecast",
+        "weighted average",
+        "average monthly change",
+        "absolute difference",
+        "total sum",
+        "ratio",
+        "percent",
+        "percentage",
+        "nearest thousandth",
+        "nearest thousandths",
+        "nearest hundredth",
+        "nearest hundredths",
+        "round to",
+        "rounded to",
+        "three decimals",
+        "two decimals",
+        "inside square brackets",
+        "comma separated",
+        "comma-separated",
+        "enclosed brackets",
+        "reported in billions",
+        "reported in millions",
+        "end of q1",
+        "end of q2",
+        "q1 to end of q2",
+    )
+    question_markers = (
+        "what was",
+        "what were",
+        "what is",
+        "which was",
+        "determine",
+        "calculate",
+        "compute",
+        "using",
+        "according to",
+        "fit",
+        "return",
+        "report your answer",
+        "report the answer",
+        "output your answer",
+        "enter the final",
+        "round",
+        "rounded",
+        "forecast",
+        "predict",
+        "find",
+    )
+    document_qa_markers = (
+        "according to the",
+        "using specifically",
+        "reported values",
+        "reported time",
+        "published on",
+        "table",
+        "chart",
+        "section",
+        "profile",
+        "report",
+        "bulletin",
+        "values for all",
+    )
+
+    finance_score = sum(1 for marker in treasury_finance_markers if marker in normalized)
+    stats_score = sum(1 for marker in statistics_markers if marker in normalized)
+    question_score = sum(1 for marker in question_markers if marker in normalized or marker in lowered)
+    doc_score = sum(1 for marker in document_qa_markers if marker in lowered)
+
+    # Avoid capturing pure Build-it prompts unless the finance/document-QA
+    # cluster is strong enough to override stale Build-it state.
+    build_it_only_markers = (
+        "[build]",
+        "[ask]",
+        "block coordinates",
+        "place blocks",
+        "minecraft",
+        "x y z",
+        "use colored blocks",
+        "red,",
+        "blue,",
+        "green,",
+    )
+    buildish = any(marker in lowered for marker in build_it_only_markers)
+
+    if finance_score >= 2 and (question_score >= 1 or stats_score >= 1 or doc_score >= 1):
+        return True
+    if finance_score >= 1 and stats_score >= 2 and question_score >= 1:
+        return True
+    if finance_score >= 1 and "report your answer" in lowered and ("round" in lowered or "rounded" in lowered):
+        return True
+    if "treasury" in normalized and (stats_score >= 1 or question_score >= 1 or doc_score >= 1):
+        return True
+    if "fiscal year" in normalized and stats_score >= 1 and question_score >= 1:
+        return True
+
+    if buildish:
+        return False
+
+    # Generic document-statistics signal, useful when metadata says financial QA
+    # but the visible task omits "Treasury".
+    if stats_score >= 3 and question_score >= 1 and doc_score >= 1:
+        return True
+
+    return False
+
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -1332,6 +1681,13 @@ class AegisForgeAgent:
         runner may reuse an agent image that previously served BWIM.
         """
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+
+        # v0.4 global high-recall detector: Treasury/public-finance/statistics
+        # questions, OfficeQA metadata, and OfficeQA repo/workflow signals must
+        # win before stale Build-it/BWIM routing can capture the turn.
+        if _officeqa_strong_question_signal(task_text, metadata=safe_metadata):
+            return True
+
         mode_values = [
             os.getenv("AEGISFORGE_OFFICEQA_MODE"),
             os.getenv("OFFICEQA_AGENT_MODE"),
@@ -1536,6 +1892,38 @@ class AegisForgeAgent:
             answer = "INSUFFICIENT_INFORMATION"
 
         return self._officeqa_format_response(reasoning=reasoning, final_answer=answer)
+
+    def _officeqa_absolute_visible_firewall(
+        self,
+        response: Any,
+        *,
+        task_text: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        trace: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Absolute final-boundary OfficeQA guard.
+
+        This is the last visible-response firewall.  If the turn looks like
+        OfficeQA from the question, metadata, repo/workflow, trace, or response,
+        the visible message is forced into the OfficeQA tag contract and any
+        stale [BUILD]/[ASK] output is quarantined.
+        """
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        seems_officeqa = _officeqa_strong_question_signal(task_text, response, trace or {}, metadata=safe_metadata)
+        has_final_tag = bool(re.search(r"<\s*FINAL_ANSWER\s*>.*?<\s*/\s*FINAL_ANSWER\s*>", self._coerce_text(response), flags=re.IGNORECASE | re.DOTALL))
+        has_bwim_token = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(response), flags=re.IGNORECASE))
+        if not seems_officeqa and not has_final_tag:
+            return self._coerce_text(response)
+
+        if has_bwim_token:
+            return self._officeqa_format_response(
+                reasoning=(
+                    "OfficeQA global protocol firewall blocked a stale Build-it/BWIM response at the final "
+                    "visible-emission boundary."
+                ),
+                final_answer="INSUFFICIENT_INFORMATION",
+            )
+        return self._officeqa_output_firewall(response, task_text=task_text, metadata=safe_metadata)
 
     def _officeqa_extract_question(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -5510,6 +5898,14 @@ class AegisForgeAgent:
 
     def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+
+        # v0.4 rescue: if an OfficeQA Treasury/finance/statistics question
+        # somehow reaches Build-it, stop BWIM immediately and re-enter the
+        # OfficeQA final-answer protocol.  This prevents accidental [BUILD]/[ASK]
+        # emissions for OfficeQA turns.
+        if _officeqa_strong_question_signal(task_text, metadata=safe_metadata):
+            return self._handle_officeqa_turn(task_text, safe_metadata)
+
         state = self._build_it_state(safe_metadata, task_text)
         effective_text = self._build_it_effective_task_text(task_text, safe_metadata, state)
 
@@ -5766,6 +6162,8 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
+        emission_task_text = base_text
+        emission_metadata: Mapping[str, Any] = metadata
         officeqa_protocol = self._is_officeqa_protocol(metadata, base_text)
         build_it_protocol = False if officeqa_protocol else self._is_build_it_protocol(metadata, base_text)
         strict_protocol = "" if (officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
@@ -5817,13 +6215,20 @@ class AegisForgeAgent:
             trace = {"mode": "help", "turn": self.turns, "llm_calls_used": 0}
         else:
             execution = self._prepare_execution(base_text, metadata)
+            emission_task_text = execution["task_text"]
+            emission_metadata = execution["metadata"]
             final_text = self._render_response(execution["task_text"], execution)
             final_text = self._apply_self_check(execution["task_text"], final_text, execution)
             execution_track = self._normalize_track(execution["metadata"].get("track_hint"))
-            if execution_track == "officeqa":
+            execution_seems_officeqa = (
+                execution_track == "officeqa"
+                or _officeqa_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
+            )
+            if execution_seems_officeqa:
                 officeqa_protocol = True
+                build_it_protocol = False
                 strict_protocol = ""
-                final_text = self._officeqa_output_firewall(
+                final_text = self._officeqa_absolute_visible_firewall(
                     final_text,
                     task_text=execution["task_text"],
                     metadata=execution["metadata"],
@@ -5839,6 +6244,24 @@ class AegisForgeAgent:
             self._update_runtime_memory(execution, final_text)
             self._append_episodic_trace(execution, final_text)
             trace = self._build_trace(execution)
+
+        # v0.4 final absolute firewall: re-check OfficeQA at the last possible
+        # boundary before any visible response is emitted.  This catches turns
+        # that were misclassified earlier or poisoned by stale Build-it state.
+        final_seems_officeqa = (
+            officeqa_protocol
+            or _officeqa_strong_question_signal(emission_task_text, final_text, trace, metadata=emission_metadata)
+        )
+        if final_seems_officeqa:
+            final_text = self._officeqa_absolute_visible_firewall(
+                final_text,
+                task_text=emission_task_text,
+                metadata=emission_metadata,
+                trace=trace if isinstance(trace, Mapping) else None,
+            )
+            officeqa_protocol = True
+            build_it_protocol = False
+            strict_protocol = ""
 
         # In strict symbolic and Build-it modes the scorer reads the visible A2A
         # transcript. Emitting the same payload as both an artifact and a status
