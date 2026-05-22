@@ -22,6 +22,7 @@ across benchmarks without answer hardcoding or task-specific lookup tables.
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import asdict, dataclass, is_dataclass, replace
@@ -38,6 +39,8 @@ from a2a.utils import get_message_text, new_agent_text_message
 from .artifact_policy import ArtifactPolicy
 from .role_policy import RolePolicy
 from .strategy import BudgetGuard, BudgetStepUsage, SelfCheck, TaskClassifier, TaskPlanner, TaskRouter
+
+LOGGER = logging.getLogger(__name__)
 
 
 class _SupportsAsDict(Protocol):
@@ -68,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_global_protocol_firewall_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_2_web_stability_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -1460,6 +1463,10 @@ class AegisForgeAgent:
         self._active_battle_key: str | None = None
         self._current_llm_calls = 0
         self.build_protocol_state: dict[str, dict[str, Any]] = {}
+        self._action_history: list[str] = []
+        self._last_loop_escape_action: dict[str, Any] | None = None
+        self._browser_action_settle_seconds = 0.5
+        self._dom_max_chars = 12000
 
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
@@ -1666,6 +1673,188 @@ class AegisForgeAgent:
         if len(policies) > max_items:
             lines.append(f"- ... {len(policies) - max_items} more scenario policies available in trace metadata")
         return lines
+
+
+
+    def _is_generic_smoke_request(self, task_text: Any, metadata: Mapping[str, Any] | None = None) -> bool:
+        """Detect tiny health/smoke probes so protocol firewalls do not hide artifacts."""
+        text = self._coerce_text(task_text).strip().lower()
+        compact = re.sub(r"[^a-z0-9]+", "", text)
+        if compact in {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}:
+            return True
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        meta_task = self._coerce_text(
+            safe_metadata.get("task") or safe_metadata.get("text") or safe_metadata.get("command") or ""
+        ).strip().lower()
+        meta_compact = re.sub(r"[^a-z0-9]+", "", meta_task)
+        return meta_compact in {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}
+
+    def _clean_environment_observation(self, raw_dom: str) -> str:
+        """Limpia DOM/árbol de accesibilidad para evitar desbordes de contexto.
+
+        Conserva el inicio y el cierre de la observación porque en tareas web
+        esos extremos suelen contener estado visible, encabezados, footers y
+        botones de acción. El contenido se usa como observación, no como
+        instrucción privilegiada.
+        """
+        if not raw_dom:
+            return ""
+        clean_dom = self._coerce_text(raw_dom)
+        if not clean_dom:
+            return ""
+
+        clean_dom = re.sub(r"<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>", "", clean_dom, flags=re.IGNORECASE | re.DOTALL)
+        clean_dom = re.sub(r"<style\b[^<]*(?:(?!</style>)<[^<]*)*</style>", "", clean_dom, flags=re.IGNORECASE | re.DOTALL)
+        clean_dom = re.sub(r"<svg\b[^<]*(?:(?!</svg>)<[^<]*)*</svg>", "", clean_dom, flags=re.IGNORECASE | re.DOTALL)
+        clean_dom = re.sub(r"<!--.*?-->", "", clean_dom, flags=re.DOTALL)
+        clean_dom = re.sub(r"\n{4,}", "\n\n\n", clean_dom)
+
+        max_dom_chars = int(getattr(self, "_dom_max_chars", 12000) or 12000)
+        if len(clean_dom) > max_dom_chars:
+            clean_dom = (
+                clean_dom[:8000]
+                + "\n... [TRUNCATED FOR CONTEXT OPTIMIZATION] ...\n"
+                + clean_dom[-4000:]
+            )
+
+        return clean_dom.strip()
+
+    def _clean_environment_observation_value(self, value: Any) -> Any:
+        """Recursively clean browser observations while preserving metadata shape."""
+        if isinstance(value, str):
+            return self._clean_environment_observation(value)
+        if isinstance(value, Mapping):
+            return {
+                str(key): self._clean_environment_observation_value(child)
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [self._clean_environment_observation_value(child) for child in value]
+        if isinstance(value, tuple):
+            return tuple(self._clean_environment_observation_value(child) for child in value)
+        return value
+
+    def _browser_action_signature(self, action: Any, params: Mapping[str, Any] | None = None) -> str:
+        action_name = self._coerce_text(action).strip().lower()
+        safe_params = dict(params) if isinstance(params, Mapping) else {}
+        target_keys = (
+            "id", "selector", "xpath", "text", "label", "name", "role",
+            "key", "keys", "href", "url", "x", "y", "target", "element",
+        )
+        signature_payload = {
+            key: self._coerce_text(safe_params.get(key))[:160]
+            for key in target_keys
+            if key in safe_params and safe_params.get(key) is not None
+        }
+        if not signature_payload and safe_params:
+            signature_payload = {"params": self._trim(self._to_json(self._normalize_for_json(safe_params)), 240)}
+        return f"{action_name}:{self._to_json(signature_payload)}"
+
+    def _browser_loop_escape_action(self, current_action: str, params: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Return a safe tactical escape action after repeated identical actions."""
+        current = self._coerce_text(current_action).strip().lower()
+        if current in {"scroll", "scroll_down"}:
+            escape_action = "refresh"
+            escape_params: dict[str, Any] = {"reason": "repeated_scroll_loop_escape"}
+        else:
+            escape_action = "scroll"
+            escape_params = {
+                "direction": "down",
+                "amount": 600,
+                "reason": f"repeated_{current or 'action'}_loop_escape",
+            }
+        escape_params["_loop_escape_from"] = {
+            "action": current,
+            "params_excerpt": self._trim(self._to_json(self._normalize_for_json(dict(params))), 300),
+        }
+        return escape_action, escape_params
+
+    def _stabilize_browser_action(self, action: str, params: Mapping[str, Any] | None = None) -> tuple[str, dict[str, Any], bool]:
+        """Detect short action loops and return a tactical escape action when needed."""
+        action_name = self._coerce_text(action).strip().lower()
+        safe_params = dict(params) if isinstance(params, Mapping) else {}
+        current_signature = self._browser_action_signature(action_name, safe_params)
+
+        loop_detected = (
+            len(getattr(self, "_action_history", [])) >= 2
+            and self._action_history[-1] == current_signature
+            and self._action_history[-2] == current_signature
+        )
+        if loop_detected:
+            LOGGER.warning("Browser action loop detected; forcing tactical replan/escape action.")
+            escaped_action, escaped_params = self._browser_loop_escape_action(action_name, safe_params)
+            self._last_loop_escape_action = {
+                "from": current_signature,
+                "to": self._browser_action_signature(escaped_action, escaped_params),
+                "reason": "same_action_repeated_three_times",
+            }
+            return escaped_action, escaped_params, True
+
+        self._last_loop_escape_action = None
+        return action_name, safe_params, False
+
+    def _dispatch_browser_action(self, action: str, params: Mapping[str, Any]) -> str:
+        """Best-effort browser action dispatch hook.
+
+        The core agent does not own a browser driver directly, so this method
+        delegates to any loaded adapter that exposes a compatible action method.
+        If no adapter is available, it records the stabilized action as a safe
+        structured result instead of raising.
+        """
+        safe_params = dict(params) if isinstance(params, Mapping) else {}
+        for adapter in (self.mcu_adapter, self.crmarena_adapter, self.officeqa_adapter):
+            if adapter is None:
+                continue
+            for method_name in ("execute_browser_action", "execute_action", "browser_action", "act"):
+                method = getattr(adapter, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    result = method(action=action, params=safe_params)
+                except TypeError:
+                    try:
+                        result = method(action, safe_params)
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+                if result is not None:
+                    if isinstance(result, str):
+                        return result
+                    return self._to_json(self._normalize_for_json(result))
+
+        return self._to_json({
+            "status": "recorded_no_direct_browser_adapter",
+            "action": action,
+            "params": self._normalize_for_json(safe_params),
+        })
+
+    def _execute_browser_action(self, action: str, params: Mapping[str, Any]) -> str:
+        """Execute a browser/web action with DOM-race stabilization.
+
+        After click/press_key/submit the environment often needs a short grace
+        period before the next observation; without it the agent can observe the
+        stale DOM and repeat the same action.
+        """
+        stabilized_action, stabilized_params, loop_detected = self._stabilize_browser_action(action, params)
+        result = self._dispatch_browser_action(stabilized_action, stabilized_params)
+
+        signature = self._browser_action_signature(stabilized_action, stabilized_params)
+        self._action_history.append(signature)
+        self._action_history = self._action_history[-8:]
+
+        if stabilized_action in {"click", "press_key", "submit"}:
+            import time
+            time.sleep(float(getattr(self, "_browser_action_settle_seconds", 0.5) or 0.5))
+
+        if loop_detected:
+            return self._to_json({
+                "status": "loop_escape_executed",
+                "action": stabilized_action,
+                "params": self._normalize_for_json(stabilized_params),
+                "result": result,
+            })
+        return result
 
 
     def _officeqa_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
@@ -6164,9 +6353,10 @@ class AegisForgeAgent:
         metadata = self._extract_metadata(message, base_text=base_text)
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
-        officeqa_protocol = self._is_officeqa_protocol(metadata, base_text)
-        build_it_protocol = False if officeqa_protocol else self._is_build_it_protocol(metadata, base_text)
-        strict_protocol = "" if (officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
+        generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
+        officeqa_protocol = False if generic_smoke_request else self._is_officeqa_protocol(metadata, base_text)
+        build_it_protocol = False if (generic_smoke_request or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if (generic_smoke_request or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
 
         # In strict symbolic modes, do not emit the normal progress/status text.
         # Some green agents validate the visible transcript and reject any text
@@ -6249,8 +6439,11 @@ class AegisForgeAgent:
         # boundary before any visible response is emitted.  This catches turns
         # that were misclassified earlier or poisoned by stale Build-it state.
         final_seems_officeqa = (
-            officeqa_protocol
-            or _officeqa_strong_question_signal(emission_task_text, final_text, trace, metadata=emission_metadata)
+            not generic_smoke_request
+            and (
+                officeqa_protocol
+                or _officeqa_strong_question_signal(emission_task_text, final_text, metadata=emission_metadata)
+            )
         )
         if final_seems_officeqa:
             final_text = self._officeqa_absolute_visible_firewall(
@@ -6267,7 +6460,8 @@ class AegisForgeAgent:
         # transcript. Emitting the same payload as both an artifact and a status
         # message makes the gateway concatenate duplicate directives such as
         # "[BUILD];... [BUILD];...", which corrupts BWIM exact-structure parsing.
-        if not (strict_protocol or build_it_protocol or officeqa_protocol):
+        should_emit_primary_artifact = generic_smoke_request or not (strict_protocol or build_it_protocol or officeqa_protocol)
+        if should_emit_primary_artifact:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
                 name="AegisForgeResponse",
@@ -6816,6 +7010,26 @@ class AegisForgeAgent:
 
         normalized["max_turns"] = max(1, self._coerce_int(normalized.get("max_turns"), default=20))
         normalized["current_round"] = max(0, self._coerce_int(normalized.get("current_round"), default=0))
+
+        environment_observation_keys = (
+            "raw_dom",
+            "dom",
+            "html",
+            "page_html",
+            "page_source",
+            "browser_dom",
+            "page_dom",
+            "accessibility_tree",
+            "a11y_tree",
+            "environment_observation",
+            "observation",
+            "ui_state",
+            "browser_state",
+            "desktop_state",
+        )
+        for observation_key in environment_observation_keys:
+            if observation_key in normalized:
+                normalized[observation_key] = self._clean_environment_observation_value(normalized.get(observation_key))
 
         normalized["required_sections"] = self._coerce_string_list(
             normalized.get("required_sections") or normalized.get("sections") or []
@@ -8213,6 +8427,13 @@ class AegisForgeAgent:
                 "tool_mode": getattr(route, "tool_mode", "minimal"),
                 "a2a_tool_heavy": canonical_track in A2A_TOOL_HEAVY_TRACKS,
                 "mcp_compatible": canonical_track in {"pibench", "tau2", "cybergym", "netarena"},
+            },
+            "web_stability_controls": {
+                "dom_max_chars": int(getattr(self, "_dom_max_chars", 12000) or 12000),
+                "action_history_tail": list(getattr(self, "_action_history", [])[-5:]),
+                "last_loop_escape_action": self._normalize_for_json(getattr(self, "_last_loop_escape_action", None)),
+                "settle_after_actions": ["click", "press_key", "submit"],
+                "settle_seconds": float(getattr(self, "_browser_action_settle_seconds", 0.5) or 0.5),
             },
             "policy_constraints": {
                 "fair_play": dict(FAIR_PLAY_RULES),
