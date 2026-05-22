@@ -71,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_3_forced_officeqa_runner_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_4_absolute_bwim_escape_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -422,10 +422,20 @@ def _officeqa_strong_question_signal(*values: Any, metadata: Mapping[str, Any] |
         "euro positions",
         "euro position",
         "criminal cases",
+        "criminal case",
         "irs criminal cases",
+        "irs criminal case",
         "criminal investigation",
         "criminal investigations",
         "internal revenue service",
+        "us district court",
+        "u.s. district court",
+        "district court",
+        "district courts",
+        "us district courses",
+        "u.s. district courses",
+        "district course",
+        "district courses",
         "fiscal operations",
         "budget surplus",
         "budget deficit",
@@ -2367,8 +2377,13 @@ class AegisForgeAgent:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         has_final_tag = bool(re.search(r"<\s*FINAL_ANSWER\s*>.*?<\s*/\s*FINAL_ANSWER\s*>", self._coerce_text(response), flags=re.IGNORECASE | re.DOTALL))
         has_bwim_token = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(response), flags=re.IGNORECASE))
+        absolute_bwim_escape = (
+            has_bwim_token
+            and not self._looks_like_build_it_request(task_text, safe_metadata)
+        )
         seems_officeqa = (
-            _officeqa_forced_runner_context_signal(task_text, response, metadata=safe_metadata)
+            absolute_bwim_escape
+            or _officeqa_forced_runner_context_signal(task_text, response, metadata=safe_metadata)
             or _officeqa_strong_question_signal(task_text, response, metadata=safe_metadata)
             or (
                 has_bwim_token
@@ -6366,11 +6381,14 @@ class AegisForgeAgent:
     def _handle_build_it_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
 
-        # v0.4 rescue: if an OfficeQA Treasury/finance/statistics question
-        # somehow reaches Build-it, stop BWIM immediately and re-enter the
-        # OfficeQA final-answer protocol.  This prevents accidental [BUILD]/[ASK]
-        # emissions for OfficeQA turns.
-        if _officeqa_strong_question_signal(task_text, metadata=safe_metadata):
+        # v0.4.4 rescue: if an OfficeQA runner/question somehow reaches
+        # Build-it, stop BWIM immediately and re-enter the OfficeQA final-answer
+        # protocol.  This prevents accidental [BUILD]/[ASK] emissions for
+        # OfficeQA turns, including prompts that lack obvious Treasury wording.
+        if (
+            _officeqa_forced_runner_context_signal(task_text, metadata=safe_metadata)
+            or _officeqa_strong_question_signal(task_text, metadata=safe_metadata)
+        ):
             return self._handle_officeqa_turn(task_text, safe_metadata)
 
         state = self._build_it_state(safe_metadata, task_text)
@@ -6457,10 +6475,36 @@ class AegisForgeAgent:
         return final_text
 
     async def _build_it_process_message(self, text: str, metadata: Mapping[str, Any] | None = None) -> str:
-        return self._handle_build_it_turn(text, metadata or {})
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        final_text = self._handle_build_it_turn(text, safe_metadata)
+        if (
+            not self._is_generic_smoke_request(text, safe_metadata)
+            and re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE)
+            and (
+                _officeqa_forced_runner_context_signal(text, final_text, metadata=safe_metadata)
+                or _officeqa_strong_question_signal(text, final_text, metadata=safe_metadata)
+                or self._officeqa_bwim_rescue_signal(task_text=text, final_text=final_text, metadata=safe_metadata)
+                or not self._looks_like_build_it_request(text, safe_metadata)
+            )
+        ):
+            return self._officeqa_absolute_visible_firewall(final_text, task_text=text, metadata=safe_metadata)
+        return final_text
 
     async def _process_build_it_response(self, text: str, metadata: Mapping[str, Any] | None = None) -> str:
-        return self._handle_build_it_turn(text, metadata or {})
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        final_text = self._handle_build_it_turn(text, safe_metadata)
+        if (
+            not self._is_generic_smoke_request(text, safe_metadata)
+            and re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE)
+            and (
+                _officeqa_forced_runner_context_signal(text, final_text, metadata=safe_metadata)
+                or _officeqa_strong_question_signal(text, final_text, metadata=safe_metadata)
+                or self._officeqa_bwim_rescue_signal(task_text=text, final_text=final_text, metadata=safe_metadata)
+                or not self._looks_like_build_it_request(text, safe_metadata)
+            )
+        ):
+            return self._officeqa_absolute_visible_firewall(final_text, task_text=text, metadata=safe_metadata)
+        return final_text
 
     def _strict_output_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> str:
         """Return a benchmark-required exact-output protocol, if one is active.
@@ -6558,6 +6602,21 @@ class AegisForgeAgent:
         missing or clarification is required.
         """
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+
+        # OfficeQA must never be coerced into BrowseComp/BWIM symbolic tokens.
+        # This protects direct strict-protocol calls that bypass run().
+        if (
+            not self._is_generic_smoke_request(task_text, safe_metadata)
+            and (
+                _officeqa_forced_runner_context_signal(task_text, candidate, metadata=safe_metadata)
+                or _officeqa_strong_question_signal(task_text, candidate, metadata=safe_metadata)
+            )
+        ):
+            return self._officeqa_format_response(
+                reasoning="OfficeQA strict-symbolic firewall blocked a stale [BUILD]/[ASK] decision path.",
+                final_answer="INSUFFICIENT_INFORMATION",
+            )
+
         forced = (
             os.getenv("AEGISFORGE_BUILD_ASK_DECISION")
             or os.getenv("AGENT_BUILD_ASK_DECISION")
@@ -6619,9 +6678,23 @@ class AegisForgeAgent:
         metadata: Mapping[str, Any] | None = None,
     ) -> str:
         """Apply benchmark-required exact formats at the final emission boundary."""
-        protocol = self._strict_output_protocol(metadata, task_text)
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        if (
+            not self._is_generic_smoke_request(task_text, safe_metadata)
+            and (
+                _officeqa_forced_runner_context_signal(task_text, response, metadata=safe_metadata)
+                or _officeqa_strong_question_signal(task_text, response, metadata=safe_metadata)
+            )
+        ):
+            return self._officeqa_absolute_visible_firewall(
+                response or "INSUFFICIENT_INFORMATION",
+                task_text=task_text,
+                metadata=safe_metadata,
+            )
+
+        protocol = self._strict_output_protocol(safe_metadata, task_text)
         if protocol == "build_ask":
-            return self._build_ask_symbolic_response(response, task_text=task_text, metadata=metadata)
+            return self._build_ask_symbolic_response(response, task_text=task_text, metadata=safe_metadata)
         return response
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
@@ -6731,9 +6804,12 @@ class AegisForgeAgent:
                     metadata=emission_metadata,
                 )
                 or (
+                    # v0.4.4 last-resort protocol rescue: any visible BWIM token
+                    # in a non-smoke, non-Build-it request is invalid for
+                    # OfficeQA and must be wrapped before A2A emission.  This
+                    # catches rare routes with empty reasoning_trace.
                     stale_bwim_visible_output
                     and not self._looks_like_build_it_request(emission_task_text, emission_metadata)
-                    and _officeqa_strong_question_signal(emission_task_text, metadata=emission_metadata)
                 )
             )
         )
