@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_3_bwim_answer_color_top_stack_repair_2026_05_21"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -3314,30 +3314,7 @@ class AegisForgeAgent:
 
         def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return self._build_it_unique_blocks(blocks)
-
-        def explicit_height_for_color(color_hint: str, default: int) -> int:
-            """Prefer an explicit color-local height before using QA/default height.
-
-            Narrow v3.4 trim: avoid inflating a named stack from an unrelated
-            clarification answer when the instruction already gives that color's
-            own block count.
-            """
-            number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
-            color = re.escape(color_hint.lower())
-            patterns = (
-                rf"\b{number_re}\s+{color}\s+blocks?\b",
-                rf"\b(?:stack|tower|column)\s+(?:of\s+)?{number_re}\s+{color}\s+blocks?\b",
-                rf"\b{color}\s+(?:stack|tower|column)\s+(?:of\s+)?{number_re}\b",
-                rf"\b(?:stack|tower|column)\s+(?:of\s+)?{number_re}[^.;,\n]*?\b{color}\b",
-            )
-            for pattern in patterns:
-                match = re.search(pattern, lowered)
-                if match:
-                    for group in match.groups():
-                        if group:
-                            return max(1, min(5, self._build_it_parse_number(group, default=default)))
-            return max(1, min(5, int(default)))
-
+        
         # Color-under: highlighted blue block with left/right neighbors, then an
         # unspecified block on top of the middle block.
         if (
@@ -3480,10 +3457,9 @@ class AegisForgeAgent:
             and "green stack" in lowered
             and "left of the yellow" in lowered
         ):
-            green_height = explicit_height_for_color("green", answer_height)
             blocks = [b("Yellow", 400, 50, 0)]
             blocks.extend(stack("Yellow", 300, 0, 3))
-            blocks.extend(stack("Green", 200, 0, green_height))
+            blocks.extend(stack("Green", 200, 0, answer_height))
             return out(blocks)
 
         # Number-under: green block plus stack behind it, then a yellow stack to
