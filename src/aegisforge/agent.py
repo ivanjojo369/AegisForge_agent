@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_0_1_bwim_answer_first_order_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_0_3_bwim_fresh_qa_only_2026_05_21"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -1670,7 +1670,34 @@ class AegisForgeAgent:
         )
         if any(marker in lowered for marker in reject_markers):
             return ""
-
+        
+        instruction_markers = (
+            "build ",
+            "place ",
+            "put ",
+            "add ",
+            "existing ",
+            "highlighted",
+            "left of",
+            "right of",
+            "in front",
+            "behind",
+            "row",
+            "line",
+            "tower",
+            "stack",
+            "structure",
+            "start_structure",
+            "on top of",
+            "directly",
+            "corner",
+            "side",
+            "middle block",
+        )
+        word_count = len(re.findall(r"[a-z0-9]+", lowered))
+        if word_count > 8 and any(marker in lowered for marker in instruction_markers):
+            return ""
+        
         color_re = r"\b(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)\b"
         number_re = r"\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
         if re.search(color_re, lowered) or re.search(number_re, lowered):
@@ -2987,7 +3014,11 @@ class AegisForgeAgent:
         """
         color_re = r"(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)"
         answers = []
-        if state and isinstance(state.get("question_answers"), list):
+        if (
+            state
+            and bool(state.get("latest_question_answer_is_fresh"))
+            and isinstance(state.get("question_answers"), list)
+        ):
             answers = [self._coerce_text(item).lower() for item in state.get("question_answers", [])]
         for answer in reversed(answers):
             match = re.search(color_re, answer)
@@ -2999,16 +3030,17 @@ class AegisForgeAgent:
         """Return a height/count from the most recent QA answer, otherwise default."""
         number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
         answers = []
-        if state and isinstance(state.get("question_answers"), list):
+        if (
+            state
+            and bool(state.get("latest_question_answer_is_fresh"))
+            and isinstance(state.get("question_answers"), list)
+        ):
             answers = [self._coerce_text(item).lower() for item in state.get("question_answers", [])]
         for answer in reversed(answers):
             match = re.search(number_re, answer)
             if match:
                 return max(1, min(5, self._build_it_parse_number(match.group(1), default=default)))
         return max(1, min(5, int(default)))
-
-
-
 
     def _build_it_try_bwim_v3_program(
         self,
