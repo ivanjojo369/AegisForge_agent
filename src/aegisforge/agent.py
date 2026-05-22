@@ -71,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_2_web_stability_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_4_3_forced_officeqa_runner_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -153,6 +153,76 @@ def _officeqa_env_repo_workflow_signal() -> bool:
         "document_finance_qa",
     )
     return any(marker in normalized for marker in explicit)
+
+
+def _officeqa_forced_runner_context_signal(*values: Any, metadata: Mapping[str, Any] | None = None) -> bool:
+    """Force OfficeQA mode from global runner/repo/workflow/metadata context.
+
+    This is intentionally stronger than the question detector.  In the OfficeQA
+    quick-submit runner, every non-smoke request belongs to OfficeQA; relying on
+    per-question Treasury keywords leaves a few prompts routed into the stale
+    Build-it/BWIM branch.  This function only decides routing/protocol and never
+    reads credentials or answer keys.
+    """
+    if _officeqa_env_repo_workflow_signal():
+        return True
+
+    chunks: list[str] = []
+    if metadata is not None:
+        chunks.append(_officeqa_stringify_for_signal(metadata, limit=50000))
+    for value in values:
+        chunks.append(_officeqa_stringify_for_signal(value, limit=50000))
+
+    try:
+        chunks.extend([
+            os.getenv("GITHUB_REPOSITORY", ""),
+            os.getenv("GITHUB_WORKFLOW", ""),
+            os.getenv("GITHUB_JOB", ""),
+            os.getenv("GITHUB_REF_NAME", ""),
+            os.getenv("AGENTBEATS_TRACK", ""),
+            os.getenv("AGENTBEATS_BENCHMARK", ""),
+            os.getenv("AMBER_COMPOSE_PROJECT", ""),
+            str(Path.cwd()),
+            str(Path(__file__).resolve()),
+        ])
+    except Exception:
+        pass
+
+    blob = "\n".join(chunk for chunk in chunks if chunk).lower()
+    if not blob.strip():
+        return False
+
+    normalized = re.sub(r"[^a-z0-9]+", "_", blob).strip("_")
+    spaced = re.sub(r"[^a-z0-9]+", " ", blob)
+
+    forced_markers = (
+        "officeqa",
+        "office_qa",
+        "officeqa_agentbeats",
+        "officeqa_agentbeats_leaderboard",
+        "officeqa_leaderboard",
+        "officeqa_quick_submit",
+        "rdi_foundation_officeqa",
+        "rdi_foundation_officeqa_agentbeats_leaderboard",
+        "financial_document_qa",
+        "document_finance_qa",
+        "treasury_bulletin_qa",
+        "treasury_bulletins_qa",
+    )
+    if any(marker in normalized for marker in forced_markers):
+        return True
+
+    loose_markers = (
+        "officeqa",
+        "office qa",
+        "officeqa agentbeats",
+        "officeqa leaderboard",
+        "officeqa quick submit",
+        "financial document qa",
+        "document finance qa",
+        "treasury bulletin qa",
+    )
+    return any(marker in blob or marker in spaced for marker in loose_markers)
 
 
 def _officeqa_strong_question_signal(*values: Any, metadata: Mapping[str, Any] | None = None) -> bool:
@@ -306,6 +376,60 @@ def _officeqa_strong_question_signal(*values: Any, metadata: Mapping[str, Any] |
         "unemployment",
         "seasonally adjusted",
         "without seasonal adjustment",
+        "excess kurtosis",
+        "fisher excess kurtosis",
+        "fisher kurtosis",
+        "kurtosis",
+        "skewness",
+        "z score",
+        "z-score",
+        "standard deviation",
+        "variance",
+        "esf",
+        "exchange stabilization fund total assets",
+        "total assets",
+        "savings bonds",
+        "u.s. savings bonds",
+        "us savings bonds",
+        "payroll savings",
+        "series e",
+        "series ee",
+        "series i",
+        "seigniorage",
+        "seignorage",
+        "reserve assets",
+        "international reserve assets",
+        "official reserve assets",
+        "liabilities to mainland china",
+        "mainland china",
+        "taiwan",
+        "u.s. liabilities",
+        "us liabilities",
+        "foreign official institutions",
+        "capital inflow",
+        "capital outflow",
+        "net capital inflow",
+        "net capital outflow",
+        "personal saving",
+        "personal saving rate",
+        "personal saving rates",
+        "bank positions",
+        "weekly bank positions",
+        "tariff schedule",
+        "tariff schedules",
+        "tariff",
+        "net options",
+        "euro positions",
+        "euro position",
+        "criminal cases",
+        "irs criminal cases",
+        "criminal investigation",
+        "criminal investigations",
+        "internal revenue service",
+        "fiscal operations",
+        "budget surplus",
+        "budget deficit",
+        "cash balance",
     )
     statistics_markers = (
         "ordinary least squares",
@@ -1689,6 +1813,114 @@ class AegisForgeAgent:
         meta_compact = re.sub(r"[^a-z0-9]+", "", meta_task)
         return meta_compact in {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}
 
+    def _looks_like_build_it_request(self, task_text: Any, metadata: Mapping[str, Any] | None = None) -> bool:
+        """Return True only for clear BWIM/Build-it block-construction prompts."""
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        blob = "\n".join([
+            self._coerce_text(task_text),
+            _officeqa_stringify_for_signal(safe_metadata, limit=12000),
+        ]).lower()
+        normalized = re.sub(r"[^a-z0-9]+", " ", blob)
+
+        if _officeqa_forced_runner_context_signal(task_text, metadata=safe_metadata):
+            return False
+        if _officeqa_strong_question_signal(task_text, metadata=safe_metadata):
+            return False
+
+        build_terms = (
+            "build what i mean",
+            "bwim",
+            "build it",
+            "block",
+            "blocks",
+            "voxel",
+            "minecraft",
+            "coordinates",
+            "x y z",
+            "colored blocks",
+            "place block",
+            "place blocks",
+            "height",
+            "width",
+            "depth",
+        )
+        color_coord = bool(
+            re.search(
+                r"\b(?:red|blue|green|yellow|black|white|orange|purple|gray|grey)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+",
+                blob,
+                flags=re.IGNORECASE,
+            )
+        )
+        return color_coord or any(term in normalized or term in blob for term in build_terms)
+
+    def _officeqa_bwim_rescue_signal(
+        self,
+        *,
+        task_text: Any,
+        final_text: Any,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Catch final [BUILD]/[ASK] leaks that escaped earlier OfficeQA routing."""
+        raw_final = self._coerce_text(final_text)
+        if not re.search(r"\[(?:BUILD|ASK)\]", raw_final, flags=re.IGNORECASE):
+            return False
+
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        if _officeqa_forced_runner_context_signal(task_text, raw_final, metadata=safe_metadata):
+            return True
+        if _officeqa_strong_question_signal(task_text, raw_final, metadata=safe_metadata):
+            return True
+
+        blob = "\n".join([
+            self._coerce_text(task_text),
+            _officeqa_stringify_for_signal(safe_metadata, limit=12000),
+        ]).lower()
+        normalized = re.sub(r"[^a-z0-9]+", " ", blob)
+        officeqa_rescue_terms = (
+            "kurtosis",
+            "skewness",
+            "fisher",
+            "standard deviation",
+            "variance",
+            "z score",
+            "z-score",
+            "esf",
+            "exchange stabilization fund",
+            "savings bonds",
+            "seigniorage",
+            "seignorage",
+            "reserve assets",
+            "liabilities",
+            "mainland china",
+            "taiwan",
+            "tariff",
+            "bank positions",
+            "capital inflow",
+            "capital outflow",
+            "personal saving",
+            "net options",
+            "euro positions",
+            "criminal cases",
+            "internal revenue service",
+            "fiscal operations",
+            "assets",
+            "receipts",
+            "outlays",
+            "expenditures",
+            "fiscal year",
+            "calendar year",
+            "round",
+            "rounded",
+            "nearest",
+            "report your answer",
+            "return your answer",
+        )
+        questionish = any(q in blob for q in ("what was", "what were", "what is", "which", "determine", "calculate", "compute", "according to", "using ", "return", "report"))
+        rescue_score = sum(1 for term in officeqa_rescue_terms if term in normalized or term in blob)
+        if questionish and rescue_score >= 1 and not self._looks_like_build_it_request(task_text, safe_metadata):
+            return True
+        return False
+
     def _clean_environment_observation(self, raw_dom: str) -> str:
         """Limpia DOM/árbol de accesibilidad para evitar desbordes de contexto.
 
@@ -1871,6 +2103,13 @@ class AegisForgeAgent:
         """
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
 
+        # v0.4.3 forced runner/context gate: in the OfficeQA quick-submit
+        # runner, every non-smoke request belongs to OfficeQA.  This check comes
+        # before question heuristics so prompts without obvious Treasury wording
+        # cannot fall through to Build-it/BWIM.
+        if _officeqa_forced_runner_context_signal(task_text, metadata=safe_metadata):
+            return True
+
         # v0.4 global high-recall detector: Treasury/public-finance/statistics
         # questions, OfficeQA metadata, and OfficeQA repo/workflow signals must
         # win before stale Build-it/BWIM routing can capture the turn.
@@ -1988,6 +2227,34 @@ class AegisForgeAgent:
             "federal expenditures",
             "marketable treasury debt",
             "irs receipts",
+            "excess kurtosis",
+            "fisher excess kurtosis",
+            "fisher kurtosis",
+            "kurtosis",
+            "skewness",
+            "z score",
+            "z-score",
+            "esf",
+            "savings bonds",
+            "payroll savings",
+            "seigniorage",
+            "seignorage",
+            "reserve assets",
+            "liabilities",
+            "mainland china",
+            "taiwan",
+            "capital inflow",
+            "capital outflow",
+            "personal saving",
+            "personal saving rate",
+            "bank positions",
+            "tariff schedule",
+            "tariff schedules",
+            "net options",
+            "euro positions",
+            "criminal cases",
+            "internal revenue service",
+            "fiscal operations",
         )
         question_markers = (
             "what was",
@@ -2098,9 +2365,20 @@ class AegisForgeAgent:
         stale [BUILD]/[ASK] output is quarantined.
         """
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
-        seems_officeqa = _officeqa_strong_question_signal(task_text, response, trace or {}, metadata=safe_metadata)
         has_final_tag = bool(re.search(r"<\s*FINAL_ANSWER\s*>.*?<\s*/\s*FINAL_ANSWER\s*>", self._coerce_text(response), flags=re.IGNORECASE | re.DOTALL))
         has_bwim_token = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(response), flags=re.IGNORECASE))
+        seems_officeqa = (
+            _officeqa_forced_runner_context_signal(task_text, response, metadata=safe_metadata)
+            or _officeqa_strong_question_signal(task_text, response, metadata=safe_metadata)
+            or (
+                has_bwim_token
+                and self._officeqa_bwim_rescue_signal(
+                    task_text=task_text,
+                    final_text=response,
+                    metadata=safe_metadata,
+                )
+            )
+        )
         if not seems_officeqa and not has_final_tag:
             return self._coerce_text(response)
 
@@ -6354,7 +6632,8 @@ class AegisForgeAgent:
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
         generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
-        officeqa_protocol = False if generic_smoke_request else self._is_officeqa_protocol(metadata, base_text)
+        officeqa_forced_context = False if generic_smoke_request else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if generic_smoke_request else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
         build_it_protocol = False if (generic_smoke_request or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
         strict_protocol = "" if (generic_smoke_request or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
 
@@ -6438,11 +6717,24 @@ class AegisForgeAgent:
         # v0.4 final absolute firewall: re-check OfficeQA at the last possible
         # boundary before any visible response is emitted.  This catches turns
         # that were misclassified earlier or poisoned by stale Build-it state.
+        stale_bwim_visible_output = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE))
         final_seems_officeqa = (
             not generic_smoke_request
             and (
                 officeqa_protocol
+                or officeqa_forced_context
+                or _officeqa_forced_runner_context_signal(emission_task_text, final_text, metadata=emission_metadata)
                 or _officeqa_strong_question_signal(emission_task_text, final_text, metadata=emission_metadata)
+                or self._officeqa_bwim_rescue_signal(
+                    task_text=emission_task_text,
+                    final_text=final_text,
+                    metadata=emission_metadata,
+                )
+                or (
+                    stale_bwim_visible_output
+                    and not self._looks_like_build_it_request(emission_task_text, emission_metadata)
+                    and _officeqa_strong_question_signal(emission_task_text, metadata=emission_metadata)
+                )
             )
         )
         if final_seems_officeqa:
