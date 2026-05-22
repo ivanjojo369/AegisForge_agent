@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_4_safe_payload_diagnostics_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_5_local_corpus_table_index_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -2754,7 +2754,14 @@ class AegisForgeAgent:
 
 
     def _officeqa_context_has_real_evidence(self, question: str, context: str) -> bool:
-        """Return True when OfficeQA context appears to contain evidence beyond the prompt itself."""
+        """Return True when OfficeQA context appears to contain usable evidence.
+
+        v0.5.4 taught us that a local corpus record can be present while still
+        being only repo prose/configuration.  v0.5.5 therefore requires a data
+        signal -- table-like lines, numeric year rows, dense numeric rows, or an
+        explicit document/payload/table label -- instead of treating any local
+        corpus hit as sufficient evidence.
+        """
         q = re.sub(r"\s+", " ", self._coerce_text(question)).strip().lower()
         raw = self._coerce_text(context)
         if not raw.strip():
@@ -2762,35 +2769,32 @@ class AegisForgeAgent:
         stripped = re.sub(r"\s+", " ", raw).strip().lower()
         if q and stripped in {q, f"[visible_task] {q}"}:
             return False
-        # The visible task is always present in our context bundle; require
-        # additional rows, documents, pages, tables, or corpus snippets before
-        # deterministic answering.
-        evidence_markers = (
-            "[metadata.",
-            "[payload.",
-            "[parsed_task.",
-            "[officeqa_local_file:",
-            "[officeqa_adapter",
-            "[document",
-            "[table",
-            "[rows",
-            "[records",
-            "[csv",
-            "[page",
-            "[context",
-            "[evidence",
-            "|",
-            "\t",
+
+        counts = self._officeqa_context_diagnostic_counts(raw)
+        lower = raw.lower()
+        explicit_data_label = any(
+            marker in lower
+            for marker in (
+                "[payload.", "[parsed_task.", "[metadata.document", "[metadata.context",
+                "[document", "[table", "[rows", "[records", "[csv", "[page",
+                "[officeqa_local_block:", "[officeqa_local_table:",
+            )
         )
-        if any(marker in raw.lower() for marker in evidence_markers):
+        dataish = (
+            counts.get("table_like_lines", 0)
+            + counts.get("numeric_year_rows", 0)
+            + counts.get("numeric_dense_lines", 0)
+        )
+        if explicit_data_label and dataish >= 1:
             return True
-        # Multiple numeric rows are a weak but useful signal for tabular evidence.
-        numeric_lines = 0
-        for line in raw.splitlines():
-            if re.search(r"\b(?:18|19|20)\d{2}\b", line) and re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", line):
-                numeric_lines += 1
-            if numeric_lines >= 3:
-                return True
+        if counts.get("numeric_year_rows", 0) >= 2:
+            return True
+        if counts.get("table_like_lines", 0) >= 2 and counts.get("numeric_dense_lines", 0) >= 1:
+            return True
+        if counts.get("numeric_dense_lines", 0) >= 4 and any(
+            marker in lower for marker in ("treasury", "federal", "receipts", "outlays", "debt", "assets", "yield", "currency")
+        ):
+            return True
         return False
 
     def _officeqa_parse_number(self, value: Any) -> float | None:
@@ -2984,11 +2988,14 @@ class AegisForgeAgent:
                     )
                     if not plausible:
                         continue
+                    if not self._officeqa_local_file_is_data_like(path, text):
+                        continue
                     records.append(
                         {
                             "path": resolved,
                             "name": path.name,
                             "text": text[:max_bytes],
+                            "data_quality": self._officeqa_text_data_quality(text, resolved),
                         }
                     )
         except Exception as exc:
@@ -3013,33 +3020,165 @@ class AegisForgeAgent:
                 score += 1
         return score
 
+    def _officeqa_text_data_quality(self, text: str, path: str = "") -> int:
+        """Score whether a local file is actual data, not merely repo prose/code."""
+        raw = self._coerce_text(text)
+        if not raw.strip():
+            return 0
+        lower = raw[:200000].lower()
+        path_l = self._coerce_text(path).lower()
+        counts = self._officeqa_context_diagnostic_counts(raw[:200000])
+        quality = 0
+        quality += min(12, counts.get("table_like_lines", 0))
+        quality += min(12, counts.get("numeric_year_rows", 0) * 2)
+        quality += min(10, counts.get("numeric_dense_lines", 0))
+        if path_l.endswith((".csv", ".tsv", ".json", ".jsonl")):
+            quality += 5
+        for marker in (
+            "treasury bulletin", "monthly treasury", "fiscal", "receipts", "outlays", "public debt",
+            "exchange stabilization fund", "average yields", "internal revenue", "cpi", "currency in circulation",
+        ):
+            if marker in lower:
+                quality += 2
+        repo_markers = (
+            "officeqa_agent_version", "build_it_builder_version", "def _officeqa", "class aegisforgeagent",
+            "semantic_builder", "pytest", "github actions", "quick-submit", "reasoning_trace",
+        )
+        quality -= 4 * sum(1 for marker in repo_markers if marker in lower)
+        return quality
+
+    def _officeqa_local_file_is_data_like(self, path: Path, text: str) -> bool:
+        """Keep local retrieval focused on corpus/table files and away from repo docs."""
+        lowered_path = str(path).lower()
+        # Explicit corpus roots supplied by the runner/user are trusted a little more,
+        # but still must have some numeric/document signal.
+        explicit_root = any(
+            os.getenv(name, "").strip() and lowered_path.startswith(str(Path(os.getenv(name, "")).expanduser()).lower())
+            for name in ("AEGISFORGE_OFFICEQA_CORPUS_DIR", "OFFICEQA_CORPUS_DIR", "OFFICEQA_DATA_DIR", "AGENTBEATS_DATA_DIR", "A2A_DATA_DIR")
+        )
+        quality = self._officeqa_text_data_quality(text, lowered_path)
+        if explicit_root:
+            return quality >= 3
+        # Default cwd scans are noisy; demand stronger data signal.
+        return quality >= 6
+
+    def _officeqa_line_score(self, question: str, line: str, *, path: str = "") -> int:
+        lowered = self._coerce_text(line).lower()
+        if not lowered.strip() or self._officeqa_line_is_question_echo(question, line):
+            return 0
+        if any(blocked in lowered for blocked in ("ground_truth", "correct_answer", "expected_answer", "answer_key", "solution")):
+            return 0
+        score = 0
+        terms = self._officeqa_topic_terms_for_matching(question)
+        score += 2 * sum(1 for term in terms if term in lowered)
+        q_years = self._officeqa_question_years(question)
+        if q_years and any(str(year) in lowered for year in q_years):
+            score += 4
+        q_months = self._officeqa_question_months(question)
+        if q_months and any(self._officeqa_month_number(token) in q_months for token in re.findall(r"[A-Za-z]{3,9}", line)):
+            score += 2
+        if re.search(r"\b(?:18|19|20)\d{2}\b", line):
+            score += 1
+        nums = re.findall(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", line)
+        if len(nums) >= 2:
+            score += 2
+        if len(nums) >= 4:
+            score += 2
+        if "|" in line or "\t" in line or line.count(",") >= 3:
+            score += 2
+        for phrase in (
+            "national defense", "gross interest", "individual income", "public debt", "total assets",
+            "exchange stabilization", "treasury bills", "treasury bonds", "treasury notes", "currency",
+            "internal revenue", "federal securities", "marketable securities", "average yields", "cpi",
+        ):
+            if phrase in self._coerce_text(question).lower() and phrase in lowered:
+                score += 5
+        if path and any(term in path.lower() for term in terms):
+            score += 1
+        return score
+
+    def _officeqa_relevant_blocks_from_text(self, question: str, text: str, *, name: str = "", path: str = "", limit: int = 14000) -> str:
+        """Return compact windows around the most relevant numeric/table lines."""
+        raw = self._coerce_text(text)
+        if not raw.strip():
+            return ""
+        lines = raw.splitlines()
+        scored: list[tuple[int, int]] = []
+        for idx, line in enumerate(lines):
+            if len(line) > 6000:
+                continue
+            score = self._officeqa_line_score(question, line, path=path)
+            if score > 0:
+                scored.append((score, idx))
+        if not scored:
+            # Fall back to a short excerpt only for files that look like data.
+            if self._officeqa_text_data_quality(raw, path) < 6:
+                return ""
+            return f"[officeqa_local_block:{name or 'local'} score=0]\n{raw[:min(limit, 6000)]}"
+        scored.sort(key=lambda item: (item[0], -abs(item[1])), reverse=True)
+        selected_indices: list[int] = []
+        seen: set[int] = set()
+        for score, idx in scored[:24]:
+            for j in range(max(0, idx - 2), min(len(lines), idx + 3)):
+                if j not in seen:
+                    seen.add(j)
+                    selected_indices.append(j)
+            if len(selected_indices) >= 90:
+                break
+        selected_indices.sort()
+        blocks: list[str] = []
+        current: list[str] = []
+        last = -999
+        for idx in selected_indices:
+            if current and idx > last + 1:
+                blocks.append("\n".join(current))
+                current = []
+            current.append(lines[idx])
+            last = idx
+        if current:
+            blocks.append("\n".join(current))
+        best_score = scored[0][0]
+        out: list[str] = []
+        for block_idx, block in enumerate(blocks[:12], 1):
+            clean = block.strip()
+            if not clean:
+                continue
+            label = f"[officeqa_local_block:{name or 'local'} block={block_idx} score={best_score}]"
+            out.append(f"{label}\n{clean[:3500]}")
+            if sum(len(piece) for piece in out) > limit:
+                break
+        return "\n\n".join(out)[:limit]
+
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 24000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
         if not cache:
             return ""
         scored: list[tuple[int, dict[str, Any]]] = []
         for record in cache:
-            score = self._officeqa_score_context_text(question, self._coerce_text(record.get("text")), self._coerce_text(record.get("path")))
+            text = self._coerce_text(record.get("text"))
+            path = self._coerce_text(record.get("path"))
+            if not text:
+                continue
+            score = self._officeqa_score_context_text(question, text, path)
+            score += max(0, min(12, self._officeqa_text_data_quality(text, path)))
             if score > 0:
                 scored.append((score, record))
         scored.sort(key=lambda item: item[0], reverse=True)
         pieces: list[str] = []
-        for score, record in scored[:8]:
+        for score, record in scored[:10]:
             text = self._coerce_text(record.get("text"))
-            if not text:
+            name = self._coerce_text(record.get("name")) or "local"
+            path = self._coerce_text(record.get("path"))
+            block_context = self._officeqa_relevant_blocks_from_text(
+                question,
+                text,
+                name=name,
+                path=path,
+                limit=max(5000, min(16000, limit // 2)),
+            )
+            if not block_context:
                 continue
-            terms = self._officeqa_keyword_terms(question)
-            lower = text.lower()
-            anchors = [lower.find(term) for term in terms if term in lower]
-            anchors = [idx for idx in anchors if idx >= 0]
-            if anchors:
-                center = min(anchors)
-                start = max(0, center - 3500)
-                end = min(len(text), center + 8500)
-                excerpt = text[start:end]
-            else:
-                excerpt = text[:8000]
-            pieces.append(f"[officeqa_local_file:{record.get('name')} score={score}]\n{excerpt}")
+            pieces.append(block_context)
             if sum(len(piece) for piece in pieces) > limit:
                 break
         return "\n\n".join(pieces)[:limit]
@@ -3881,6 +4020,230 @@ class AegisForgeAgent:
         }
 
 
+
+    def _officeqa_numeric_tokens(self, line: str) -> list[tuple[str, float, int]]:
+        tokens: list[tuple[str, float, int]] = []
+        for match in re.finditer(r"\(?[-+]?\$?\s*\d[\d,]*(?:\.\d+)?\)?", self._coerce_text(line)):
+            parsed = self._officeqa_parse_number(match.group(0))
+            if parsed is None:
+                continue
+            tokens.append((match.group(0), parsed, match.start()))
+        return tokens
+
+    def _officeqa_non_year_numbers(self, line: str, *, known_years: set[int] | None = None) -> list[float]:
+        known_years = known_years or set()
+        values: list[float] = []
+        for raw, value, _pos in self._officeqa_numeric_tokens(line):
+            ivalue = int(round(abs(value))) if abs(value - round(value)) < 1e-9 else None
+            if ivalue is not None and 1800 <= ivalue <= 2099 and "$" not in raw:
+                continue
+            if ivalue is not None and ivalue in known_years and "$" not in raw:
+                continue
+            values.append(value)
+        return values
+
+    def _officeqa_dense_numeric_rows(self, question: str, context: str, *, min_score: int = 3) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        q_years = self._officeqa_question_years(question)
+        for idx, line in enumerate(self._coerce_text(context).splitlines()):
+            if not line.strip() or len(line) > 6000:
+                continue
+            if self._officeqa_line_is_question_echo(question, line):
+                continue
+            score = self._officeqa_line_score(question, line)
+            if score < min_score:
+                continue
+            years = [int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", line)]
+            nums = self._officeqa_non_year_numbers(line, known_years=set(years) | q_years)
+            if not nums:
+                continue
+            months = [self._officeqa_month_number(tok) for tok in re.findall(r"[A-Za-z]{3,9}", line)]
+            months = [m for m in months if m is not None]
+            rows.append({
+                "score": score,
+                "index": idx,
+                "years": years,
+                "months": months,
+                "values": nums,
+                "line": line.strip()[:1200],
+            })
+        rows.sort(key=lambda row: (int(row.get("score", 0)), len(row.get("values", []))), reverse=True)
+        return rows[:300]
+
+    def _officeqa_best_dense_value_by_year(self, question: str, context: str) -> dict[int, tuple[float, str, int]]:
+        q_years = self._officeqa_question_years(question)
+        rows = self._officeqa_dense_numeric_rows(question, context, min_score=4)
+        best: dict[int, tuple[float, str, int]] = {}
+        for row in rows:
+            years = [year for year in row.get("years", []) if not q_years or year in q_years]
+            if not years:
+                continue
+            vals = [float(v) for v in row.get("values", [])]
+            if not vals:
+                continue
+            line = self._coerce_text(row.get("line"))
+            score = int(row.get("score", 0))
+            # Heuristic: in compact Treasury tables, the value associated with a row
+            # year is usually either the only non-year number, the largest dollar
+            # amount, or the last amount after a row label/date.  Prefer one value
+            # only when the row is not excessively ambiguous.
+            if len(vals) == 1:
+                value = vals[0]
+            elif any(marker in self._coerce_text(question).lower() for marker in ("highest", "maximum", "largest")):
+                value = max(vals)
+            elif len(vals) <= 4:
+                value = vals[-1]
+            else:
+                continue
+            for year in years:
+                prior = best.get(year)
+                if prior is None or score > prior[2]:
+                    best[year] = (value, line, score)
+        return best
+
+    def _officeqa_dense_month_values(self, question: str, context: str) -> dict[tuple[int, int], tuple[float, str, int]]:
+        q_years = self._officeqa_question_years(question)
+        out: dict[tuple[int, int], tuple[float, str, int]] = {}
+        rows = self._officeqa_dense_numeric_rows(question, context, min_score=4)
+        for row in rows:
+            years = [year for year in row.get("years", []) if not q_years or year in q_years]
+            vals = [float(v) for v in row.get("values", [])]
+            if not years or len(vals) < 3:
+                continue
+            line = self._coerce_text(row.get("line"))
+            score = int(row.get("score", 0))
+            months_in_line = row.get("months", []) or []
+            if len(vals) >= 12 and len(years) == 1:
+                for month, value in enumerate(vals[:12], 1):
+                    prior = out.get((years[0], month))
+                    if prior is None or score > prior[2]:
+                        out[(years[0], month)] = (value, line, score)
+            elif months_in_line and len(years) == 1:
+                # Pair the last numeric value with the explicit month in the row.
+                month = int(months_in_line[0])
+                value = vals[-1]
+                prior = out.get((years[0], month))
+                if prior is None or score > prior[2]:
+                    out[(years[0], month)] = (value, line, score)
+        return out
+
+    def _officeqa_try_dense_year_lookup_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if any(marker in lowered for marker in ("difference", "average", "mean", "range", "regression", "ols", "standard deviation", "percent change", "ratio", "correlation", "cagr")):
+            return None
+        years = sorted(self._officeqa_question_years(question))
+        if not years:
+            return None
+        best = self._officeqa_best_dense_value_by_year(question, context)
+        target = years[-1]
+        if target not in best or best[target][2] < 6:
+            return None
+        value, source, score = best[target]
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is None:
+            decimals = 0 if abs(value - round(value)) < 1e-9 else 3
+        use_commas = abs(value) >= 1000 and "no comma" not in lowered and "without comma" not in lowered
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=use_commas)
+        return {"answer": answer, "reasoning": f"Dense local OfficeQA row lookup for {target} using high-overlap corpus evidence.", "confidence": 0.70}
+
+    def _officeqa_try_dense_difference_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if not any(marker in lowered for marker in ("absolute difference", "difference", "change from", "change between", "change in")):
+            return None
+        years = sorted(self._officeqa_question_years(question))
+        if len(years) < 2:
+            return None
+        best = self._officeqa_best_dense_value_by_year(question, context)
+        y1, y2 = years[0], years[-1]
+        if y1 not in best or y2 not in best or min(best[y1][2], best[y2][2]) < 5:
+            return None
+        v1, v2 = best[y1][0], best[y2][0]
+        if "percentage" in lowered or "percent" in lowered or "relative" in lowered:
+            denom = abs(v1) if abs(v1) > 1e-12 else None
+            if denom is None:
+                return None
+            value = abs(v2 - v1) / denom * 100.0
+            decimals = self._officeqa_requested_decimals(question) or 2
+            answer = self._officeqa_format_number(value, decimals=decimals)
+            if "%" in question and "no percent" not in lowered:
+                answer += "%"
+        else:
+            value = abs(v2 - v1)
+            decimals = self._officeqa_requested_decimals(question)
+            if decimals is None:
+                decimals = 0 if abs(value - round(value)) < 1e-9 else 2
+            answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        return {"answer": answer, "reasoning": f"Dense local OfficeQA difference from extracted values for {y1} and {y2}.", "confidence": 0.69}
+
+    def _officeqa_try_dense_average_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if not any(marker in lowered for marker in ("average", "arithmetic mean", "mean of")) or "geometric mean" in lowered:
+            return None
+        years = sorted(self._officeqa_question_years(question))
+        months = self._officeqa_question_months(question)
+        values: list[float] = []
+        if years and months:
+            mv = self._officeqa_dense_month_values(question, context)
+            for year in years:
+                for month in months:
+                    item = mv.get((year, month))
+                    if item and item[2] >= 5:
+                        values.append(item[0])
+        if not values:
+            best = self._officeqa_best_dense_value_by_year(question, context)
+            values = [best[year][0] for year in years if year in best and best[year][2] >= 5] if years else []
+        if len(values) < 2:
+            return None
+        value = sum(values) / len(values)
+        decimals = self._officeqa_requested_decimals(question) or (1 if "one decimal" in lowered else 3)
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        return {"answer": answer, "reasoning": f"Dense local OfficeQA arithmetic mean over {len(values)} extracted values.", "confidence": 0.68}
+
+    def _officeqa_try_dense_stddev_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if "standard deviation" not in lowered and "std" not in lowered:
+            return None
+        years = sorted(self._officeqa_question_years(question))
+        best = self._officeqa_best_dense_value_by_year(question, context)
+        values = [best[year][0] for year in years if year in best and best[year][2] >= 5]
+        if len(values) < 3:
+            # Last-resort: use top dense rows only when question asks a generic month/FY stddev.
+            rows = self._officeqa_dense_numeric_rows(question, context, min_score=6)
+            values = [float(row["values"][-1]) for row in rows[:24] if row.get("values")]
+        if len(values) < 3:
+            return None
+        mean = sum(values) / len(values)
+        if "sample" in lowered and "population" not in lowered and len(values) > 1:
+            var = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+        else:
+            var = sum((v - mean) ** 2 for v in values) / len(values)
+        value = math.sqrt(max(0.0, var))
+        decimals = self._officeqa_requested_decimals(question) or 2
+        answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        if "millions" in lowered and "million" in lowered and "no words" not in lowered and "single numeric" not in lowered:
+            answer = f"{answer} millions"
+        return {"answer": answer, "reasoning": f"Dense local OfficeQA standard deviation over {len(values)} extracted values.", "confidence": 0.67}
+
+    def _officeqa_try_dense_ratio_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if "ratio" not in lowered and "share" not in lowered:
+            return None
+        rows = self._officeqa_dense_numeric_rows(question, context, min_score=6)
+        for row in rows[:20]:
+            vals = [float(v) for v in row.get("values", [])]
+            if len(vals) < 2:
+                continue
+            numerator, denominator = vals[-2], vals[-1]
+            if abs(denominator) <= 1e-12:
+                continue
+            value = numerator / denominator
+            if "percentage" in lowered or "percent" in lowered:
+                value *= 100.0
+            decimals = self._officeqa_requested_decimals(question) or (4 if "four decimal" in lowered else 2)
+            answer = self._officeqa_format_number(value, decimals=decimals)
+            return {"answer": answer, "reasoning": "Dense local OfficeQA ratio/share calculation from a high-overlap numeric row.", "confidence": 0.66}
+        return None
+
     def _officeqa_try_deterministic_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if not self._officeqa_context_has_real_evidence(question, context):
             return None
@@ -3895,8 +4258,13 @@ class AegisForgeAgent:
             self._officeqa_try_average_answer,
             self._officeqa_try_range_answer,
             self._officeqa_try_geometric_mean_answer,
+            self._officeqa_try_dense_difference_answer,
+            self._officeqa_try_dense_average_answer,
+            self._officeqa_try_dense_stddev_answer,
+            self._officeqa_try_dense_ratio_answer,
             self._officeqa_try_total_for_year_answer,
             self._officeqa_try_wide_year_lookup_answer,
+            self._officeqa_try_dense_year_lookup_answer,
         )
         for solver in solvers:
             try:
@@ -4217,6 +4585,18 @@ class AegisForgeAgent:
         context_labels = [label for label in context_labels if self._officeqa_diagnostic_key_is_safe(label)]
         context_labels = self._dedupe(context_labels)[:10]
 
+        cache = self._officeqa_local_corpus_cache or []
+        corpus_names = []
+        corpus_quality = []
+        for rec in cache[:8]:
+            name = self._coerce_text(rec.get("name"))[:48]
+            if name and self._officeqa_diagnostic_key_is_safe(name):
+                corpus_names.append(name)
+            try:
+                corpus_quality.append(int(rec.get("data_quality", 0) or 0))
+            except Exception:
+                pass
+
         signals = [
             f"task_chars={len(self._coerce_text(task_text))}",
             f"question_chars={len(self._coerce_text(question))}",
@@ -4232,9 +4612,13 @@ class AegisForgeAgent:
             f"numeric_dense_lines={counts['numeric_dense_lines']}",
             f"local_context_chars={local_counts['context_chars']}",
             f"local_table_like_lines={local_counts['table_like_lines']}",
+            f"local_numeric_year_rows={local_counts['numeric_year_rows']}",
+            f"local_numeric_dense_lines={local_counts['numeric_dense_lines']}",
             f"context_labels={context_labels}",
             f"real_evidence={self._officeqa_context_has_real_evidence(question, context)}",
-            f"local_corpus_records={len(self._officeqa_local_corpus_cache or []) if self._officeqa_local_corpus_cache is not None else 'not_loaded'}",
+            f"local_corpus_records={len(cache) if self._officeqa_local_corpus_cache is not None else 'not_loaded'}",
+            f"local_corpus_names={corpus_names}",
+            f"local_corpus_quality={corpus_quality[:8]}",
             f"local_corpus_error={bool(self._officeqa_local_corpus_error)}",
             f"llm_endpoint_configured={llm.get('endpoint_configured')}",
             f"llm_endpoint_source={llm.get('endpoint_source')}",
@@ -4242,7 +4626,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.5.4 safe diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.5.5 local corpus/table diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -4294,7 +4678,7 @@ class AegisForgeAgent:
             local_context=local_context,
         )
 
-        evidence_note = "No OpenAI-compatible model response, adapter answer, local corpus hit, or deterministic document calculation was available."
+        evidence_note = "No OpenAI-compatible model response, adapter answer, data-like local corpus block, or deterministic document calculation was available."
         if self._officeqa_context_has_real_evidence(question, context):
             if self._llm_base_url():
                 evidence_note = "Evidence/context was present, but no adapter, deterministic solver, or validated LLM answer produced a sufficiently grounded answer."
@@ -4303,7 +4687,7 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.4 kept the protocol/answer channel clean and added safe payload diagnostics "
+                "OfficeQA answer engine v0.5.5 kept the protocol/answer channel clean, tightened local-corpus data gating, added block-level table retrieval, and kept safe diagnostics "
                 "to identify whether documents, tables, local corpus records, and LLM endpoint configuration are actually visible. "
                 f"{evidence_note} {diagnostics}"
             ),
