@@ -3,16 +3,18 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    GIT_TERMINAL_PROMPT=0
 
 WORKDIR /app
 
-# Minimal runtime deps.
-# bash is installed because run.sh currently uses bash-specific syntax.
-# ca-certificates is required for HTTPS downloads during corpus bootstrap.
+# Runtime deps.
+# bash is required by run.sh.
+# git is used only at build time to fetch a sparse OfficeQA source-corpus checkout.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
+    git \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy project files needed for install + runtime.
@@ -30,12 +32,16 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # OfficeQA public source corpus.
 #
 # IMPORTANT:
-# - This downloads only the public source-document corpus tree from Databricks OfficeQA.
-# - It intentionally does NOT download officeqa.csv, because that file contains answer labels.
-# - agent.py must still ignore any answer/gold/ground_truth/solution-like fields if future
+# - This fetches only the public source-document corpus paths needed for retrieval.
+# - It intentionally does NOT copy officeqa.csv because that file contains answer labels.
+# - agent.py must still ignore answer/gold/ground_truth/solution-like fields if future
 #   files are added under this directory.
+#
+# Why sparse git instead of downloading the GitHub repo ZIP?
+# - The full archive can make Docker builds look frozen because urllib has no progress output.
+# - Sparse checkout gives progress, avoids unnecessary blobs, and fails faster on network issues.
 ARG OFFICEQA_CORPUS_COMMIT=6aa8c32ba38ef9baf7e88c9c592d16a024090953
-ARG OFFICEQA_CORPUS_ARCHIVE_URL=https://github.com/databricks/officeqa/archive/${OFFICEQA_CORPUS_COMMIT}.zip
+ARG OFFICEQA_REPO_URL=https://github.com/databricks/officeqa.git
 
 ENV AEGISFORGE_OFFICEQA_DATA_DIR=/app/data/officeqa \
     AEGISFORGE_OFFICEQA_CORPUS_DIR=/app/data/officeqa/treasury_bulletins_parsed \
@@ -43,107 +49,31 @@ ENV AEGISFORGE_OFFICEQA_DATA_DIR=/app/data/officeqa \
     AEGISFORGE_OFFICEQA_CORPUS_URL=https://github.com/databricks/officeqa/tree/${OFFICEQA_CORPUS_COMMIT}/treasury_bulletins_parsed \
     AEGISFORGE_OFFICEQA_CORPUS_COMMIT=${OFFICEQA_CORPUS_COMMIT}
 
-RUN mkdir -p "${AEGISFORGE_OFFICEQA_DATA_DIR}" /tmp/officeqa_download \
- && OFFICEQA_CORPUS_COMMIT="${OFFICEQA_CORPUS_COMMIT}" \
-    OFFICEQA_CORPUS_ARCHIVE_URL="${OFFICEQA_CORPUS_ARCHIVE_URL}" \
-    AEGISFORGE_OFFICEQA_DATA_DIR="${AEGISFORGE_OFFICEQA_DATA_DIR}" \
-    python - <<'PY'
-import json
-import os
-import shutil
-import sys
-import urllib.request
-import zipfile
-from pathlib import Path
+RUN set -eux; \
+    git config --global http.lowSpeedLimit 1000; \
+    git config --global http.lowSpeedTime 60; \
+    mkdir -p "${AEGISFORGE_OFFICEQA_DATA_DIR}" /tmp/officeqa_download; \
+    cd /tmp/officeqa_download; \
+    git init officeqa; \
+    cd officeqa; \
+    git remote add origin "${OFFICEQA_REPO_URL}"; \
+    git config core.sparseCheckout true; \
+    git config core.sparseCheckoutCone true; \
+    printf '%s\n' \
+      '/treasury_bulletins_parsed/jsons/' \
+      '/treasury_bulletins_parsed/transformed/' \
+      > .git/info/sparse-checkout; \
+    echo "[Dockerfile] Sparse-fetching OfficeQA source corpus commit ${OFFICEQA_CORPUS_COMMIT}"; \
+    git fetch --depth 1 --filter=blob:none --progress origin "${OFFICEQA_CORPUS_COMMIT}"; \
+    git checkout --progress FETCH_HEAD; \
+    mkdir -p "${AEGISFORGE_OFFICEQA_DATA_DIR}"; \
+    cp -a treasury_bulletins_parsed "${AEGISFORGE_OFFICEQA_DATA_DIR}/"; \
+    rm -rf "${AEGISFORGE_OFFICEQA_DATA_DIR}/treasury_bulletins_parsed/transform_scripts" || true; \
+    rm -rf /tmp/officeqa_download
 
-commit = os.environ["OFFICEQA_CORPUS_COMMIT"]
-archive_url = os.environ["OFFICEQA_CORPUS_ARCHIVE_URL"]
-data_dir = Path(os.environ["AEGISFORGE_OFFICEQA_DATA_DIR"]).resolve()
-target = data_dir / "treasury_bulletins_parsed"
-tmp_zip = Path("/tmp/officeqa_download/officeqa.zip")
-
-forbidden_name_fragments = (
-    "answer",
-    "answers",
-    "answer_key",
-    "gold",
-    "ground_truth",
-    "correct_answer",
-    "expected_answer",
-    "solution",
-    "solutions",
-    "results",
-    "provenance",
-    "leaderboard",
-    "submission",
-    "secret",
-    "token",
-    "credential",
-    "apikey",
-    "api_key",
-)
-
-allowed_prefixes = (
-    "treasury_bulletins_parsed/jsons/",
-    "treasury_bulletins_parsed/transformed/",
-)
-
-print(f"[Dockerfile] Downloading OfficeQA public source corpus from {archive_url}", flush=True)
-with urllib.request.urlopen(archive_url, timeout=180) as response:
-    tmp_zip.write_bytes(response.read())
-
-if target.exists():
-    shutil.rmtree(target)
-target.mkdir(parents=True, exist_ok=True)
-
-extracted_files = 0
-with zipfile.ZipFile(tmp_zip) as zf:
-    for info in zf.infolist():
-        name = info.filename.replace("\\", "/")
-        if info.is_dir():
-            continue
-
-        marker = "treasury_bulletins_parsed/"
-        idx = name.find(marker)
-        if idx < 0:
-            continue
-
-        rel = name[idx:]
-        rel_lower = rel.lower()
-        basename_lower = Path(rel_lower).name
-
-        if not rel_lower.startswith(allowed_prefixes):
-            continue
-        if any(fragment in basename_lower for fragment in forbidden_name_fragments):
-            continue
-
-        out_path = data_dir / rel
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with zf.open(info) as src, out_path.open("wb") as dst:
-            shutil.copyfileobj(src, dst)
-        extracted_files += 1
-
-if extracted_files <= 0:
-    print("[Dockerfile] ERROR: no OfficeQA source corpus files were extracted.", file=sys.stderr)
-    sys.exit(2)
-
-metadata = {
-    "source": "databricks/officeqa",
-    "commit": commit,
-    "archive_url": archive_url,
-    "included_tree": "treasury_bulletins_parsed/{jsons,transformed}",
-    "excluded": [
-        "officeqa.csv",
-        "answer/gold/ground_truth/solution/results/provenance-like filenames",
-        "transform_scripts",
-    ],
-    "file_count": extracted_files,
-}
-(data_dir / "OFFICEQA_CORPUS_METADATA.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
-print(f"[Dockerfile] OfficeQA corpus installed at {target} with {extracted_files} files.", flush=True)
-PY
-RUN rm -rf /tmp/officeqa_download \
- && find "${AEGISFORGE_OFFICEQA_DATA_DIR}" -type f \( \
+# Safety filter and corpus metadata.
+RUN set -eux; \
+    find "${AEGISFORGE_OFFICEQA_DATA_DIR}" -type f \( \
       -iname '*answer*' -o \
       -iname '*gold*' -o \
       -iname '*ground_truth*' -o \
@@ -153,29 +83,48 @@ RUN rm -rf /tmp/officeqa_download \
       -iname '*results*' -o \
       -iname '*provenance*' -o \
       -iname '*leaderboard*' -o \
+      -iname '*submission*' -o \
       -iname '*secret*' -o \
       -iname '*token*' -o \
       -iname '*credential*' -o \
       -iname '*api_key*' \
-    \) -delete \
- && python - <<'PY'
+    \) -delete; \
+    python - <<'PY'
+import json
+import os
 from pathlib import Path
-root = Path("/app/data/officeqa")
-files = [p for p in root.rglob("*") if p.is_file()]
+
+root = Path(os.environ["AEGISFORGE_OFFICEQA_DATA_DIR"])
+corpus = root / "treasury_bulletins_parsed"
+files = [p for p in corpus.rglob("*") if p.is_file()]
+metadata = {
+    "source": "databricks/officeqa",
+    "commit": os.environ.get("AEGISFORGE_OFFICEQA_CORPUS_COMMIT", ""),
+    "included_tree": "treasury_bulletins_parsed/{jsons,transformed}",
+    "excluded": [
+        "officeqa.csv",
+        "answer/gold/ground_truth/solution/results/provenance-like filenames",
+        "transform_scripts",
+    ],
+    "file_count": len(files),
+    "sample_files": [str(p.relative_to(root)) for p in files[:10]],
+}
+(root / "OFFICEQA_CORPUS_METADATA.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 print(f"[Dockerfile] OfficeQA source corpus file count after safety filter: {len(files)}", flush=True)
+print(f"[Dockerfile] OfficeQA corpus root: {corpus}", flush=True)
 if not files:
-    raise SystemExit("OfficeQA source corpus is empty after safety filter.")
+    raise SystemExit("OfficeQA source corpus is empty after sparse checkout/safety filter.")
 PY
 
 # OpenAI-compatible endpoint defaults.
 #
-# The leaderboard scenario already passes OPENAI_API_KEY to the participant when
-# available. We do not set or modify that secret here. This default only gives
-# agent.py a standard OpenAI-compatible base URL to use when the key exists.
+# The leaderboard scenario passes OPENAI_API_KEY to the participant when available.
+# We do not set or modify that secret here. This default only gives agent.py a
+# standard OpenAI-compatible base URL to use when the key exists.
 ENV OPENAI_BASE_URL=https://api.openai.com/v1 \
     AEGISFORGE_LLM_TIMEOUT_SECONDS=75 \
     AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE=1 \
-    AEGISFORGE_OFFICEQA_RUNTIME_PROFILE=v0_6_0_corpus_llm_ready
+    AEGISFORGE_OFFICEQA_RUNTIME_PROFILE=v0_6_1_sparse_corpus_llm_ready
 
 # Make entrypoint executable.
 RUN chmod +x /app/run.sh
