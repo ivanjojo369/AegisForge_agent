@@ -72,7 +72,15 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_6_raw_a2a_introspection_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_0_embedded_corpus_rag_llm_2026_05_22"
+
+# Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
+# create more than one agent object per shard/context; re-reading hundreds of
+# parsed Treasury files for every question is expensive.  This cache contains
+# source-document text only (never result JSON, answer keys, gold labels, or
+# evaluator outputs).
+_OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
+_OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -2862,7 +2870,9 @@ class AegisForgeAgent:
     def _officeqa_local_corpus_roots(self) -> list[Path]:
         roots: list[Path] = []
         for env_name in (
+            "AEGISFORGE_OFFICEQA_DATA_DIR",
             "AEGISFORGE_OFFICEQA_CORPUS_DIR",
+            "AEGISFORGE_OFFICEQA_CORPUS_ROOT",
             "OFFICEQA_CORPUS_DIR",
             "OFFICEQA_DATA_DIR",
             "AGENTBEATS_DATA_DIR",
@@ -2874,8 +2884,14 @@ class AegisForgeAgent:
         try:
             cwd = Path.cwd()
             candidates = [
+                Path("/app/data/officeqa"),
+                Path("/app/data/officeqa/treasury_bulletins_parsed"),
+                Path("/app/data/officeqa/treasury_bulletins_parsed/transformed"),
+                Path("/app/data/officeqa/treasury_bulletins_parsed/jsons"),
                 cwd,
                 cwd / "data",
+                cwd / "data" / "officeqa",
+                cwd / "data" / "officeqa" / "treasury_bulletins_parsed",
                 cwd / "datasets",
                 cwd / "officeqa",
                 cwd / "OfficeQA",
@@ -2928,18 +2944,168 @@ class AegisForgeAgent:
         )
         return not any(part in lowered for part in blocked_parts)
 
+    def _officeqa_strip_html_for_corpus(self, value: Any) -> str:
+        text = self._coerce_text(value)
+        if not text:
+            return ""
+        text = re.sub(r"<\s*(?:br|p|div|tr|li)\b[^>]*>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<\s*/\s*(?:p|div|tr|li|table)\s*>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<\s*(?:td|th)\b[^>]*>", " | ", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"&nbsp;", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"&amp;", "&", text, flags=re.IGNORECASE)
+        text = re.sub(r"&lt;", "<", text, flags=re.IGNORECASE)
+        text = re.sub(r"&gt;", ">", text, flags=re.IGNORECASE)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _officeqa_json_key_is_source_safe(self, key: Any) -> bool:
+        lowered = str(key or "").strip().lower()
+        if not lowered:
+            return False
+        # This filter is intentionally stricter than ordinary document parsing:
+        # OfficeQA source files are allowed; evaluator/result fields are not.
+        blocked = (
+            "ground_truth", "gold", "golden", "correct_answer", "expected_answer",
+            "reference_answer", "answer_key", "answer_keys", "solution", "solutions",
+            "label", "labels", "is_correct", "rationale", "prediction", "predicted",
+            "score", "scores", "leaderboard", "provenance", "submission", "secret",
+            "token", "password", "credential", "api_key", "apikey", "private_key",
+            "authorization", "cookie", "bearer",
+        )
+        return not any(part in lowered for part in blocked)
+
+    def _officeqa_flatten_json_for_corpus(
+        self,
+        value: Any,
+        *,
+        path: str = "doc",
+        depth: int = 0,
+        max_lines: int = 5000,
+    ) -> list[str]:
+        """Convert parsed OfficeQA/Treasury JSON into searchable text/table lines.
+
+        Databricks' parsed Treasury corpus can store tables as nested JSON,
+        HTML fragments, page objects, element lists, or row/column records.  The
+        old v0.5.x reader stored raw JSON as one huge line, so retrieval and
+        deterministic solvers often saw no usable rows.  This flattener keeps
+        document source text and numeric/table rows while skipping answer/eval
+        fields by key.
+        """
+        if depth > 8 or max_lines <= 0:
+            return []
+        out: list[str] = []
+
+        if isinstance(value, Mapping):
+            safe_items = [(str(k), v) for k, v in value.items() if self._officeqa_json_key_is_source_safe(k)]
+            # Row-like dictionaries become compact pipe rows.  This is valuable
+            # for transformed tables where each JSON object is a table row.
+            scalar_items: list[tuple[str, str]] = []
+            for key, child in safe_items:
+                if isinstance(child, (str, int, float)) or child is None:
+                    child_text = self._officeqa_strip_html_for_corpus(child)
+                    if child_text:
+                        scalar_items.append((key, child_text))
+            if len(scalar_items) >= 2:
+                row = " | ".join(f"{key}={val}" for key, val in scalar_items[:32])
+                if re.search(r"\d", row) or any(term in row.lower() for term in ("treasury", "fiscal", "table", "public debt", "receipts", "outlays")):
+                    out.append(f"[{path}] {row}")
+
+            for key, child in safe_items:
+                key_l = key.lower()
+                child_path = f"{path}.{key[:48]}" if path else key[:48]
+                if isinstance(child, str):
+                    clean = self._officeqa_strip_html_for_corpus(child)
+                    if clean and (len(clean) >= 2):
+                        # Keep long textual/table fragments and numeric short values.
+                        if len(clean) > 80 or re.search(r"\d", clean) or key_l in {"text", "html", "markdown", "table", "content", "page"}:
+                            for line in clean.splitlines()[:120]:
+                                line = line.strip()
+                                if line:
+                                    out.append(f"[{child_path}] {line[:2000]}")
+                                    if len(out) >= max_lines:
+                                        return out[:max_lines]
+                elif isinstance(child, (int, float)):
+                    out.append(f"[{child_path}] {child}")
+                elif child is not None:
+                    out.extend(self._officeqa_flatten_json_for_corpus(child, path=child_path, depth=depth + 1, max_lines=max_lines - len(out)))
+                    if len(out) >= max_lines:
+                        return out[:max_lines]
+            return out[:max_lines]
+
+        if isinstance(value, (list, tuple)):
+            # If this is a list of scalar rows, keep them as a row.  Otherwise
+            # recurse over bounded children.
+            if value and all(isinstance(item, (str, int, float)) or item is None for item in value[:40]):
+                row = " | ".join(self._officeqa_strip_html_for_corpus(item) for item in value[:40])
+                if re.search(r"\d", row) or len(row) > 80:
+                    out.append(f"[{path}] {row[:3000]}")
+            for idx, child in enumerate(list(value)[:800]):
+                out.extend(self._officeqa_flatten_json_for_corpus(child, path=f"{path}[{idx}]", depth=depth + 1, max_lines=max_lines - len(out)))
+                if len(out) >= max_lines:
+                    break
+            return out[:max_lines]
+
+        if isinstance(value, (str, int, float)):
+            clean = self._officeqa_strip_html_for_corpus(value)
+            if clean:
+                return [f"[{path}] {clean[:2000]}"]
+        return []
+
+    def _officeqa_corpus_text_from_file(self, path: Path, raw_text: str, *, max_chars: int) -> str:
+        suffix = path.suffix.lower()
+        if suffix in {".json", ".jsonl"}:
+            lines: list[str] = []
+            if suffix == ".jsonl":
+                for idx, line in enumerate(raw_text.splitlines()[:4000]):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        obj = json.loads(stripped)
+                    except Exception:
+                        lines.append(stripped[:2000])
+                        continue
+                    lines.extend(self._officeqa_flatten_json_for_corpus(obj, path=f"jsonl[{idx}]", max_lines=200))
+                    if sum(len(item) for item in lines) > max_chars:
+                        break
+            else:
+                try:
+                    obj = json.loads(raw_text)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    lines = self._officeqa_flatten_json_for_corpus(obj, path="json", max_lines=8000)
+                else:
+                    lines = [raw_text]
+            flattened = "\n".join(lines).strip()
+            return flattened[:max_chars] if flattened else raw_text[:max_chars]
+        if suffix in {".html", ".htm"}:
+            return self._officeqa_strip_html_for_corpus(raw_text)[:max_chars]
+        return raw_text[:max_chars]
+
     def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
+        global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR
         if self._officeqa_local_corpus_cache is not None:
+            return self._officeqa_local_corpus_cache
+        if _OFFICEQA_GLOBAL_CORPUS_CACHE is not None:
+            self._officeqa_local_corpus_cache = _OFFICEQA_GLOBAL_CORPUS_CACHE
+            self._officeqa_local_corpus_error = _OFFICEQA_GLOBAL_CORPUS_ERROR
             return self._officeqa_local_corpus_cache
 
         enabled = _env_flag("AEGISFORGE_OFFICEQA_LOCAL_RETRIEVAL", default=True)
         if not enabled:
             self._officeqa_local_corpus_cache = []
+            _OFFICEQA_GLOBAL_CORPUS_CACHE = []
             return self._officeqa_local_corpus_cache
 
-        max_files = max(0, min(240, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "120") or "120")))
-        max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "900000") or "900000")))
-        exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml"}
+        # The embedded OfficeQA corpus is source data, not answer labels.  It can
+        # contain hundreds of transformed Treasury files; keep the cap high enough
+        # to index the corpus but bounded for the quick-submit container.
+        max_files = max(0, min(2500, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "1200") or "1200")))
+        max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "650000") or "650000")))
+        exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
         records: list[dict[str, Any]] = []
         visited: set[str] = set()
 
@@ -2964,9 +3130,10 @@ class AegisForgeAgent:
                         if not self._officeqa_path_is_safe_context(path):
                             continue
                         size = path.stat().st_size
-                        if size <= 0 or size > max_bytes:
+                        if size <= 0 or size > max(max_bytes * 4, 2000000):
                             continue
-                        text = path.read_text(encoding="utf-8", errors="ignore")
+                        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+                        text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
                     except Exception:
                         continue
                     if not text.strip():
@@ -3009,7 +3176,12 @@ class AegisForgeAgent:
         except Exception as exc:
             self._officeqa_local_corpus_error = str(exc)[:240]
 
+        # Prefer higher-quality source corpus records and share them across agent
+        # instances inside the same worker process.
+        records.sort(key=lambda rec: int(rec.get("data_quality", 0) or 0), reverse=True)
         self._officeqa_local_corpus_cache = records
+        _OFFICEQA_GLOBAL_CORPUS_CACHE = records
+        _OFFICEQA_GLOBAL_CORPUS_ERROR = self._officeqa_local_corpus_error
         return records
 
     def _officeqa_score_context_text(self, question: str, text: str, path: str = "") -> int:
@@ -3062,7 +3234,7 @@ class AegisForgeAgent:
         # but still must have some numeric/document signal.
         explicit_root = any(
             os.getenv(name, "").strip() and lowered_path.startswith(str(Path(os.getenv(name, "")).expanduser()).lower())
-            for name in ("AEGISFORGE_OFFICEQA_CORPUS_DIR", "OFFICEQA_CORPUS_DIR", "OFFICEQA_DATA_DIR", "AGENTBEATS_DATA_DIR", "A2A_DATA_DIR")
+            for name in ("AEGISFORGE_OFFICEQA_DATA_DIR", "AEGISFORGE_OFFICEQA_CORPUS_DIR", "AEGISFORGE_OFFICEQA_CORPUS_ROOT", "OFFICEQA_CORPUS_DIR", "OFFICEQA_DATA_DIR", "AGENTBEATS_DATA_DIR", "A2A_DATA_DIR")
         )
         quality = self._officeqa_text_data_quality(text, lowered_path)
         if explicit_root:
@@ -4256,7 +4428,7 @@ class AegisForgeAgent:
         if not self._officeqa_context_has_real_evidence(question, context):
             return None
 
-        solvers = (
+        base_solvers = (
             self._officeqa_try_wide_ols_answer,
             self._officeqa_try_ols_answer,
             self._officeqa_try_month_sum_answer,
@@ -4266,14 +4438,21 @@ class AegisForgeAgent:
             self._officeqa_try_average_answer,
             self._officeqa_try_range_answer,
             self._officeqa_try_geometric_mean_answer,
+            self._officeqa_try_total_for_year_answer,
+            self._officeqa_try_wide_year_lookup_answer,
+        )
+        dense_solvers = (
             self._officeqa_try_dense_difference_answer,
             self._officeqa_try_dense_average_answer,
             self._officeqa_try_dense_stddev_answer,
             self._officeqa_try_dense_ratio_answer,
-            self._officeqa_try_total_for_year_answer,
-            self._officeqa_try_wide_year_lookup_answer,
             self._officeqa_try_dense_year_lookup_answer,
         )
+        # v0.5.6 showed dense fallback rows could produce very wrong values
+        # (for example 0.00 or 400.05 from unrelated high-overlap rows).  Keep
+        # those solvers available for local experiments, but disable them by
+        # default in official OfficeQA runs unless explicitly enabled.
+        solvers = base_solvers + (dense_solvers if _env_flag("AEGISFORGE_OFFICEQA_ENABLE_DENSE_SOLVERS", default=False) else ())
         for solver in solvers:
             try:
                 result = solver(question, context)
@@ -4294,7 +4473,7 @@ class AegisForgeAgent:
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Answer financial/document QA questions using only the user-visible question and provided context. "
+            "Answer financial/document QA questions using only the user-visible question and provided source-document context. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
             "Do not use or copy ground_truth, gold answers, answer keys, labels, or evaluator-only fields if present. "
@@ -4935,7 +5114,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.5.6 raw A2A/local corpus diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.6.0 embedded corpus/RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -4957,23 +5136,26 @@ class AegisForgeAgent:
                 metadata=safe_metadata,
             )
 
-        deterministic_result = self._officeqa_try_deterministic_answer(question, context, safe_metadata)
-        if deterministic_result:
+        # With the Dockerfile v0.6.0 corpus path, the most reliable route is:
+        # retrieve source-document evidence -> let the OpenAI-compatible model
+        # parse/calculate -> fall back to conservative deterministic solvers.
+        llm_result = self._officeqa_try_llm_answer(question, context, safe_metadata)
+        if llm_result:
             return self._officeqa_output_firewall(
                 self._officeqa_format_response(
-                    reasoning=deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from context.",
-                    final_answer=deterministic_result.get("answer"),
+                    reasoning=llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed source evidence.",
+                    final_answer=llm_result.get("answer"),
                 ),
                 task_text=task_text,
                 metadata=safe_metadata,
             )
 
-        llm_result = self._officeqa_try_llm_answer(question, context, safe_metadata)
-        if llm_result:
+        deterministic_result = self._officeqa_try_deterministic_answer(question, context, safe_metadata)
+        if deterministic_result:
             return self._officeqa_output_firewall(
                 self._officeqa_format_response(
-                    reasoning=llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed evidence.",
-                    final_answer=llm_result.get("answer"),
+                    reasoning=deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from source context.",
+                    final_answer=deterministic_result.get("answer"),
                 ),
                 task_text=task_text,
                 metadata=safe_metadata,
@@ -4996,8 +5178,8 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.6 kept the protocol/answer channel clean, added safe raw-A2A message introspection beyond get_message_text(), tightened local-corpus data gating, added block-level table retrieval, and kept safe diagnostics "
-                "to identify whether documents, tables, local corpus records, and LLM endpoint configuration are actually visible. "
+                "OfficeQA answer engine v0.6.0 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and keeps safe diagnostics "
+                "to identify whether documents, tables, local corpus records, and LLM endpoint/auth configuration are actually visible. "
                 f"{evidence_note} {diagnostics}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
