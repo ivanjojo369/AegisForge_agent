@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_3_hybrid_solver_endpoint_scan_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_4_safe_payload_diagnostics_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -4043,6 +4043,207 @@ class AegisForgeAgent:
         return None
 
 
+
+    def _officeqa_diagnostic_key_is_safe(self, key: Any) -> bool:
+        """Return False for keys that may expose answer labels, secrets, or evaluator state.
+
+        v0.5.4 uses this only for diagnostics that are emitted in the public
+        reasoning_trace.  It intentionally reports schema/shape, not content.
+        """
+        lowered = str(key or "").strip().lower()
+        if not lowered:
+            return False
+        blocked = (
+            "ground_truth",
+            "gold",
+            "golden",
+            "answer_key",
+            "answers",
+            "correct_answer",
+            "expected_answer",
+            "reference_answer",
+            "solution",
+            "solutions",
+            "label",
+            "labels",
+            "is_correct",
+            "rationale",
+            "predicted",
+            "prediction",
+            "score",
+            "secret",
+            "token",
+            "password",
+            "credential",
+            "api_key",
+            "apikey",
+            "private_key",
+            "authorization",
+            "cookie",
+            "bearer",
+        )
+        return not any(part in lowered for part in blocked)
+
+    def _officeqa_safe_key_list(self, value: Any, *, limit: int = 18) -> list[str]:
+        if not isinstance(value, Mapping):
+            return []
+        keys: list[str] = []
+        for key in value.keys():
+            if self._officeqa_diagnostic_key_is_safe(key):
+                keys.append(str(key)[:48])
+            if len(keys) >= limit:
+                break
+        return keys
+
+    def _officeqa_value_shape(self, value: Any) -> str:
+        if isinstance(value, Mapping):
+            safe_keys = self._officeqa_safe_key_list(value, limit=8)
+            return f"dict:{len(value)}:{'|'.join(safe_keys)}"
+        if isinstance(value, (list, tuple)):
+            return f"list:{len(value)}"
+        text = self._coerce_text(value)
+        if not text:
+            return "empty"
+        tableish = bool("|" in text or "\t" in text or text.count(",") >= 4)
+        numeric_rows = len(re.findall(r"\b(?:18|19|20)\d{2}\b[^\n]{0,160}?[-+]?\$?\d[\d,]*(?:\.\d+)?", text))
+        return f"str:{len(text)}:tableish={int(tableish)}:year_rows={numeric_rows}"
+
+    def _officeqa_context_diagnostic_counts(self, context: str) -> dict[str, int]:
+        raw = self._coerce_text(context)
+        lines = [line for line in raw.splitlines() if line.strip()]
+        table_like_lines = 0
+        numeric_year_rows = 0
+        numeric_dense_lines = 0
+        for line in lines:
+            if "|" in line or "\t" in line or line.count(",") >= 4:
+                table_like_lines += 1
+            if re.search(r"\b(?:18|19|20)\d{2}\b", line) and re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", line):
+                numeric_year_rows += 1
+            if len(re.findall(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", line)) >= 3:
+                numeric_dense_lines += 1
+        return {
+            "context_chars": len(raw),
+            "context_lines": len(lines),
+            "context_blocks": len([block for block in re.split(r"\n\s*\n", raw) if block.strip()]),
+            "table_like_lines": table_like_lines,
+            "numeric_year_rows": numeric_year_rows,
+            "numeric_dense_lines": numeric_dense_lines,
+        }
+
+    def _officeqa_llm_endpoint_diagnostics(self) -> dict[str, Any]:
+        """Summarize endpoint availability without changing auth or leaking keys."""
+        base_candidates = (
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "OPENAI_API_URL",
+            "OPENAI_BASE",
+            "AEGISFORGE_LLM_BASE_URL",
+            "AEGISFORGE_OPENAI_BASE_URL",
+            "LOCAL_LLM_BASE_URL",
+            "LOCAL_LLM_OPENAI_BASE_URL",
+            "LLM_BASE_URL",
+            "VLLM_OPENAI_BASE_URL",
+            "OLLAMA_OPENAI_BASE_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_API_BASE",
+            "AMBER_CONFIG_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OPENAI_API_BASE",
+        )
+        present_base: list[str] = []
+        ignored_base: list[str] = []
+        usable_source = ""
+        for name in base_candidates:
+            raw = (os.getenv(name) or "").strip()
+            if not raw:
+                continue
+            lowered = raw.lower()
+            if "agentbeats.dev" in lowered or lowered.rstrip("/").endswith("/results") or "/quick-submit/" in lowered:
+                ignored_base.append(name)
+                continue
+            present_base.append(name)
+            if not usable_source and lowered.startswith(("http://", "https://")):
+                usable_source = name
+
+        key_sources: list[str] = []
+        for name in ("OPENAI_API_KEY", "AMBER_CONFIG_GREEN_OPENAI_API_KEY", "AMBER_CONFIG_OPENAI_API_KEY"):
+            if (os.getenv(name) or "").strip():
+                key_sources.append(name)
+
+        endpoint = self._llm_base_url()
+        if endpoint and not usable_source and key_sources:
+            usable_source = "openai_default_from_api_key"
+
+        return {
+            "endpoint_configured": bool(endpoint),
+            "endpoint_source": usable_source or "none",
+            "base_env_present": present_base[:8],
+            "base_env_ignored": ignored_base[:8],
+            "api_key_present": bool(key_sources),
+            "api_key_sources": key_sources[:3],
+        }
+
+    def _officeqa_payload_diagnostics(
+        self,
+        *,
+        task_text: str,
+        question: str,
+        context: str,
+        metadata: Mapping[str, Any] | None,
+        local_context: str = "",
+    ) -> str:
+        """Emit safe OfficeQA schema diagnostics in reasoning_trace.
+
+        This intentionally avoids printing raw payload text, table contents,
+        answer keys, ground truth, secrets, or credentials.  It only exposes
+        shapes, safe key names, counters, and non-sensitive endpoint presence.
+        """
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        parsed_task = self._maybe_parse_json_mapping(task_text)
+        payload = self._extract_payload(safe_metadata) or {}
+        counts = self._officeqa_context_diagnostic_counts(context)
+        local_counts = self._officeqa_context_diagnostic_counts(local_context)
+        llm = self._officeqa_llm_endpoint_diagnostics()
+
+        source_shapes: list[str] = []
+        for label, source in (("parsed_task", parsed_task), ("metadata", safe_metadata), ("payload", payload)):
+            if isinstance(source, Mapping):
+                source_shapes.append(f"{label}={self._officeqa_value_shape(source)}")
+            elif source is None:
+                source_shapes.append(f"{label}=none")
+            else:
+                source_shapes.append(f"{label}={type(source).__name__}")
+
+        context_labels = re.findall(r"^\[([^\]\n]{1,80})\]", self._coerce_text(context), flags=re.MULTILINE)
+        context_labels = [label for label in context_labels if self._officeqa_diagnostic_key_is_safe(label)]
+        context_labels = self._dedupe(context_labels)[:10]
+
+        signals = [
+            f"task_chars={len(self._coerce_text(task_text))}",
+            f"question_chars={len(self._coerce_text(question))}",
+            f"metadata_keys={self._officeqa_safe_key_list(safe_metadata, limit=12)}",
+            f"payload_keys={self._officeqa_safe_key_list(payload, limit=12)}",
+            f"parsed_task_keys={self._officeqa_safe_key_list(parsed_task, limit=12) if isinstance(parsed_task, Mapping) else []}",
+            f"source_shapes={source_shapes}",
+            f"context_chars={counts['context_chars']}",
+            f"context_blocks={counts['context_blocks']}",
+            f"context_lines={counts['context_lines']}",
+            f"table_like_lines={counts['table_like_lines']}",
+            f"numeric_year_rows={counts['numeric_year_rows']}",
+            f"numeric_dense_lines={counts['numeric_dense_lines']}",
+            f"local_context_chars={local_counts['context_chars']}",
+            f"local_table_like_lines={local_counts['table_like_lines']}",
+            f"context_labels={context_labels}",
+            f"real_evidence={self._officeqa_context_has_real_evidence(question, context)}",
+            f"local_corpus_records={len(self._officeqa_local_corpus_cache or []) if self._officeqa_local_corpus_cache is not None else 'not_loaded'}",
+            f"local_corpus_error={bool(self._officeqa_local_corpus_error)}",
+            f"llm_endpoint_configured={llm.get('endpoint_configured')}",
+            f"llm_endpoint_source={llm.get('endpoint_source')}",
+            f"llm_base_env_present={llm.get('base_env_present')}",
+            f"llm_base_env_ignored={llm.get('base_env_ignored')}",
+            f"llm_api_key_present={llm.get('api_key_present')}",
+        ]
+        return "OfficeQA v0.5.4 safe diagnostics: " + "; ".join(signals)
+
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         question = self._officeqa_extract_question(task_text, safe_metadata)
@@ -4085,6 +4286,14 @@ class AegisForgeAgent:
                 metadata=safe_metadata,
             )
 
+        diagnostics = self._officeqa_payload_diagnostics(
+            task_text=task_text,
+            question=question,
+            context=context,
+            metadata=safe_metadata,
+            local_context=local_context,
+        )
+
         evidence_note = "No OpenAI-compatible model response, adapter answer, local corpus hit, or deterministic document calculation was available."
         if self._officeqa_context_has_real_evidence(question, context):
             if self._llm_base_url():
@@ -4094,9 +4303,9 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.3 preserved the clean answer-only final channel, "
-                "added hybrid deterministic Treasury solvers, recursive evidence scanning, and wider endpoint discovery. "
-                f"{evidence_note}"
+                "OfficeQA answer engine v0.5.4 kept the protocol/answer channel clean and added safe payload diagnostics "
+                "to identify whether documents, tables, local corpus records, and LLM endpoint configuration are actually visible. "
+                f"{evidence_note} {diagnostics}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
         )
