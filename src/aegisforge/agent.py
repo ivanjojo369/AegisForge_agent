@@ -3053,10 +3053,31 @@ class AegisForgeAgent:
         when a fresh color answer exists and the candidate has a ground-level row
         plus a same-colored vertical segment above one end of that row.
         """
-        if not blocks or not state or not bool(state.get("latest_question_answer_is_fresh")):
+        if not blocks or not state:
             return blocks
 
         answer_color = self._build_it_answer_color_or_default(state, default="")
+        if not answer_color:
+            raw_answers: list[str] = []
+
+            latest = self._coerce_text(state.get("latest_question_answer")).strip()
+            if latest:
+                raw_answers.append(latest)
+
+            if isinstance(state.get("question_answers"), list):
+                raw_answers.extend(
+                    self._coerce_text(item).strip()
+                    for item in state.get("question_answers", [])
+                    if self._coerce_text(item).strip()
+                )
+
+            color_re = r"\b(red|blue|green|yellow|purple|orange|white|black|brown|pink|grey|gray|cyan|aqua|lime|magenta|teal)\b"
+            for raw_answer in reversed(raw_answers):
+                match = re.search(color_re, raw_answer.lower())
+                if match:
+                    answer_color = self._normalize_build_color(match.group(1))
+                    break
+
         if not answer_color:
             return blocks
 
