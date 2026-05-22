@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_3_bwim_answer_color_top_stack_repair_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_3_1_bwim_exact_row_top_priority_2026_05_21"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -3314,7 +3314,7 @@ class AegisForgeAgent:
 
         def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return self._build_it_unique_blocks(blocks)
-        
+
         # Color-under: highlighted blue block with left/right neighbors, then an
         # unspecified block on top of the middle block.
         if (
@@ -4877,6 +4877,19 @@ class AegisForgeAgent:
         # Give answered-ASK grammar first priority.  v3 stays available as the
         # stable direct-grammar layer, but v15.2 is better scoped for fresh
         # question_answers and should resolve the underspecified segment first.
+        fresh_answer = bool(state and state.get("latest_question_answer_is_fresh"))
+        if (
+            not fresh_answer
+            and len(colors) > 1
+            and any(term in lowered for term in ("row", "line"))
+            and any(term in lowered for term in ("on top", "above", "over"))
+            and any(term in lowered for term in ("leftmost", "rightmost", "end"))
+        ):
+            exact_blocks = self._build_it_try_exact_small_program(lowered, initial_validated, colors, primary_color)
+            if exact_blocks:
+                validated = self._build_it_sanitize_candidate_blocks(exact_blocks, lowered)
+                if len(validated) > len(initial_validated):
+                    return validated
         attempts = (
             self._build_it_try_bwim_v15_2_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v3_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
@@ -7671,6 +7684,7 @@ class AegisForgeAgent:
     @classmethod
     def _to_json(cls, payload: Mapping[str, Any]) -> str:
         return json.dumps(cls._normalize_for_json(dict(payload)), indent=2, ensure_ascii=False)
+
 
     @staticmethod
     def _dedupe(items: list[str]) -> list[str]:
