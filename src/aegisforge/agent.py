@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_5_local_corpus_table_index_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_6_raw_a2a_introspection_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -2749,6 +2749,14 @@ class AegisForgeAgent:
                 if sum(len(piece) for piece in pieces) > limit:
                     break
 
+        # v0.5.6: also inspect the safe raw A2A Message snapshot.  This is
+        # intentionally separate from get_message_text(...) because some A2A
+        # envelopes expose only the visible question through get_message_text
+        # while retaining nested data/document parts elsewhere.
+        raw_a2a_fragment = self._officeqa_raw_a2a_context(safe_metadata, question, limit=max(4000, limit // 2))
+        if raw_a2a_fragment:
+            pieces.append(raw_a2a_fragment)
+
         context = "\n\n".join(piece for piece in self._dedupe(pieces) if piece).strip()
         return context[:limit]
 
@@ -4550,6 +4558,294 @@ class AegisForgeAgent:
             "api_key_sources": key_sources[:3],
         }
 
+
+    def _officeqa_raw_key_is_forbidden(self, key: Any) -> bool:
+        """Return True for raw A2A keys that must never enter diagnostics/context.
+
+        v0.5.6 uses the full A2A message object because get_message_text(...)
+        may expose only the visible question.  This guard keeps the raw scan
+        from surfacing evaluator labels, answer keys, secrets, credentials, or
+        platform-internal auth material.
+        """
+        lowered = str(key).lower()
+        forbidden_parts = (
+            "ground_truth",
+            "groundtruth",
+            "gold",
+            "gold_answer",
+            "gold_answers",
+            "answer_key",
+            "answerkey",
+            "answers",
+            "correct_answer",
+            "correct_answers",
+            "expected_answer",
+            "expected_answers",
+            "reference_answer",
+            "reference_answers",
+            "solution",
+            "solutions",
+            "label",
+            "labels",
+            "is_correct",
+            "rationale",
+            "predicted",
+            "prediction",
+            "score",
+            "scores",
+            "leaderboard",
+            "provenance",
+            "api_key",
+            "apikey",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "authorization",
+            "auth",
+            "credential",
+            "credentials",
+            "secret",
+            "secrets",
+            "password",
+            "private_key",
+            "bearer",
+            "cookie",
+            "set-cookie",
+        )
+        return any(part in lowered for part in forbidden_parts)
+
+    def _officeqa_raw_scalar_is_sensitive(self, value: Any) -> bool:
+        raw = self._coerce_text(value)
+        if not raw:
+            return False
+        lowered = raw.lower()
+        if re.search(r"(?i)\b(?:sk-[a-z0-9_\-]{16,}|bearer\s+[a-z0-9._\-]{16,}|ya29\.[a-z0-9_\-]+)\b", raw):
+            return True
+        secret_markers = (
+            "-----begin private key-----",
+            "authorization:",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "api_key",
+            "password",
+            "credential",
+            "cookie:",
+            "set-cookie:",
+        )
+        return any(marker in lowered for marker in secret_markers)
+
+    def _officeqa_normalize_raw_a2a_value(
+        self,
+        value: Any,
+        *,
+        depth: int = 0,
+        limit: int = 90000,
+        seen: set[int] | None = None,
+    ) -> Any:
+        """Safely normalize arbitrary A2A/Pydantic objects into JSON-like data.
+
+        The output is for context discovery and shape diagnostics only.  It is
+        bounded, redacts secret-looking values, and skips answer/evaluator keys.
+        """
+        if value is None or depth > 7 or limit <= 0:
+            return None
+
+        if seen is None:
+            seen = set()
+
+        if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str):
+                if self._officeqa_raw_scalar_is_sensitive(value):
+                    return "[REDACTED]"
+                return self._sanitize_text(value[:min(len(value), max(1000, limit))])
+            return value
+
+        obj_id = id(value)
+        if obj_id in seen:
+            return "[CYCLE]"
+        seen.add(obj_id)
+
+        try:
+            if is_dataclass(value):
+                value = asdict(value)
+        except Exception:
+            pass
+
+        # Pydantic v2 / A2A models.
+        if not isinstance(value, (Mapping, list, tuple, set)) and hasattr(value, "model_dump"):
+            try:
+                dumped = value.model_dump(mode="json", exclude_none=True)
+                return self._officeqa_normalize_raw_a2a_value(dumped, depth=depth + 1, limit=limit, seen=seen)
+            except Exception:
+                try:
+                    dumped = value.model_dump(exclude_none=True)
+                    return self._officeqa_normalize_raw_a2a_value(dumped, depth=depth + 1, limit=limit, seen=seen)
+                except Exception:
+                    pass
+
+        # Pydantic v1 fallback.
+        if not isinstance(value, (Mapping, list, tuple, set)) and hasattr(value, "dict"):
+            try:
+                dumped = value.dict(exclude_none=True)
+                return self._officeqa_normalize_raw_a2a_value(dumped, depth=depth + 1, limit=limit, seen=seen)
+            except Exception:
+                pass
+
+        if isinstance(value, Mapping):
+            out: dict[str, Any] = {}
+            used = 0
+            for key, child in value.items():
+                key_text = str(key)
+                if self._officeqa_raw_key_is_forbidden(key_text):
+                    continue
+                child_limit = max(1200, (limit - used) // 2)
+                child_norm = self._officeqa_normalize_raw_a2a_value(
+                    child,
+                    depth=depth + 1,
+                    limit=child_limit,
+                    seen=seen,
+                )
+                if child_norm is None or child_norm == "":
+                    continue
+                out[key_text[:120]] = child_norm
+                try:
+                    used += len(json.dumps(child_norm, ensure_ascii=False))
+                except Exception:
+                    used += len(str(child_norm))
+                if used >= limit:
+                    out["_truncated"] = True
+                    break
+            return out
+
+        if isinstance(value, (list, tuple, set)):
+            out_list: list[Any] = []
+            used = 0
+            for child in list(value)[:120]:
+                child_norm = self._officeqa_normalize_raw_a2a_value(
+                    child,
+                    depth=depth + 1,
+                    limit=max(1200, (limit - used) // 2),
+                    seen=seen,
+                )
+                if child_norm is None or child_norm == "":
+                    continue
+                out_list.append(child_norm)
+                try:
+                    used += len(json.dumps(child_norm, ensure_ascii=False))
+                except Exception:
+                    used += len(str(child_norm))
+                if used >= limit:
+                    out_list.append({"_truncated": True})
+                    break
+            return out_list
+
+        # Object fallback: inspect a bounded set of public, data-like attributes.
+        attrs: dict[str, Any] = {}
+        for attr in (
+            "root",
+            "parts",
+            "content",
+            "message_parts",
+            "metadata",
+            "context",
+            "extensions",
+            "artifacts",
+            "data",
+            "params",
+            "message",
+            "task",
+            "kind",
+            "role",
+            "text",
+            "body",
+        ):
+            try:
+                if hasattr(value, attr):
+                    attr_value = getattr(value, attr)
+                    if attr_value is not None:
+                        attrs[attr] = attr_value
+            except Exception:
+                continue
+
+        if attrs:
+            return self._officeqa_normalize_raw_a2a_value(attrs, depth=depth + 1, limit=limit, seen=seen)
+
+        raw = str(value)
+        if self._officeqa_raw_scalar_is_sensitive(raw):
+            return "[REDACTED]"
+        return self._sanitize_text(raw[:min(len(raw), max(1000, limit))])
+
+    def _officeqa_extract_raw_a2a_bundle(self, message: Message, *, base_text: str = "") -> dict[str, Any]:
+        """Build a safe raw A2A snapshot for OfficeQA context recovery.
+
+        Earlier versions depended mainly on get_message_text(message), which can
+        collapse a rich A2A payload into only the visible question.  This bundle
+        preserves safe shapes and non-answer evidence from the whole Message
+        object so the existing recursive OfficeQA context scanner can discover
+        nested document/table payloads when they exist.
+        """
+        sources: dict[str, Any] = {"base_text": base_text}
+        for name in ("model_dump_json",):
+            try:
+                method = getattr(message, name, None)
+                if callable(method):
+                    raw_json = method()
+                    parsed = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+                    sources[name] = parsed
+            except Exception:
+                continue
+        for name in ("model_dump", "dict"):
+            try:
+                method = getattr(message, name, None)
+                if callable(method):
+                    try:
+                        sources[name] = method(mode="json", exclude_none=True)
+                    except TypeError:
+                        sources[name] = method(exclude_none=True)
+            except Exception:
+                continue
+        for attr in (
+            "metadata",
+            "context",
+            "extensions",
+            "parts",
+            "content",
+            "message_parts",
+            "artifacts",
+            "data",
+            "params",
+            "root",
+        ):
+            try:
+                value = getattr(message, attr, None)
+            except Exception:
+                continue
+            if value is not None:
+                sources[f"attr_{attr}"] = value
+
+        snapshot = self._officeqa_normalize_raw_a2a_value(sources, limit=110000)
+        if not isinstance(snapshot, Mapping):
+            return {}
+        return {
+            "snapshot": snapshot,
+            "snapshot_shape": self._officeqa_value_shape(snapshot),
+            "base_text_chars": len(self._coerce_text(base_text)),
+            "introspection_version": "raw_a2a_v1",
+        }
+
+    def _officeqa_raw_a2a_context(self, metadata: Mapping[str, Any], question: str, *, limit: int = 24000) -> str:
+        bundle = metadata.get("raw_a2a_snapshot") if isinstance(metadata, Mapping) else None
+        if not isinstance(bundle, Mapping):
+            return ""
+        return self._officeqa_context_deep_scan(
+            bundle,
+            label="raw_a2a",
+            question=question,
+            limit=limit,
+        )
+
+
     def _officeqa_payload_diagnostics(
         self,
         *,
@@ -4597,6 +4893,12 @@ class AegisForgeAgent:
             except Exception:
                 pass
 
+        raw_a2a = safe_metadata.get("raw_a2a_snapshot") if isinstance(safe_metadata, Mapping) else None
+        raw_a2a_keys = self._officeqa_safe_key_list(raw_a2a, limit=12) if isinstance(raw_a2a, Mapping) else []
+        raw_a2a_shape = self._officeqa_value_shape(raw_a2a) if isinstance(raw_a2a, Mapping) else "none"
+        raw_a2a_context = self._officeqa_raw_a2a_context(safe_metadata, question, limit=12000) if isinstance(raw_a2a, Mapping) else ""
+        raw_a2a_counts = self._officeqa_context_diagnostic_counts(raw_a2a_context)
+
         signals = [
             f"task_chars={len(self._coerce_text(task_text))}",
             f"question_chars={len(self._coerce_text(question))}",
@@ -4604,6 +4906,13 @@ class AegisForgeAgent:
             f"payload_keys={self._officeqa_safe_key_list(payload, limit=12)}",
             f"parsed_task_keys={self._officeqa_safe_key_list(parsed_task, limit=12) if isinstance(parsed_task, Mapping) else []}",
             f"source_shapes={source_shapes}",
+            f"raw_a2a_present={isinstance(raw_a2a, Mapping)}",
+            f"raw_a2a_keys={raw_a2a_keys}",
+            f"raw_a2a_shape={raw_a2a_shape}",
+            f"raw_a2a_context_chars={raw_a2a_counts['context_chars']}",
+            f"raw_a2a_table_like_lines={raw_a2a_counts['table_like_lines']}",
+            f"raw_a2a_numeric_year_rows={raw_a2a_counts['numeric_year_rows']}",
+            f"raw_a2a_numeric_dense_lines={raw_a2a_counts['numeric_dense_lines']}",
             f"context_chars={counts['context_chars']}",
             f"context_blocks={counts['context_blocks']}",
             f"context_lines={counts['context_lines']}",
@@ -4626,7 +4935,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.5.5 local corpus/table diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.5.6 raw A2A/local corpus diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -4678,7 +4987,7 @@ class AegisForgeAgent:
             local_context=local_context,
         )
 
-        evidence_note = "No OpenAI-compatible model response, adapter answer, data-like local corpus block, or deterministic document calculation was available."
+        evidence_note = "No OpenAI-compatible model response, adapter answer, raw-A2A document/table payload, data-like local corpus block, or deterministic document calculation was available."
         if self._officeqa_context_has_real_evidence(question, context):
             if self._llm_base_url():
                 evidence_note = "Evidence/context was present, but no adapter, deterministic solver, or validated LLM answer produced a sufficiently grounded answer."
@@ -4687,7 +4996,7 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.5 kept the protocol/answer channel clean, tightened local-corpus data gating, added block-level table retrieval, and kept safe diagnostics "
+                "OfficeQA answer engine v0.5.6 kept the protocol/answer channel clean, added safe raw-A2A message introspection beyond get_message_text(), tightened local-corpus data gating, added block-level table retrieval, and kept safe diagnostics "
                 "to identify whether documents, tables, local corpus records, and LLM endpoint configuration are actually visible. "
                 f"{evidence_note} {diagnostics}"
             ),
@@ -8793,6 +9102,9 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
+        raw_a2a_bundle = self._officeqa_extract_raw_a2a_bundle(message, base_text=base_text)
+        if raw_a2a_bundle:
+            metadata = self._deep_merge_dicts(metadata, {"raw_a2a_snapshot": raw_a2a_bundle})
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
         generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
