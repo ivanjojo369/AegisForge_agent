@@ -71,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_1_clean_answer_guard_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_2_context_llm_bridge_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -2536,10 +2536,146 @@ class AegisForgeAgent:
             text = text[:limit].rstrip() + "..."
         return f"[{key}] {text}"
 
+    def _officeqa_context_deep_scan(
+        self,
+        value: Any,
+        *,
+        label: str,
+        question: str,
+        depth: int = 0,
+        limit: int = 18000,
+    ) -> str:
+        """Recursively mine non-answer evidence when OfficeQA payloads use unknown keys.
+
+        v0.5.1 only looked at a small set of first-level keys such as
+        document_context/tables/rows.  Some runners wrap evidence under generic
+        keys like input, state, observation, files, attachments, or messages.
+        This scanner is deliberately evidence-only: it skips evaluator/gold keys
+        and rejects values that look like the question echo.
+        """
+        if value is None or depth > 5 or limit <= 0:
+            return ""
+
+        forbidden_key_parts = (
+            "ground_truth",
+            "gold",
+            "answer_key",
+            "answers",
+            "correct_answer",
+            "correct_answers",
+            "expected_answer",
+            "reference_answer",
+            "solution",
+            "solutions",
+            "label",
+            "labels",
+            "is_correct",
+            "rationale",
+            "predicted",
+            "prediction",
+            "score",
+            "provenance",
+            "leaderboard",
+        )
+        evidence_key_parts = (
+            "context",
+            "document",
+            "documents",
+            "evidence",
+            "table",
+            "tables",
+            "rows",
+            "records",
+            "data",
+            "csv",
+            "spreadsheet",
+            "sheet",
+            "worksheet",
+            "pdf",
+            "page",
+            "pages",
+            "text",
+            "content",
+            "body",
+            "snippet",
+            "excerpt",
+            "retrieved",
+            "source",
+            "corpus",
+            "file",
+            "files",
+            "attachment",
+            "attachments",
+            "observation",
+            "state",
+            "bulletin",
+            "treasury",
+        )
+        label_l = str(label).lower()
+        if any(part in label_l for part in forbidden_key_parts):
+            return ""
+
+        pieces: list[str] = []
+
+        if isinstance(value, Mapping):
+            for child_key, child_value in value.items():
+                child_label = f"{label}.{child_key}" if label else str(child_key)
+                if any(part in str(child_key).lower() for part in forbidden_key_parts):
+                    continue
+                fragment = self._officeqa_context_deep_scan(
+                    child_value,
+                    label=child_label,
+                    question=question,
+                    depth=depth + 1,
+                    limit=max(2000, limit // 2),
+                )
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            return "\n".join(pieces)[:limit]
+
+        if isinstance(value, (list, tuple)):
+            for idx, item in enumerate(list(value)[:80]):
+                fragment = self._officeqa_context_deep_scan(
+                    item,
+                    label=f"{label}[{idx}]",
+                    question=question,
+                    depth=depth + 1,
+                    limit=max(2000, limit // 2),
+                )
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            return "\n".join(pieces)[:limit]
+
+        raw = self._coerce_text(value).strip()
+        if not raw:
+            return ""
+        if self._officeqa_line_is_question_echo(question, raw):
+            return ""
+        raw_l = raw.lower()
+        key_evidence = any(part in label_l for part in evidence_key_parts)
+        text_evidence = (
+            any(marker in raw_l for marker in ("treasury", "bulletin", "fiscal", "receipts", "outlays", "public debt", "cpi", "irs", "table", "csv"))
+            or bool(re.search(r"\b(?:18|19|20)\d{2}\b.*?[-+]?\$?\d[\d,]*(?:\.\d+)?", raw))
+            or raw.count("|") >= 3
+            or raw.count("\t") >= 2
+            or raw.count(",") >= 4
+        )
+        if not (key_evidence or text_evidence):
+            return ""
+        if len(raw) > limit:
+            raw = raw[:limit].rstrip() + "..."
+        return f"[{label}] {raw}"
+
+
     def _officeqa_collect_context(self, task_text: str, metadata: Mapping[str, Any] | None, *, limit: int = 36000) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         parsed_task = self._maybe_parse_json_mapping(task_text)
         payload = self._extract_payload(safe_metadata) or {}
+        question = self._officeqa_extract_question(task_text, safe_metadata)
 
         priority_keys = (
             "document_context",
@@ -2567,6 +2703,11 @@ class AegisForgeAgent:
             "output_format",
             "format",
             "calculation_notes",
+            "attachments",
+            "files",
+            "file_context",
+            "observation",
+            "state",
         )
 
         pieces: list[str] = []
@@ -2589,9 +2730,25 @@ class AegisForgeAgent:
             if sum(len(piece) for piece in pieces) > limit:
                 break
 
-        # Avoid dumping whole metadata as evidence when it may only contain the
-        # question, evaluator bookkeeping, or stale protocol state.
-        context = "\n\n".join(piece for piece in pieces if piece).strip()
+        # v0.5.2: Some OfficeQA wrappers hide document/table evidence under
+        # generic nested keys.  Recursively collect safe evidence when the
+        # first-level priority pass is sparse, without ever reading answer keys.
+        if sum(len(piece) for piece in pieces) < max(6000, limit // 4):
+            for source_name, source in (("parsed_task", parsed_task), ("metadata", safe_metadata), ("payload", payload)):
+                if not isinstance(source, Mapping):
+                    continue
+                fragment = self._officeqa_context_deep_scan(
+                    source,
+                    label=source_name,
+                    question=question,
+                    limit=max(4000, limit // 2),
+                )
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+
+        context = "\n\n".join(piece for piece in self._dedupe(pieces) if piece).strip()
         return context[:limit]
 
 
@@ -3330,6 +3487,113 @@ class AegisForgeAgent:
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
+    def _officeqa_context_for_llm(self, question: str, context: str, *, limit: int = 16000) -> str:
+        """Pack OfficeQA evidence into a smaller LLM context window.
+
+        v0.5.1 could pass very large evidence strings to the OpenAI-compatible
+        endpoint.  If the endpoint rejects the request for context length, the
+        agent silently falls back to INSUFFICIENT_INFORMATION.  This packer keeps
+        the highest-signal rows/excerpts while preserving enough surrounding text
+        for calculations.
+        """
+        raw = self._coerce_text(context)
+        if not raw.strip():
+            return ""
+        if len(raw) <= limit:
+            return raw
+
+        terms = self._officeqa_keyword_terms(question)
+        blocks = [block.strip() for block in re.split(r"\n\s*\n", raw) if block.strip()]
+        if not blocks:
+            blocks = [line.strip() for line in raw.splitlines() if line.strip()]
+        scored: list[tuple[int, int, str]] = []
+        for idx, block in enumerate(blocks):
+            lower = block.lower()
+            score = 0
+            for term in terms:
+                if term and term in lower:
+                    score += 4
+            for marker in (
+                "treasury",
+                "bulletin",
+                "fiscal",
+                "receipts",
+                "outlays",
+                "public debt",
+                "cpi",
+                "irs",
+                "internal revenue",
+                "currency",
+                "bond",
+                "bill",
+                "note",
+                "table",
+                "csv",
+            ):
+                if marker in lower:
+                    score += 2
+            if re.search(r"\b(?:18|19|20)\d{2}\b", block):
+                score += 1
+            if re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", block):
+                score += 1
+            if "|" in block or "\t" in block:
+                score += 2
+            scored.append((score, idx, block[:5000]))
+
+        scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        selected = sorted(scored[:12], key=lambda item: item[1])
+        packed: list[str] = []
+        for score, idx, block in selected:
+            if score <= 0 and packed:
+                continue
+            packed.append(block)
+            if sum(len(piece) for piece in packed) > limit:
+                break
+        output = "\n\n".join(packed).strip()
+        return output[:limit] if output else raw[:limit]
+
+    def _officeqa_try_llm_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """Use the configured OpenAI-compatible endpoint as the general OfficeQA solver.
+
+        This does not change authentication.  It only uses the existing
+        _call_llm/_openai_api_key/_llm_base_url path and validates the final
+        answer before exposing it to the evaluator.
+        """
+        if not _env_flag("AEGISFORGE_OFFICEQA_LLM_ENABLED", default=True):
+            return None
+        if not self._llm_base_url():
+            return None
+
+        packed_context = self._officeqa_context_for_llm(
+            question,
+            context,
+            limit=max(6000, min(24000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "16000") or "16000"))),
+        )
+        messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
+        llm_text = self._call_llm(
+            messages=messages,
+            temperature=0.0,
+            max_tokens=max(512, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1400") or "1400"))),
+        )
+        if not llm_text:
+            return None
+
+        answer = self._officeqa_clean_final_answer(llm_text)
+        reasoning = self._officeqa_reasoning_from_text(llm_text) or "OfficeQA LLM bridge produced a candidate from packed evidence."
+        if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(
+            question,
+            answer,
+            context,
+            confidence=0.74,
+        ):
+            return {
+                "answer": answer,
+                "reasoning": reasoning,
+                "confidence": 0.74,
+            }
+        return None
+
+
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         question = self._officeqa_extract_question(task_text, safe_metadata)
@@ -3361,25 +3625,33 @@ class AegisForgeAgent:
                 metadata=safe_metadata,
             )
 
-        llm_text = self._call_llm(
-            messages=self._build_officeqa_llm_messages(question=question, context=context, metadata=safe_metadata),
-            temperature=0.0,
-            max_tokens=max(512, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1600") or "1600"))),
-        )
-        if llm_text:
-            return self._officeqa_output_firewall(llm_text, task_text=task_text, metadata=safe_metadata)
+        llm_result = self._officeqa_try_llm_answer(question, context, safe_metadata)
+        if llm_result:
+            return self._officeqa_output_firewall(
+                self._officeqa_format_response(
+                    reasoning=llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed evidence.",
+                    final_answer=llm_result.get("answer"),
+                ),
+                task_text=task_text,
+                metadata=safe_metadata,
+            )
 
         evidence_note = "No OpenAI-compatible model response, adapter answer, local corpus hit, or deterministic document calculation was available."
         if self._officeqa_context_has_real_evidence(question, context):
-            evidence_note = "Evidence/context was present, but no deterministic OfficeQA solver could produce a sufficiently grounded answer."
+            if self._llm_base_url():
+                evidence_note = "Evidence/context was present, but no adapter, deterministic solver, or validated LLM answer produced a sufficiently grounded answer."
+            else:
+                evidence_note = "Evidence/context was present, but no configured OpenAI-compatible endpoint was available and no deterministic OfficeQA solver could answer it."
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.1 preserved the required answer-only final channel. "
+                "OfficeQA answer engine v0.5.2 preserved the clean answer-only final channel, "
+                "added recursive evidence scanning, and used packed context for any configured LLM bridge. "
                 f"{evidence_note}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
         )
+
 
 
     def _build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
