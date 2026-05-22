@@ -71,7 +71,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_0_retrieval_calc_bridge_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_5_1_clean_answer_guard_2026_05_22"
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -2296,9 +2296,12 @@ class AegisForgeAgent:
         raw = self._coerce_text(text).strip()
         if not raw:
             return ""
-        match = re.search(r"<\s*FINAL_ANSWER\s*>(.*?)<\s*/\s*FINAL_ANSWER\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return self._sanitize_text(match.group(1))
+        # Use the last complete FINAL_ANSWER block.  Earlier v0.5.0 builds could
+        # mention the literal token <FINAL_ANSWER> inside the reasoning text, and
+        # first-match extraction contaminated the scorer-visible answer channel.
+        matches = re.findall(r"<\s*FINAL_ANSWER\s*>(.*?)<\s*/\s*FINAL_ANSWER\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            return self._sanitize_text(matches[-1])
         return raw
 
     def _officeqa_reasoning_from_text(self, text: Any) -> str:
@@ -2310,28 +2313,55 @@ class AegisForgeAgent:
             return self._sanitize_text(match.group(1))
         return ""
 
+    def _officeqa_scrub_protocol_markup(self, text: Any) -> str:
+        """Remove OfficeQA/BWIM protocol markup from a channel payload.
+
+        The evaluator extracts FINAL_ANSWER tags mechanically.  Therefore the
+        reasoning channel must never contain literal FINAL_ANSWER/REASONING tags,
+        and the final-answer channel must be reduced to answer-only text.
+        """
+        cleaned = self._coerce_text(text)
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"<\s*/?\s*(?:FINAL_ANSWER|REASONING)\s*>", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\[(?:BUILD|ASK)\]\s*;?", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
     def _officeqa_clean_final_answer(self, answer: Any) -> str:
         cleaned = self._officeqa_answer_from_text(answer)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
         cleaned = re.sub(r"^```(?:xml|html|text)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
         cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-        # Remove protocol wrappers or accidental BWIM artifacts.  OfficeQA must
-        # never expose [BUILD]/[ASK] in the final answer channel.
-        cleaned = re.sub(r"^\s*\[(?:BUILD|ASK)\]\s*;?", "", cleaned, flags=re.IGNORECASE).strip()
+
+        # The final answer channel must contain answer-only text.  If protocol
+        # tags or explanation text leak into this channel, prefer a safe fallback
+        # over producing scorer-confusing garbage.
+        if re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", cleaned, flags=re.IGNORECASE):
+            extracted = self._officeqa_answer_from_text(cleaned)
+            if extracted and extracted != cleaned:
+                cleaned = extracted
+            if re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", cleaned, flags=re.IGNORECASE):
+                return "INSUFFICIENT_INFORMATION"
+
+        cleaned = self._officeqa_scrub_protocol_markup(cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if re.search(r"\[(?:BUILD|ASK)\]", cleaned, flags=re.IGNORECASE):
             return "INSUFFICIENT_INFORMATION"
         if re.search(r"\b(?:red|blue|green|yellow|black|white)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+", cleaned, flags=re.IGNORECASE):
+            return "INSUFFICIENT_INFORMATION"
+        if re.search(r"\b(?:officeqa answer engine|protocol detected|evidence/context was present|deterministic officeqa|reasoning)\b", cleaned, flags=re.IGNORECASE):
             return "INSUFFICIENT_INFORMATION"
         if not cleaned:
             return "INSUFFICIENT_INFORMATION"
         return cleaned
 
     def _officeqa_format_response(self, *, reasoning: Any, final_answer: Any) -> str:
-        reason = self._coerce_text(reasoning).strip()
+        reason = self._officeqa_scrub_protocol_markup(reasoning).strip()
         answer = self._officeqa_clean_final_answer(final_answer)
         if not reason:
-            reason = "OfficeQA protocol detected; answer prepared from the available question, context, and evidence."
-        # Keep reasoning compact so the scorer can reliably extract the final tag.
+            reason = "OfficeQA mode produced an answer from the available question, context, and evidence."
+        # Keep reasoning compact and free of literal XML-like protocol tags so
+        # the scorer can reliably extract exactly one FINAL_ANSWER block.
         reason = re.sub(r"\s+", " ", reason).strip()
         if len(reason) > 900:
             reason = reason[:897].rstrip() + "..."
@@ -2540,9 +2570,10 @@ class AegisForgeAgent:
         )
 
         pieces: list[str] = []
-        base = self._coerce_text(task_text).strip()
-        if base:
-            pieces.append("[visible_task]\n" + base[:12000])
+        # Do not add the visible question itself to the evidence bundle.  v0.5.0
+        # treated years and quantities in the prompt as if they were table rows,
+        # yielding answers like [1984, 0.01] or 1,940.00.  The question is passed
+        # separately to solvers/LLM; this context must contain evidence only.
 
         for source_name, source in (("parsed_task", parsed_task), ("metadata", safe_metadata), ("payload", payload)):
             if not isinstance(source, Mapping):
@@ -2558,9 +2589,8 @@ class AegisForgeAgent:
             if sum(len(piece) for piece in pieces) > limit:
                 break
 
-        if not pieces and safe_metadata:
-            pieces.append(self._officeqa_context_fragment("metadata", safe_metadata, limit=limit))
-
+        # Avoid dumping whole metadata as evidence when it may only contain the
+        # question, evaluator bookkeeping, or stale protocol state.
         context = "\n\n".join(piece for piece in pieces if piece).strip()
         return context[:limit]
 
@@ -2909,11 +2939,72 @@ class AegisForgeAgent:
 
         return records[:1000]
 
+    def _officeqa_line_is_question_echo(self, question: str, line: str) -> bool:
+        q = re.sub(r"[^a-z0-9]+", " ", self._coerce_text(question).lower()).strip()
+        l = re.sub(r"[^a-z0-9]+", " ", self._coerce_text(line).lower()).strip()
+        if not l:
+            return True
+        raw_l = self._coerce_text(line).lower()
+        if "[visible_task]" in raw_l:
+            return True
+        if q and (l == q or (len(q) > 80 and (q in l or l in q))):
+            return True
+        prompt_markers = (
+            "report your answer",
+            "return your answer",
+            "output your answer",
+            "inside square brackets",
+            "enclosed brackets",
+            "rounding the",
+            "rounded to the nearest",
+            "what was",
+            "what were",
+        )
+        hits = sum(1 for marker in prompt_markers if marker in raw_l)
+        return hits >= 2 and len(raw_l) > 120
+
+    def _officeqa_question_years(self, question: str) -> set[int]:
+        return {int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", self._coerce_text(question))}
+
+    def _officeqa_validate_final_answer_candidate(
+        self,
+        question: str,
+        answer: Any,
+        context: str,
+        *,
+        confidence: float = 0.0,
+    ) -> bool:
+        cleaned = self._officeqa_clean_final_answer(answer)
+        if not cleaned or cleaned == "INSUFFICIENT_INFORMATION":
+            return False
+        if re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", cleaned, flags=re.IGNORECASE):
+            return False
+        if re.search(r"\[(?:BUILD|ASK)\]", cleaned, flags=re.IGNORECASE):
+            return False
+        if confidence and confidence < 0.66:
+            return False
+
+        q_years = self._officeqa_question_years(question)
+        values = [self._officeqa_parse_number(match.group(0)) for match in re.finditer(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", cleaned)]
+        nums = [value for value in values if value is not None]
+        if nums and q_years:
+            year_like = [int(round(value)) for value in nums if abs(value - round(value)) < 1e-9 and 1800 <= abs(value) <= 2099]
+            if len(nums) == 1 and year_like and year_like[0] in q_years and "date" not in self._coerce_text(question).lower():
+                return False
+            if cleaned.strip().startswith("[") and year_like and year_like[0] in q_years and any(marker in self._coerce_text(question).lower() for marker in ("dollar", "percent", "value", "submitted")):
+                return False
+        if self._officeqa_line_is_question_echo(question, cleaned):
+            return False
+        return True
+
     def _officeqa_year_value_pairs(self, question: str, context: str) -> list[tuple[int, float, str]]:
         q_terms = set(self._officeqa_keyword_terms(question))
+        q_years = self._officeqa_question_years(question)
         pairs: list[tuple[int, float, str]] = []
         for line in self._coerce_text(context).splitlines():
             if len(line) > 5000:
+                continue
+            if self._officeqa_line_is_question_echo(question, line):
                 continue
             lowered = line.lower()
             if any(blocked in lowered for blocked in ("ground_truth", "gold", "correct_answer", "solution", "expected_answer")):
@@ -2937,8 +3028,12 @@ class AegisForgeAgent:
                     parsed = self._officeqa_parse_number(nm.group(0))
                     if parsed is None:
                         continue
-                    # Avoid reusing the year as value.
+                    # Avoid reusing years from the prompt/context as values.
                     if abs(parsed - year) < 0.001:
+                        continue
+                    if abs(parsed - round(parsed)) < 1e-9 and int(round(parsed)) in q_years:
+                        continue
+                    if abs(parsed - round(parsed)) < 1e-9 and 1800 <= abs(parsed) <= 2099 and "$" not in nm.group(0):
                         continue
                     distance = abs(nm.start() - ym.end())
                     candidates.append((distance, parsed))
@@ -3007,6 +3102,8 @@ class AegisForgeAgent:
         if not matches:
             return None
         value = matches[0][1]
+        if abs(value - round(value)) < 1e-9 and int(round(value)) in self._officeqa_question_years(question):
+            return None
         decimals = self._officeqa_requested_decimals(question)
         if decimals is None:
             decimals = 0 if abs(value - round(value)) < 1e-9 else 3
@@ -3015,7 +3112,7 @@ class AegisForgeAgent:
         return {
             "answer": answer,
             "reasoning": f"Deterministic OfficeQA extraction for year {target_year} from provided tabular context.",
-            "confidence": 0.64,
+            "confidence": 0.67,
         }
 
     def _officeqa_try_weighted_average_answer(self, question: str, context: str) -> dict[str, Any] | None:
@@ -3068,12 +3165,24 @@ class AegisForgeAgent:
         if not self._officeqa_requested_bracket_answer(question):
             return None
         numbers = []
+        q_years = self._officeqa_question_years(question)
         for line in context.splitlines():
+            if self._officeqa_line_is_question_echo(question, line):
+                continue
             if any(term in line.lower() for term in ("ground_truth", "correct_answer", "solution", "expected_answer")):
                 continue
             if any(term in line.lower() for term in ("total", "submitted", "accepted", "tender", "rollover", "noncash", "non cash")):
-                parsed_values = [self._officeqa_parse_number(match.group(0)) for match in re.finditer(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", line)]
-                numbers.extend([value for value in parsed_values if value is not None])
+                parsed_values = []
+                for match in re.finditer(r"[-+]?\$?\s*\d[\d,]*(?:\.\d+)?", line):
+                    value = self._officeqa_parse_number(match.group(0))
+                    if value is None:
+                        continue
+                    if abs(value - round(value)) < 1e-9 and int(round(value)) in q_years:
+                        continue
+                    if abs(value - round(value)) < 1e-9 and 1800 <= abs(value) <= 2099 and "$" not in match.group(0):
+                        continue
+                    parsed_values.append(value)
+                numbers.extend(parsed_values)
         # Conservative: only solve when exactly two natural values appear, such
         # as accepted/submitted.  Otherwise let the LLM/adapter handle it.
         unique = []
@@ -3087,6 +3196,10 @@ class AegisForgeAgent:
         accepted = min(unique)
         if submitted <= 0 or accepted < 0:
             return None
+        # Dollar-tender questions should not be answered from tiny prompt-era
+        # values; require a real submitted amount, not a year or incidental count.
+        if "dollar" in lowered and submitted < 1000:
+            return None
         pct = accepted / submitted * 100.0
         decimals = self._officeqa_requested_decimals(question)
         if decimals is None:
@@ -3096,7 +3209,7 @@ class AegisForgeAgent:
         return {
             "answer": f"[{first}, {second}]",
             "reasoning": "Deterministic OfficeQA percent calculation from submitted/accepted values in context.",
-            "confidence": 0.52,
+            "confidence": 0.68,
         }
 
     def _officeqa_answer_candidate_from_obj(self, obj: Any) -> tuple[str, str]:
@@ -3187,11 +3300,12 @@ class AegisForgeAgent:
             if not result:
                 continue
             answer = self._officeqa_clean_final_answer(result.get("answer"))
-            if answer and answer != "INSUFFICIENT_INFORMATION":
+            confidence = float(result.get("confidence", 0.6) or 0.0)
+            if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(question, answer, context, confidence=confidence):
                 return {
                     "answer": answer,
                     "reasoning": result.get("reasoning") or "Deterministic OfficeQA calculation from provided evidence.",
-                    "confidence": result.get("confidence", 0.6),
+                    "confidence": confidence,
                 }
         return None
 
@@ -3261,7 +3375,7 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.5.0 kept the valid <FINAL_ANSWER> protocol. "
+                "OfficeQA answer engine v0.5.1 preserved the required answer-only final channel. "
                 f"{evidence_note}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
