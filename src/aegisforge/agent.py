@@ -68,6 +68,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
+OFFICEQA_AGENT_VERSION = "officeqa_final_answer_firewall_v0_3_protocol_first_2026_05_22"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -1318,12 +1319,430 @@ class AegisForgeAgent:
         return lines
 
 
+    def _officeqa_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
+        """Backward-compatible alias for OfficeQA harnesses."""
+        return self._is_officeqa_protocol(metadata, task_text)
+
+    def _is_officeqa_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
+        """Detect OfficeQA before any Build-it/BWIM protocol can capture the turn.
+
+        OfficeQA AgentBeats expects a visible answer wrapped in
+        <FINAL_ANSWER>...</FINAL_ANSWER>.  This detector intentionally wins over
+        stale Build-it environment variables because the OfficeQA quick-submit
+        runner may reuse an agent image that previously served BWIM.
+        """
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        mode_values = [
+            os.getenv("AEGISFORGE_OFFICEQA_MODE"),
+            os.getenv("OFFICEQA_AGENT_MODE"),
+            os.getenv("OFFICEQA_RESPONSE_PROTOCOL"),
+            os.getenv("AGENTBEATS_TRACK"),
+            os.getenv("AGENTBEATS_BENCHMARK"),
+            safe_metadata.get("track"),
+            safe_metadata.get("track_hint"),
+            safe_metadata.get("arena"),
+            safe_metadata.get("benchmark"),
+            safe_metadata.get("benchmark_name"),
+            safe_metadata.get("selected_opponent"),
+            safe_metadata.get("agent_name"),
+            safe_metadata.get("participant"),
+            safe_metadata.get("response_protocol"),
+            safe_metadata.get("output_protocol"),
+            safe_metadata.get("required_response_format"),
+            safe_metadata.get("answer_format"),
+            safe_metadata.get("protocol"),
+        ]
+        normalized_modes = {
+            re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+            for value in mode_values
+            if value is not None and str(value).strip()
+        }
+        officeqa_modes = {
+            "officeqa",
+            "office_qa",
+            "officeqa_agentbeats",
+            "officeqa_agent",
+            "officeqa_leaderboard",
+            "treasury_bulletin",
+            "treasury_bulletins",
+            "financial_document_qa",
+            "document_finance_qa",
+        }
+        if normalized_modes & officeqa_modes:
+            return True
+        if any("officeqa" in mode or "office_qa" in mode for mode in normalized_modes):
+            return True
+        if any("final_answer" in mode and "office" in mode for mode in normalized_modes):
+            return True
+
+        combined = self._coerce_text(task_text)
+        if safe_metadata:
+            try:
+                combined += "\n" + json.dumps(self._normalize_for_json(dict(safe_metadata)), ensure_ascii=False)[:12000]
+            except Exception:
+                combined += "\n" + str(dict(safe_metadata))[:12000]
+        payload = self._extract_payload(safe_metadata) or {}
+        if payload:
+            try:
+                combined += "\n" + json.dumps(self._normalize_for_json(payload), ensure_ascii=False)[:12000]
+            except Exception:
+                combined += "\n" + str(payload)[:12000]
+        lowered = combined.lower()
+
+        explicit_markers = (
+            "officeqa",
+            "office qa",
+            "officeqa-agentbeats",
+            "officeqa_agentbeats",
+            "officeqa evaluation",
+            "treasury bulletin",
+            "treasury bulletins",
+            "monthly treasury statement",
+            "monthly treasury statements",
+            "u.s treasury bulletin",
+            "u.s. treasury bulletin",
+            "us treasury bulletin",
+            "<final_answer>",
+            "</final_answer>",
+        )
+        if any(marker in lowered for marker in explicit_markers):
+            return True
+
+        # The OfficeQA corpus is heavily Treasury/public-finance oriented.  These
+        # signals keep OfficeQA from falling into BWIM even when stale env vars
+        # say "build_it"; Build-it prompts do not normally contain this cluster.
+        finance_markers = (
+            "u.s. federal",
+            "us federal",
+            "federal government",
+            "fiscal year",
+            "calendar year",
+            "nominal dollar",
+            "nominal dollars",
+            "millions of dollars",
+            "billions of dollars",
+            "gross interest",
+            "net outlays",
+            "budget outlay",
+            "budget receipts",
+            "internal revenue",
+            "public debt",
+            "treasury bill",
+            "treasury-bill",
+            "treasury bonds",
+            "treasury notes",
+            "bureau of fiscal service",
+            "public debt bureau",
+            "national defense",
+            "cpi-u",
+            "yield spread",
+            "foreign exchange operations",
+            "exchange stabilization fund",
+            "trust fund",
+            "federal receipts",
+            "federal expenditures",
+            "marketable treasury debt",
+            "irs receipts",
+        )
+        question_markers = (
+            "what was",
+            "what were",
+            "according to",
+            "calculate",
+            "determine",
+            "forecast",
+            "predict",
+            "report your answer",
+            "round to",
+            "rounded to",
+            "enter the final",
+            "return your answer",
+            "output your answer",
+        )
+        finance_score = sum(1 for marker in finance_markers if marker in lowered)
+        question_score = sum(1 for marker in question_markers if marker in lowered)
+        if finance_score >= 2 and question_score >= 1:
+            return True
+        if finance_score >= 1 and "report your answer" in lowered and "round" in lowered:
+            return True
+        return False
+
+    def _officeqa_answer_from_text(self, text: Any) -> str:
+        raw = self._coerce_text(text).strip()
+        if not raw:
+            return ""
+        match = re.search(r"<\s*FINAL_ANSWER\s*>(.*?)<\s*/\s*FINAL_ANSWER\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return self._sanitize_text(match.group(1))
+        return raw
+
+    def _officeqa_reasoning_from_text(self, text: Any) -> str:
+        raw = self._coerce_text(text).strip()
+        if not raw:
+            return ""
+        match = re.search(r"<\s*REASONING\s*>(.*?)<\s*/\s*REASONING\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return self._sanitize_text(match.group(1))
+        return ""
+
+    def _officeqa_clean_final_answer(self, answer: Any) -> str:
+        cleaned = self._officeqa_answer_from_text(answer)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"^```(?:xml|html|text)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        # Remove protocol wrappers or accidental BWIM artifacts.  OfficeQA must
+        # never expose [BUILD]/[ASK] in the final answer channel.
+        cleaned = re.sub(r"^\s*\[(?:BUILD|ASK)\]\s*;?", "", cleaned, flags=re.IGNORECASE).strip()
+        if re.search(r"\[(?:BUILD|ASK)\]", cleaned, flags=re.IGNORECASE):
+            return "INSUFFICIENT_INFORMATION"
+        if re.search(r"\b(?:red|blue|green|yellow|black|white)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+", cleaned, flags=re.IGNORECASE):
+            return "INSUFFICIENT_INFORMATION"
+        if not cleaned:
+            return "INSUFFICIENT_INFORMATION"
+        return cleaned
+
+    def _officeqa_format_response(self, *, reasoning: Any, final_answer: Any) -> str:
+        reason = self._coerce_text(reasoning).strip()
+        answer = self._officeqa_clean_final_answer(final_answer)
+        if not reason:
+            reason = "OfficeQA protocol detected; answer prepared from the available question, context, and evidence."
+        # Keep reasoning compact so the scorer can reliably extract the final tag.
+        reason = re.sub(r"\s+", " ", reason).strip()
+        if len(reason) > 900:
+            reason = reason[:897].rstrip() + "..."
+        return f"<REASONING>{reason}</REASONING>\n<FINAL_ANSWER>{answer}</FINAL_ANSWER>"
+
+    def _officeqa_output_firewall(self, response: Any, *, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> str:
+        """Final OfficeQA emission guard.
+
+        This is deliberately placed at the output boundary.  It converts any
+        model/plain-text answer into OfficeQA tags and quarantines BWIM tokens.
+        """
+        raw = self._coerce_text(response).strip()
+        if not raw:
+            return self._officeqa_format_response(
+                reasoning="OfficeQA protocol detected, but no answer text was produced by the model.",
+                final_answer="INSUFFICIENT_INFORMATION",
+            )
+
+        reasoning = self._officeqa_reasoning_from_text(raw)
+        answer = self._officeqa_answer_from_text(raw)
+
+        if re.search(r"\[(?:BUILD|ASK)\]", raw, flags=re.IGNORECASE):
+            reasoning = (
+                "OfficeQA firewall blocked a stale Build-it/BWIM token and replaced it with the safe "
+                "OfficeQA fallback instead of emitting an invalid protocol."
+            )
+            answer = "INSUFFICIENT_INFORMATION"
+
+        return self._officeqa_format_response(reasoning=reasoning, final_answer=answer)
+
+    def _officeqa_extract_question(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        payload = self._extract_payload(safe_metadata) or {}
+        candidates: list[Any] = []
+        for source in (safe_metadata, payload):
+            if not isinstance(source, Mapping):
+                continue
+            for key in (
+                "question",
+                "query",
+                "prompt",
+                "task",
+                "task_text",
+                "instruction",
+                "user_request",
+                "problem",
+                "objective",
+            ):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value)
+        base = self._coerce_text(task_text).strip()
+        parsed = self._maybe_parse_json_mapping(base)
+        if isinstance(parsed, Mapping):
+            for key in ("question", "query", "prompt", "task", "task_text", "instruction", "user_request"):
+                value = parsed.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.insert(0, value)
+        elif base:
+            candidates.append(base)
+
+        for candidate in candidates:
+            text = self._coerce_text(candidate).strip()
+            if not text:
+                continue
+            # Prefer a direct question-like span when embedded in a larger JSON-ish transcript.
+            match = re.search(r"(?is)(?:question|query|task|prompt)\s*[:=]\s*[\"']?(.*?)(?:[\"']?\s*(?:,\s*[\"']?[a-zA-Z_]+[\"']?\s*:|$))", text)
+            if match and len(match.group(1).strip()) >= 12:
+                return self._sanitize_text(match.group(1))
+            return text
+        return base
+
+    def _officeqa_context_fragment(self, key: str, value: Any, *, depth: int = 0, limit: int = 18000) -> str:
+        if depth > 4 or value is None:
+            return ""
+        key_l = str(key).lower()
+        forbidden_key_parts = (
+            "ground_truth",
+            "gold",
+            "answer_key",
+            "correct_answer",
+            "correct_answers",
+            "solution",
+            "solutions",
+            "label",
+            "labels",
+            "expected_answer",
+            "reference_answer",
+            "is_correct",
+            "rationale",
+            "predicted",
+            "prediction",
+            "score",
+        )
+        if any(part in key_l for part in forbidden_key_parts):
+            return ""
+
+        if isinstance(value, Mapping):
+            pieces: list[str] = []
+            for child_key, child_value in value.items():
+                fragment = self._officeqa_context_fragment(str(child_key), child_value, depth=depth + 1, limit=limit)
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            if not pieces:
+                return ""
+            return "\n".join(pieces)[:limit]
+
+        if isinstance(value, (list, tuple)):
+            pieces = []
+            for idx, item in enumerate(value[:60]):
+                fragment = self._officeqa_context_fragment(f"{key}[{idx}]", item, depth=depth + 1, limit=limit)
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            return "\n".join(pieces)[:limit]
+
+        text = self._coerce_text(value).strip()
+        if not text:
+            return ""
+        if len(text) > limit:
+            text = text[:limit].rstrip() + "..."
+        return f"[{key}] {text}"
+
+    def _officeqa_collect_context(self, task_text: str, metadata: Mapping[str, Any] | None, *, limit: int = 36000) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        parsed_task = self._maybe_parse_json_mapping(task_text)
+        payload = self._extract_payload(safe_metadata) or {}
+
+        priority_keys = (
+            "document_context",
+            "documents",
+            "document",
+            "context",
+            "contexts",
+            "evidence",
+            "table",
+            "tables",
+            "rows",
+            "records",
+            "data",
+            "csv",
+            "spreadsheet",
+            "sheets",
+            "worksheet",
+            "pdf_text",
+            "page_text",
+            "pages",
+            "retrieved_context",
+            "source_context",
+            "bulletin",
+            "treasury_bulletin",
+            "output_format",
+            "format",
+            "calculation_notes",
+        )
+
+        pieces: list[str] = []
+        base = self._coerce_text(task_text).strip()
+        if base:
+            pieces.append("[visible_task]\n" + base[:12000])
+
+        for source_name, source in (("parsed_task", parsed_task), ("metadata", safe_metadata), ("payload", payload)):
+            if not isinstance(source, Mapping):
+                continue
+            for key in priority_keys:
+                if key not in source:
+                    continue
+                fragment = self._officeqa_context_fragment(f"{source_name}.{key}", source.get(key), limit=12000)
+                if fragment:
+                    pieces.append(fragment)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            if sum(len(piece) for piece in pieces) > limit:
+                break
+
+        if not pieces and safe_metadata:
+            pieces.append(self._officeqa_context_fragment("metadata", safe_metadata, limit=limit))
+
+        context = "\n\n".join(piece for piece in pieces if piece).strip()
+        return context[:limit]
+
+    def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
+        system = (
+            "You are AegisForge OfficeQA AgentBeats mode. "
+            "Answer financial/document QA questions using only the user-visible question and provided context. "
+            "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
+            "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
+            "Do not use or copy ground_truth, gold answers, answer keys, labels, or evaluator-only fields if present. "
+            "For calculations, compute carefully and preserve the requested unit, rounding, list format, date format, commas, percent signs, and sign. "
+            "If the available evidence is insufficient, put INSUFFICIENT_INFORMATION inside <FINAL_ANSWER>."
+        )
+        user = (
+            "OfficeQA question:\n"
+            f"{question.strip() or '[missing question]'}\n\n"
+            "Available context/evidence:\n"
+            f"{context.strip() or '[no additional document context available]'}\n\n"
+            "Output contract:\n"
+            "<REASONING>concise calculation/evidence summary</REASONING>\n"
+            "<FINAL_ANSWER>final answer only</FINAL_ANSWER>"
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        question = self._officeqa_extract_question(task_text, safe_metadata)
+        context = self._officeqa_collect_context(task_text, safe_metadata)
+
+        llm_text = self._call_llm(
+            messages=self._build_officeqa_llm_messages(question=question, context=context, metadata=safe_metadata),
+            temperature=0.0,
+            max_tokens=max(512, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1200") or "1200"))),
+        )
+        if llm_text:
+            return self._officeqa_output_firewall(llm_text, task_text=task_text, metadata=safe_metadata)
+
+        return self._officeqa_format_response(
+            reasoning=(
+                "OfficeQA protocol detected before Build-it routing. No OpenAI-compatible model response or grounded "
+                "document answer was available, so the agent emitted the required OfficeQA tag structure instead of BWIM tokens."
+            ),
+            final_answer="INSUFFICIENT_INFORMATION",
+        )
+
+
+
     def _build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
         """Backward-compatible alias for older Build-it harnesses."""
         return self._is_build_it_protocol(metadata, task_text)
 
     def _is_build_it_protocol(self, metadata: Mapping[str, Any] | None, task_text: str = "") -> bool:
         """Detect the Build-it / block-building exact-output protocol."""
+        if self._is_officeqa_protocol(metadata, task_text):
+            return False
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         mode_values = [
             os.getenv("AGENT_QA_MODE"),
@@ -5190,6 +5609,9 @@ class AegisForgeAgent:
         emission boundary can suppress the normal AegisForge structured
         response.
         """
+        if self._is_officeqa_protocol(metadata, task_text):
+            return ""
+
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
 
         mode_values = [
@@ -5344,19 +5766,29 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
-        build_it_protocol = self._is_build_it_protocol(metadata, base_text)
-        strict_protocol = "" if build_it_protocol else self._strict_output_protocol(metadata, base_text)
+        officeqa_protocol = self._is_officeqa_protocol(metadata, base_text)
+        build_it_protocol = False if officeqa_protocol else self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if (officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
 
         # In strict symbolic modes, do not emit the normal progress/status text.
         # Some green agents validate the visible transcript and reject any text
         # other than the final literal token.
-        if not strict_protocol and not build_it_protocol:
+        if not strict_protocol and not build_it_protocol and not officeqa_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
             )
 
-        if build_it_protocol:
+        if officeqa_protocol:
+            final_text = self._handle_officeqa_turn(base_text, metadata)
+            trace = {
+                "mode": "officeqa_protocol",
+                "protocol": "officeqa_final_answer",
+                "version": OFFICEQA_AGENT_VERSION,
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+            }
+        elif build_it_protocol:
             final_text = self._handle_build_it_turn(base_text, metadata)
             trace = {
                 "mode": "build_it_protocol",
@@ -5387,12 +5819,22 @@ class AegisForgeAgent:
             execution = self._prepare_execution(base_text, metadata)
             final_text = self._render_response(execution["task_text"], execution)
             final_text = self._apply_self_check(execution["task_text"], final_text, execution)
-            strict_protocol = self._strict_output_protocol(execution["metadata"], execution["task_text"])
-            final_text = self._apply_strict_output_protocol(
-                final_text,
-                task_text=execution["task_text"],
-                metadata=execution["metadata"],
-            )
+            execution_track = self._normalize_track(execution["metadata"].get("track_hint"))
+            if execution_track == "officeqa":
+                officeqa_protocol = True
+                strict_protocol = ""
+                final_text = self._officeqa_output_firewall(
+                    final_text,
+                    task_text=execution["task_text"],
+                    metadata=execution["metadata"],
+                )
+            else:
+                strict_protocol = self._strict_output_protocol(execution["metadata"], execution["task_text"])
+                final_text = self._apply_strict_output_protocol(
+                    final_text,
+                    task_text=execution["task_text"],
+                    metadata=execution["metadata"],
+                )
             execution["llm_calls_used"] = self._current_llm_calls
             self._update_runtime_memory(execution, final_text)
             self._append_episodic_trace(execution, final_text)
@@ -5402,7 +5844,7 @@ class AegisForgeAgent:
         # transcript. Emitting the same payload as both an artifact and a status
         # message makes the gateway concatenate duplicate directives such as
         # "[BUILD];... [BUILD];...", which corrupts BWIM exact-structure parsing.
-        if not (strict_protocol or build_it_protocol):
+        if not (strict_protocol or build_it_protocol or officeqa_protocol):
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
                 name="AegisForgeResponse",
@@ -5416,13 +5858,13 @@ class AegisForgeAgent:
 
         # Strict output mode must expose only the literal final token.  Trace and
         # debug artifacts remain available in normal AegisForge modes.
-        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol:
+        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
 
-        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol:
+        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
