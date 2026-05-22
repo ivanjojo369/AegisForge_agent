@@ -67,7 +67,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
-BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_3_1_bwim_exact_row_top_priority_2026_05_21"
+BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 
 @dataclass(frozen=True)
 class ScenarioPolicy:
@@ -3315,6 +3315,29 @@ class AegisForgeAgent:
         def out(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return self._build_it_unique_blocks(blocks)
 
+        def explicit_height_for_color(color_hint: str, default: int) -> int:
+            """Prefer an explicit color-local height before using QA/default height.
+
+            Narrow v3.4 trim: avoid inflating a named stack from an unrelated
+            clarification answer when the instruction already gives that color's
+            own block count.
+            """
+            number_re = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+            color = re.escape(color_hint.lower())
+            patterns = (
+                rf"\b{number_re}\s+{color}\s+blocks?\b",
+                rf"\b(?:stack|tower|column)\s+(?:of\s+)?{number_re}\s+{color}\s+blocks?\b",
+                rf"\b{color}\s+(?:stack|tower|column)\s+(?:of\s+)?{number_re}\b",
+                rf"\b(?:stack|tower|column)\s+(?:of\s+)?{number_re}[^.;,\n]*?\b{color}\b",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, lowered)
+                if match:
+                    for group in match.groups():
+                        if group:
+                            return max(1, min(5, self._build_it_parse_number(group, default=default)))
+            return max(1, min(5, int(default)))
+
         # Color-under: highlighted blue block with left/right neighbors, then an
         # unspecified block on top of the middle block.
         if (
@@ -3457,9 +3480,10 @@ class AegisForgeAgent:
             and "green stack" in lowered
             and "left of the yellow" in lowered
         ):
+            green_height = explicit_height_for_color("green", answer_height)
             blocks = [b("Yellow", 400, 50, 0)]
             blocks.extend(stack("Yellow", 300, 0, 3))
-            blocks.extend(stack("Green", 200, 0, answer_height))
+            blocks.extend(stack("Green", 200, 0, green_height))
             return out(blocks)
 
         # Number-under: green block plus stack behind it, then a yellow stack to
@@ -4877,19 +4901,6 @@ class AegisForgeAgent:
         # Give answered-ASK grammar first priority.  v3 stays available as the
         # stable direct-grammar layer, but v15.2 is better scoped for fresh
         # question_answers and should resolve the underspecified segment first.
-        fresh_answer = bool(state and state.get("latest_question_answer_is_fresh"))
-        if (
-            not fresh_answer
-            and len(colors) > 1
-            and any(term in lowered for term in ("row", "line"))
-            and any(term in lowered for term in ("on top", "above", "over"))
-            and any(term in lowered for term in ("leftmost", "rightmost", "end"))
-        ):
-            exact_blocks = self._build_it_try_exact_small_program(lowered, initial_validated, colors, primary_color)
-            if exact_blocks:
-                validated = self._build_it_sanitize_candidate_blocks(exact_blocks, lowered)
-                if len(validated) > len(initial_validated):
-                    return validated
         attempts = (
             self._build_it_try_bwim_v15_2_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
             self._build_it_try_bwim_v3_program(task_text_clean, lowered, initial_validated, colors, primary_color, state),
@@ -7684,7 +7695,6 @@ class AegisForgeAgent:
     @classmethod
     def _to_json(cls, payload: Mapping[str, Any]) -> str:
         return json.dumps(cls._normalize_for_json(dict(payload)), indent=2, ensure_ascii=False)
-
 
     @staticmethod
     def _dedupe(items: list[str]) -> list[str]:
