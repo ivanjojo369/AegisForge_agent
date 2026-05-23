@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_4_sourcefile_table_calc_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_table_first_calculator_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1890,6 +1890,7 @@ class AegisForgeAgent:
         self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
         self._officeqa_last_retrieval_status: dict[str, Any] = {}
         self._officeqa_last_llm_status: dict[str, Any] = {}
+        self._officeqa_last_calc_status: dict[str, Any] = {}
         self._last_llm_error = ""
         self._last_llm_response_chars = 0
 
@@ -4757,7 +4758,36 @@ class AegisForgeAgent:
         return hits >= 2 and len(raw_l) > 120
 
     def _officeqa_question_years(self, question: str) -> set[int]:
-        return {int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", self._coerce_text(question))}
+        """Return explicit years plus bounded fiscal/calendar year ranges.
+
+        v1.5 expands ranges such as "fiscal years 1980-1988",
+        "from 1980 through 1988", and "between 1980 and 1988".  Earlier
+        versions kept only the endpoints, so average/stddev/regression solvers
+        often calculated on two years instead of the full table span.
+        """
+        raw = self._coerce_text(question)
+        years = {int(item) for item in re.findall(r"\b((?:18|19|20)\d{2})\b", raw)}
+
+        def add_range(a: str, b: str) -> None:
+            try:
+                y1, y2 = int(a), int(b)
+            except Exception:
+                return
+            if y1 > y2:
+                y1, y2 = y2, y1
+            if y1 < 1800 or y2 > 2099 or (y2 - y1) > 80:
+                return
+            years.update(range(y1, y2 + 1))
+
+        range_patterns = (
+            r"\b((?:18|19|20)\d{2})\s*[\u2013\u2014\-]\s*((?:18|19|20)\d{2})\b",
+            r"\b(?:from|between|fiscal\s+years?|calendar\s+years?|years?)\s+((?:18|19|20)\d{2})\s+(?:to|through|thru|and|-)\s+((?:18|19|20)\d{2})\b",
+            r"\b((?:18|19|20)\d{2})\s+(?:to|through|thru)\s+((?:18|19|20)\d{2})\b",
+        )
+        for pattern in range_patterns:
+            for match in re.finditer(pattern, raw, flags=re.IGNORECASE):
+                add_range(match.group(1), match.group(2))
+        return years
 
     def _officeqa_validate_final_answer_candidate(
         self,
@@ -4854,6 +4884,209 @@ class AegisForgeAgent:
         slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denom
         intercept = y_mean - slope * x_mean
         return slope, intercept
+
+    def _officeqa_calc_family(self, question: str) -> str:
+        lowered = self._coerce_text(question).lower()
+        checks = (
+            ("ols", ("ordinary least squares", "linear regression", "ols", "slope", "intercept")),
+            ("correlation", ("correlation", "pearson")),
+            ("cagr", ("cagr", "compound annual growth")),
+            ("log_return", ("log return", "log growth", "log change")),
+            ("percent_change", ("percent change", "percentage change", "growth rate", "percent difference", "relative difference")),
+            ("stddev", ("standard deviation", "std dev", "stddev", "sample standard deviations")),
+            ("variance", ("variance",)),
+            ("coefficient_variation", ("coefficient of variation", "cv ")),
+            ("median", ("median",)),
+            ("geometric_mean", ("geometric mean",)),
+            ("average", ("average", "arithmetic mean", "mean of")),
+            ("range", ("range",)),
+            ("sum", ("sum of", "total sum", "aggregate", "combined total")),
+            ("difference", ("absolute difference", "difference", "change from", "change between")),
+            ("lookup", ("what was", "what were", "what is", "which was", "reported value")),
+        )
+        for family, markers in checks:
+            if any(marker in lowered for marker in markers):
+                return family
+        return "unknown"
+
+    def _officeqa_series_values_for_years(self, question: str, context: str, *, min_score: int = 1) -> list[tuple[int, float, str, int]]:
+        years = sorted(self._officeqa_question_years(question))
+        if not years:
+            return []
+        best = self._officeqa_best_values_by_year(question, context)
+        series: list[tuple[int, float, str, int]] = []
+        for year in years:
+            item = best.get(year)
+            if item is None:
+                continue
+            value, source, score = item
+            if score >= min_score:
+                series.append((year, float(value), self._coerce_text(source), int(score)))
+        return series
+
+    def _officeqa_series_min_points(self, years: list[int]) -> int:
+        if len(years) <= 2:
+            return len(years)
+        return max(3, min(len(years), max(4, int(math.ceil(len(years) * 0.45)))))
+
+    def _officeqa_series_rounding(self, question: str, *, default: int = 3) -> int:
+        decimals = self._officeqa_requested_decimals(question)
+        if decimals is not None:
+            return decimals
+        lowered = self._coerce_text(question).lower()
+        if "integer" in lowered or "whole number" in lowered or "nearest dollar" in lowered:
+            return 0
+        if "hundredth" in lowered or "two decimal" in lowered:
+            return 2
+        if "thousandth" in lowered or "three decimal" in lowered:
+            return 3
+        if "four decimal" in lowered:
+            return 4
+        return default
+
+    def _officeqa_try_series_period_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        """Table-first reusable period/statistics calculator for OfficeQA v1.5.
+
+        This is not a lookup table: it extracts a numeric series from the
+        retrieved source rows, expands year ranges, then applies generic
+        arithmetic/statistical operations requested by the prompt.
+        """
+        lowered = self._coerce_text(question).lower()
+        years = sorted(self._officeqa_question_years(question))
+        if not years:
+            return None
+        family = self._officeqa_calc_family(question)
+        if family in {"unknown", "lookup", "ols"}:
+            return None
+
+        series = self._officeqa_series_values_for_years(question, context, min_score=1)
+        min_points = self._officeqa_series_min_points(years)
+        if len(series) < min_points:
+            return None
+
+        values = [value for _year, value, _source, _score in series]
+        if not values:
+            return None
+        first_year, first_value = series[0][0], series[0][1]
+        last_year, last_value = series[-1][0], series[-1][1]
+        decimals = self._officeqa_series_rounding(question, default=3)
+        use_commas = "no comma" not in lowered and "without comma" not in lowered
+
+        value: float | None = None
+        answer = ""
+
+        if family == "sum":
+            if not any(marker in lowered for marker in ("sum", "aggregate", "combined", "total of", "total across")):
+                return None
+            value = sum(values)
+            if decimals is None:
+                decimals = 0
+        elif family == "average":
+            value = sum(values) / len(values)
+        elif family == "median":
+            ordered = sorted(values)
+            mid = len(ordered) // 2
+            value = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+        elif family == "stddev":
+            if len(values) < 2:
+                return None
+            mean = sum(values) / len(values)
+            if "population" in lowered and "sample" not in lowered:
+                denom = len(values)
+            else:
+                denom = len(values) - 1
+            if denom <= 0:
+                return None
+            value = math.sqrt(max(0.0, sum((v - mean) ** 2 for v in values) / denom))
+            decimals = self._officeqa_series_rounding(question, default=2)
+        elif family == "variance":
+            if len(values) < 2:
+                return None
+            mean = sum(values) / len(values)
+            denom = len(values) if "population" in lowered and "sample" not in lowered else len(values) - 1
+            if denom <= 0:
+                return None
+            value = sum((v - mean) ** 2 for v in values) / denom
+            decimals = self._officeqa_series_rounding(question, default=2)
+        elif family == "coefficient_variation":
+            if len(values) < 2:
+                return None
+            mean = sum(values) / len(values)
+            if abs(mean) <= 1e-12:
+                return None
+            std = math.sqrt(max(0.0, sum((v - mean) ** 2 for v in values) / (len(values) - 1)))
+            value = std / abs(mean)
+            if "percent" in lowered or "percentage" in lowered:
+                value *= 100.0
+            decimals = self._officeqa_series_rounding(question, default=4)
+        elif family == "range":
+            value = max(values) - min(values)
+            decimals = self._officeqa_series_rounding(question, default=2)
+        elif family == "difference":
+            value = abs(last_value - first_value)
+            decimals = self._officeqa_series_rounding(question, default=0 if abs(value - round(value)) < 1e-9 else 3)
+        elif family == "percent_change":
+            if abs(first_value) <= 1e-12:
+                return None
+            value = (last_value - first_value) / abs(first_value) * 100.0
+            decimals = self._officeqa_series_rounding(question, default=2)
+        elif family == "cagr":
+            if first_value <= 0 or last_value <= 0 or last_year <= first_year:
+                return None
+            value = (last_value / first_value) ** (1.0 / float(last_year - first_year)) - 1.0
+            if "percent" in lowered or "percentage" in lowered:
+                value *= 100.0
+            decimals = self._officeqa_series_rounding(question, default=4)
+        elif family == "log_return":
+            if first_value <= 0 or last_value <= 0:
+                return None
+            value = math.log(last_value / first_value)
+            decimals = self._officeqa_series_rounding(question, default=4)
+        elif family == "geometric_mean":
+            positives = [v for v in values if v > 0]
+            if len(positives) != len(values) or len(positives) < 2:
+                return None
+            value = math.exp(sum(math.log(v) for v in positives) / len(positives))
+            decimals = self._officeqa_series_rounding(question, default=3)
+        else:
+            return None
+
+        if value is None or not math.isfinite(value):
+            return None
+
+        if family in {"percent_change", "cagr", "coefficient_variation"} and ("percent sign" in lowered or "with a percent" in lowered):
+            answer = self._officeqa_format_number(value, decimals=decimals, use_commas=False) + "%"
+        else:
+            answer = self._officeqa_format_number(value, decimals=decimals, use_commas=(use_commas and abs(value) >= 1000))
+
+        return {
+            "answer": answer,
+            "reasoning": (
+                f"OfficeQA v1.5 specific solver ({family}) used {len(values)} table-first year values "
+                f"from {first_year}-{last_year}; specific solver structured_table"
+            ),
+            "confidence": 0.76,
+        }
+
+    def _officeqa_try_series_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
+        lowered = self._coerce_text(question).lower()
+        if "ordinary least squares" not in lowered and "linear regression" not in lowered and "ols" not in lowered:
+            return None
+        series = self._officeqa_series_values_for_years(question, context, min_score=1)
+        years = sorted(self._officeqa_question_years(question))
+        if len(series) < self._officeqa_series_min_points(years):
+            return None
+        result = self._officeqa_ols([(year, value) for year, value, _source, _score in series])
+        if result is None:
+            return None
+        slope, intercept = result
+        decimals = self._officeqa_series_rounding(question, default=3)
+        answer = f"[{self._officeqa_format_number(slope, decimals=decimals)}, {self._officeqa_format_number(intercept, decimals=decimals)}]"
+        return {
+            "answer": answer,
+            "reasoning": f"OfficeQA v1.5 specific solver ran OLS on {len(series)} table-first year values; specific solver structured_table",
+            "confidence": 0.77,
+        }
 
     def _officeqa_try_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
         lowered = question.lower()
@@ -5960,7 +6193,9 @@ class AegisForgeAgent:
         lowered = self._coerce_text(question).lower()
         if any(marker in lowered for marker in ("slope and intercept", "order of the subquestions", "two numbers", "2 numbers")):
             return 2
-        if any(marker in lowered for marker in ("cagr", "annual decay factor", "arc elasticity")):
+        if "cagr" in lowered or "compound annual growth" in lowered:
+            return 1
+        if any(marker in lowered for marker in ("annual decay factor", "arc elasticity")):
             return 3
         if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
             return None
@@ -6104,8 +6339,16 @@ class AegisForgeAgent:
         if not self._officeqa_context_has_real_evidence(question, context):
             return None
 
+        self._officeqa_last_calc_status = {
+            "family": self._officeqa_calc_family(question),
+            "attempted": True,
+            "accepted": False,
+            "solver": "",
+        }
         base_solvers = (
             self._officeqa_try_tbill_gap_date_answer,
+            self._officeqa_try_series_ols_answer,
+            self._officeqa_try_series_period_answer,
             self._officeqa_try_wide_ols_answer,
             self._officeqa_try_ols_answer,
             self._officeqa_try_month_sum_answer,
@@ -6141,6 +6384,10 @@ class AegisForgeAgent:
             reasoning = result.get("reasoning") or "Deterministic OfficeQA calculation from provided evidence."
             confidence = float(result.get("confidence", 0.6) or 0.0)
             if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(question, answer, context, confidence=confidence) and not self._officeqa_answer_fails_precision_guard(question, answer, reasoning, confidence):
+                self._officeqa_last_calc_status.update({
+                    "accepted": True,
+                    "solver": getattr(solver, "__name__", "solver")[:64],
+                })
                 return {
                     "answer": answer,
                     "reasoning": reasoning,
@@ -6150,12 +6397,12 @@ class AegisForgeAgent:
 
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
-            "You are AegisForge OfficeQA AgentBeats mode v1.4. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.5. "
             "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
             "Do not use or copy ground_truth, gold answers, answer keys, labels, scores, rationales, or evaluator-only fields if present. "
-            "For calculations, use exact arithmetic. Preserve the requested unit, rounding, list format, date format, commas, percent signs, and sign. "
+            "For calculations, first identify the table row/column/series, expand requested year ranges, then use exact arithmetic. Preserve the requested unit, rounding, list format, date format, commas, percent signs, and sign. "
             "When the question asks for a calculation, do the calculation instead of only copying nearby numbers. "
             "If a best grounded numeric/date/text answer can be inferred from the excerpts, answer it; use INSUFFICIENT_INFORMATION only when the excerpts truly lack the needed data."
         )
@@ -6179,11 +6426,11 @@ class AegisForgeAgent:
         arithmetic-heavy OfficeQA tasks.
         """
         instructions = (
-            "You are AegisForge OfficeQA AgentBeats mode v1.4. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.5. "
             "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
             "Never output [BUILD] or [ASK]. "
-            "For every arithmetic/statistics/regression/rounding task, use the python tool/code interpreter when available, then return the final value only in <FINAL_ANSWER>. "
+            "For every arithmetic/statistics/regression/rounding task, identify the relevant table series and use the python tool/code interpreter when available; expand year ranges before computing; return the final value only in <FINAL_ANSWER>. "
             "Do not include units unless the requested answer is textual. "
             "For list answers, output exactly one bracketed comma-separated list, e.g. [0.096, -184.143]. "
             "For date answers, use the requested date format exactly. "
@@ -6968,6 +7215,7 @@ class AegisForgeAgent:
         llm_diag = self._officeqa_llm_endpoint_diagnostics()
         env_probe = llm_diag.get("env_probe", {}) if isinstance(llm_diag.get("env_probe"), Mapping) else {}
         llm_status = getattr(self, "_officeqa_last_llm_status", {}) or {}
+        calc_status = getattr(self, "_officeqa_last_calc_status", {}) or {}
         endpoint_source = self._coerce_text(llm_diag.get("endpoint_source") or "none")
         endpoint_source = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", endpoint_source)[:48]
         llm_block = self._coerce_text(llm_status.get("block") or "")
@@ -6975,7 +7223,7 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V1_4 "
+            "OFFICEQA_DIAG_V1_5 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -6991,7 +7239,11 @@ class AegisForgeAgent:
             f"reject_data_like={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('reject_data_like', 0) or 0)} "
             f"global_empty_cache_ignored={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('global_empty_cache_ignored', 0) or 0)} "
             f"fast_index=5 "
-            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 forensic_loader=1 "
+            f"table_index=2 table_first_calc=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 forensic_loader=1 "
+            f"calc_family={re.sub(r'[^A-Za-z0-9_\-]+', '_', self._coerce_text(calc_status.get('family') or self._officeqa_calc_family(question)))[:48]} "
+            f"calc_attempted={int(bool(calc_status.get('attempted')))} "
+            f"calc_accepted={int(bool(calc_status.get('accepted')))} "
+            f"calc_solver={re.sub(r'[^A-Za-z0-9_\-]+', '_', self._coerce_text(calc_status.get('solver') or 'none'))[:64]} "
             f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
             f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
             f"derived_source_pairs={int(retrieval.get('derived_source_pairs', 0) or 0)} "
