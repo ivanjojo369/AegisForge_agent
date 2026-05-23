@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_5_structured_table_index_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_6_openai_responses_code_interpreter_rag_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1638,7 +1638,7 @@ class AegisForgeAgent:
         self.llm_timeout_seconds = max(5, int(os.getenv("AEGISFORGE_LLM_TIMEOUT_SECONDS", "75") or "75"))
         self.max_llm_calls_per_response = max(
             1,
-            min(4, int(os.getenv("AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE", "1") or "1")),
+            min(4, int(os.getenv("AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE", "2") or "2")),
         )
         self.default_temperature = _env_float("AEGISFORGE_TEMPERATURE", default=0.2)
 
@@ -5208,12 +5208,13 @@ class AegisForgeAgent:
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Answer financial/document QA questions using only the user-visible question and provided source-document context. "
+            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
-            "Do not use or copy ground_truth, gold answers, answer keys, labels, or evaluator-only fields if present. "
-            "For calculations, compute carefully and preserve the requested unit, rounding, list format, date format, commas, percent signs, and sign. "
-            "If the available evidence is insufficient, put INSUFFICIENT_INFORMATION inside <FINAL_ANSWER>."
+            "Do not use or copy ground_truth, gold answers, answer keys, labels, scores, rationales, or evaluator-only fields if present. "
+            "For calculations, use exact arithmetic. Preserve the requested unit, rounding, list format, date format, commas, percent signs, and sign. "
+            "When the question asks for a calculation, do the calculation instead of only copying nearby numbers. "
+            "If a best grounded numeric/date/text answer can be inferred from the excerpts, answer it; use INSUFFICIENT_INFORMATION only when the excerpts truly lack the needed data."
         )
         user = (
             "OfficeQA question:\n"
@@ -5225,6 +5226,159 @@ class AegisForgeAgent:
             "<FINAL_ANSWER>final answer only</FINAL_ANSWER>"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _build_officeqa_responses_prompt(self, *, question: str, context: str) -> tuple[str, str]:
+        """Build the Responses API instructions/input pair for OfficeQA.
+
+        v0.6.6 keeps the existing chat-completions bridge, but prefers the
+        official OpenAI Responses API when a real OPENAI_API_KEY is present so
+        the model can use the built-in Code Interpreter/Python tool for
+        arithmetic-heavy OfficeQA tasks.
+        """
+        instructions = (
+            "You are AegisForge OfficeQA AgentBeats mode. "
+            "Use only the provided OfficeQA/Treasury excerpts and the visible question. "
+            "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
+            "Never output [BUILD] or [ASK]. "
+            "For every arithmetic/statistics/regression/rounding task, use the python tool/code interpreter when available, then return the final value only in <FINAL_ANSWER>. "
+            "Do not include units unless the requested answer is textual. "
+            "For list answers, output exactly one bracketed comma-separated list, e.g. [0.096, -184.143]. "
+            "For date answers, use the requested date format exactly. "
+            "If the evidence supports a best answer, give the best answer; use INSUFFICIENT_INFORMATION only if the required data is truly absent. "
+            "Return exactly: <REASONING>brief evidence/calculation summary</REASONING><FINAL_ANSWER>answer only</FINAL_ANSWER>."
+        )
+        input_text = (
+            "OfficeQA question:\n"
+            f"{question.strip() or '[missing question]'}\n\n"
+            "Retrieved source excerpts / table rows:\n"
+            f"{context.strip() or '[no source excerpts available]'}\n\n"
+            "Required output:\n"
+            "<REASONING>brief evidence/calculation summary</REASONING>\n"
+            "<FINAL_ANSWER>answer only</FINAL_ANSWER>"
+        )
+        return instructions, input_text
+
+    def _openai_responses_url(self) -> str:
+        """Return the official/OpenAI-compatible Responses API endpoint."""
+        candidates = (
+            "OPENAI_RESPONSES_URL",
+            "AEGISFORGE_OPENAI_RESPONSES_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_RESPONSES_URL",
+            "AMBER_CONFIG_OPENAI_RESPONSES_URL",
+        )
+        for name in candidates:
+            raw = (os.getenv(name) or "").strip().rstrip("/")
+            if raw.lower().startswith(("http://", "https://")):
+                return raw
+        base = ""
+        for name in (
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE",
+            "AEGISFORGE_OPENAI_BASE_URL",
+            "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OPENAI_BASE_URL",
+        ):
+            raw = (os.getenv(name) or "").strip().rstrip("/")
+            if raw.lower().startswith(("http://", "https://")) and "agentbeats.dev" not in raw.lower():
+                base = raw
+                break
+        if not base and self._openai_api_key():
+            base = "https://api.openai.com/v1"
+        if not base:
+            return ""
+        if base.endswith("/responses"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/responses"
+        if "/v1/" in base:
+            return re.sub(r"/chat/completions/?$", "/responses", base.rstrip("/"))
+        return f"{base}/v1/responses"
+
+    def _call_openai_responses(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        max_output_tokens: int,
+    ) -> str:
+        """Call the Responses API with optional Code Interpreter support.
+
+        This path is intentionally used only for OfficeQA, where arithmetic is
+        central.  It never embeds or logs the API key.
+        """
+        self._last_llm_error = ""
+        self._last_llm_response_chars = 0
+        if self._current_llm_calls >= self.max_llm_calls_per_response:
+            self._last_llm_error = "call_budget_exhausted"
+            return ""
+
+        endpoint = self._openai_responses_url()
+        api_key = self._openai_api_key()
+        if not endpoint:
+            self._last_llm_error = "no_responses_endpoint"
+            return ""
+        if "api.openai.com" in endpoint.lower() and not api_key:
+            self._last_llm_error = "no_api_key"
+            return ""
+
+        model = (
+            os.getenv("AEGISFORGE_OFFICEQA_OPENAI_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or os.getenv("MODEL_NAME")
+            or self.llm_model
+            or "gpt-4.1-mini"
+        ).strip()
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": input_text,
+            "max_output_tokens": int(max_output_tokens),
+        }
+        if _env_flag("AEGISFORGE_OFFICEQA_CODE_INTERPRETER", default=True):
+            memory_limit = (os.getenv("AEGISFORGE_OFFICEQA_CODE_INTERPRETER_MEMORY", "1g") or "1g").strip()
+            payload["tools"] = [{
+                "type": "code_interpreter",
+                "container": {"type": "auto", "memory_limit": memory_limit},
+            }]
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        req = urllib_request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            self._current_llm_calls += 1
+            with urllib_request.urlopen(req, timeout=self.llm_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                body = ""
+            compact = re.sub(r"[^A-Za-z0-9_:\-.]+", "_", body)[:80]
+            self._last_llm_error = f"ResponsesHTTPError:{getattr(exc, 'code', 'unknown')}:{compact}"
+            return ""
+        except urllib_error.URLError as exc:
+            reason = self._coerce_text(getattr(exc, "reason", ""))[:48]
+            self._last_llm_error = f"ResponsesURLError:{reason or exc.__class__.__name__}"
+            return ""
+        except (TimeoutError, json.JSONDecodeError, OSError) as exc:
+            self._last_llm_error = f"Responses{exc.__class__.__name__}"
+            return ""
+
+        text = self._extract_llm_text(data)
+        self._last_llm_response_chars = len(text)
+        if not text:
+            self._last_llm_error = "empty_responses_text"
+        return text
 
     def _officeqa_context_for_llm(self, question: str, context: str, *, limit: int = 16000) -> str:
         """Pack OfficeQA evidence into a smaller LLM context window.
@@ -5294,17 +5448,23 @@ class AegisForgeAgent:
     def _officeqa_try_llm_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
         """Use the configured OpenAI-compatible endpoint as the general OfficeQA solver.
 
-        This does not change authentication.  It only uses the existing
-        _call_llm/_openai_api_key/_llm_base_url path and validates the final
-        answer before exposing it to the evaluator.
+        v0.6.6 prefers the official Responses API + Code Interpreter when an
+        API key is available, then falls back to chat-completions.  The key is
+        never emitted in diagnostics; only booleans/status codes are reported.
         """
         enabled = _env_flag("AEGISFORGE_OFFICEQA_LLM_ENABLED", default=True)
         endpoint = self._llm_base_url()
+        responses_endpoint = self._openai_responses_url()
+        api_key_present = bool(self._openai_api_key())
         self._officeqa_last_llm_status = {
             "enabled": bool(enabled),
-            "endpoint": bool(endpoint),
-            "api_key": bool(self._openai_api_key()),
+            "endpoint": bool(endpoint or responses_endpoint),
+            "responses_endpoint": bool(responses_endpoint),
+            "api_key": api_key_present,
             "called": False,
+            "responses_called": False,
+            "chat_called": False,
+            "code_interpreter": bool(_env_flag("AEGISFORGE_OFFICEQA_CODE_INTERPRETER", default=True)),
             "packed_chars": 0,
             "text_chars": 0,
             "answer_chars": 0,
@@ -5315,12 +5475,10 @@ class AegisForgeAgent:
         if not enabled:
             self._officeqa_last_llm_status["block"] = "disabled"
             return None
-        if not endpoint:
+        if not (endpoint or responses_endpoint):
             self._officeqa_last_llm_status["block"] = "no_endpoint"
             return None
-        if "api.openai.com" in endpoint.lower() and not self._openai_api_key():
-            # Dockerfile provides the standard OpenAI base URL, but AgentBeats
-            # may not pass a key.  Do not waste time or emit repeated 401s.
+        if (("api.openai.com" in (endpoint or "").lower()) or ("api.openai.com" in (responses_endpoint or "").lower())) and not api_key_present:
             self._officeqa_last_llm_status["block"] = "no_api_key"
             self._officeqa_last_llm_status["error"] = "no_api_key"
             return None
@@ -5328,37 +5486,63 @@ class AegisForgeAgent:
         packed_context = self._officeqa_context_for_llm(
             question,
             context,
-            limit=max(6000, min(24000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "16000") or "16000"))),
+            limit=max(8000, min(42000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "28000") or "28000"))),
         )
         self._officeqa_last_llm_status["packed_chars"] = len(packed_context)
-        messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
-        self._officeqa_last_llm_status["called"] = True
-        llm_text = self._call_llm(
-            messages=messages,
-            temperature=0.0,
-            max_tokens=max(512, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1400") or "1400"))),
-        )
+        max_tokens = max(700, min(3000, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1800") or "1800")))
+
+        llm_text = ""
+        use_responses = _env_flag("AEGISFORGE_OFFICEQA_USE_RESPONSES_API", default=True)
+        if use_responses and responses_endpoint:
+            instructions, input_text = self._build_officeqa_responses_prompt(question=question, context=packed_context)
+            self._officeqa_last_llm_status["called"] = True
+            self._officeqa_last_llm_status["responses_called"] = True
+            llm_text = self._call_openai_responses(
+                instructions=instructions,
+                input_text=input_text,
+                max_output_tokens=max_tokens,
+            )
+            self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
+            if not llm_text and self._last_llm_error:
+                self._officeqa_last_llm_status["block"] = self._last_llm_error[:80]
+
+        # Fallback for OpenAI-compatible gateways or if Responses/Code
+        # Interpreter is unavailable for the chosen model.
+        if not llm_text and endpoint and _env_flag("AEGISFORGE_OFFICEQA_CHAT_FALLBACK", default=True):
+            messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
+            self._officeqa_last_llm_status["called"] = True
+            self._officeqa_last_llm_status["chat_called"] = True
+            llm_text = self._call_llm(
+                messages=messages,
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+            self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
+
         self._officeqa_last_llm_status["text_chars"] = len(llm_text or "")
-        self._officeqa_last_llm_status["error"] = self._last_llm_error[:80]
         if not llm_text:
-            self._officeqa_last_llm_status["block"] = self._last_llm_error[:60] or "no_text"
+            self._officeqa_last_llm_status["block"] = self._last_llm_error[:80] or "no_text"
             return None
 
         answer = self._officeqa_clean_final_answer(llm_text)
         self._officeqa_last_llm_status["answer_chars"] = len(answer or "")
-        reasoning = self._officeqa_reasoning_from_text(llm_text) or "OfficeQA LLM bridge produced a candidate from packed evidence."
+        reasoning = self._officeqa_reasoning_from_text(llm_text) or "OfficeQA OpenAI RAG bridge produced a candidate from packed evidence."
+
+        # LLM/Code Interpreter outputs can be computed values not literally
+        # present in context, so use structural validation rather than requiring
+        # every number to already appear in the excerpts.
         if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(
             question,
             answer,
             context,
-            confidence=0.74,
+            confidence=0.80,
         ):
             self._officeqa_last_llm_status["valid"] = True
             self._officeqa_last_llm_status["block"] = "accepted"
             return {
                 "answer": answer,
                 "reasoning": reasoning,
-                "confidence": 0.74,
+                "confidence": 0.80,
             }
         self._officeqa_last_llm_status["block"] = "validation_rejected"
         return None
@@ -5817,13 +6001,13 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V065 "
+            "OFFICEQA_DIAG_V066 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"corpus_truncated={int(bool(getattr(self, '_officeqa_local_corpus_truncated', False)))} "
-            f"fast_index=3 "
-            f"table_index=1 "
+            f"fast_index=4 "
+            f"table_index=1 rag_bridge=1 "
             f"row_hits={int(retrieval.get('row_hits', 0) or 0)} "
             f"load_s={float(retrieval.get('load_seconds', getattr(self, '_officeqa_local_corpus_load_seconds', 0.0)) or 0.0):.3f} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
@@ -5842,6 +6026,9 @@ class AegisForgeAgent:
             f"llm_api_key={int(bool(llm_diag.get('api_key_present')))} "
             f"llm_enabled={int(bool(llm_status.get('enabled', _env_flag('AEGISFORGE_OFFICEQA_LLM_ENABLED', default=True))))} "
             f"llm_called={int(bool(llm_status.get('called')))} "
+            f"llm_responses={int(bool(llm_status.get('responses_called')))} "
+            f"llm_chat={int(bool(llm_status.get('chat_called')))} "
+            f"code_interpreter={int(bool(llm_status.get('code_interpreter')))} "
             f"llm_packed={int(llm_status.get('packed_chars', 0) or 0)} "
             f"llm_text={int(llm_status.get('text_chars', 0) or 0)} "
             f"llm_valid={int(bool(llm_status.get('valid')))} "
@@ -6016,7 +6203,7 @@ class AegisForgeAgent:
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v0.6.4 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, builds a fuller bounded fast index for quick-submit runtime, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation when available, and front-loads compact diagnostics "
+                "OfficeQA answer engine v0.6.6 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
                 "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
@@ -11742,6 +11929,10 @@ class AegisForgeAgent:
         return text
 
     def _extract_llm_text(self, payload: Mapping[str, Any]) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
             message = choices[0].get("message", {})
