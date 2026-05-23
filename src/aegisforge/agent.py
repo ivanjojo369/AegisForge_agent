@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_0_embedded_corpus_rag_llm_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_1_compact_diagnostics_2026_05_22"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1613,6 +1613,10 @@ class AegisForgeAgent:
         self._officeqa_local_corpus_cache: list[dict[str, Any]] | None = None
         self._officeqa_local_corpus_error: str = ""
         self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
+        self._officeqa_last_retrieval_status: dict[str, Any] = {}
+        self._officeqa_last_llm_status: dict[str, Any] = {}
+        self._last_llm_error = ""
+        self._last_llm_response_chars = 0
 
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
@@ -3331,6 +3335,13 @@ class AegisForgeAgent:
 
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 24000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
+        self._officeqa_last_retrieval_status = {
+            "records": len(cache),
+            "scored_records": 0,
+            "hits": 0,
+            "chars": 0,
+            "max_score": 0,
+        }
         if not cache:
             return ""
         scored: list[tuple[int, dict[str, Any]]] = []
@@ -3344,6 +3355,10 @@ class AegisForgeAgent:
             if score > 0:
                 scored.append((score, record))
         scored.sort(key=lambda item: item[0], reverse=True)
+        self._officeqa_last_retrieval_status.update({
+            "scored_records": len(scored),
+            "max_score": int(scored[0][0]) if scored else 0,
+        })
         pieces: list[str] = []
         for score, record in scored[:10]:
             text = self._coerce_text(record.get("text"))
@@ -3361,7 +3376,12 @@ class AegisForgeAgent:
             pieces.append(block_context)
             if sum(len(piece) for piece in pieces) > limit:
                 break
-        return "\n\n".join(pieces)[:limit]
+        output = "\n\n".join(pieces)[:limit]
+        self._officeqa_last_retrieval_status.update({
+            "hits": len(pieces),
+            "chars": len(output),
+        })
+        return output
 
     def _officeqa_structured_records_from_context(self, context: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -4563,9 +4583,25 @@ class AegisForgeAgent:
         _call_llm/_openai_api_key/_llm_base_url path and validates the final
         answer before exposing it to the evaluator.
         """
-        if not _env_flag("AEGISFORGE_OFFICEQA_LLM_ENABLED", default=True):
+        enabled = _env_flag("AEGISFORGE_OFFICEQA_LLM_ENABLED", default=True)
+        endpoint = self._llm_base_url()
+        self._officeqa_last_llm_status = {
+            "enabled": bool(enabled),
+            "endpoint": bool(endpoint),
+            "api_key": bool(self._openai_api_key()),
+            "called": False,
+            "packed_chars": 0,
+            "text_chars": 0,
+            "answer_chars": 0,
+            "valid": False,
+            "block": "init",
+            "error": "",
+        }
+        if not enabled:
+            self._officeqa_last_llm_status["block"] = "disabled"
             return None
-        if not self._llm_base_url():
+        if not endpoint:
+            self._officeqa_last_llm_status["block"] = "no_endpoint"
             return None
 
         packed_context = self._officeqa_context_for_llm(
@@ -4573,16 +4609,22 @@ class AegisForgeAgent:
             context,
             limit=max(6000, min(24000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "16000") or "16000"))),
         )
+        self._officeqa_last_llm_status["packed_chars"] = len(packed_context)
         messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
+        self._officeqa_last_llm_status["called"] = True
         llm_text = self._call_llm(
             messages=messages,
             temperature=0.0,
             max_tokens=max(512, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1400") or "1400"))),
         )
+        self._officeqa_last_llm_status["text_chars"] = len(llm_text or "")
+        self._officeqa_last_llm_status["error"] = self._last_llm_error[:80]
         if not llm_text:
+            self._officeqa_last_llm_status["block"] = self._last_llm_error[:60] or "no_text"
             return None
 
         answer = self._officeqa_clean_final_answer(llm_text)
+        self._officeqa_last_llm_status["answer_chars"] = len(answer or "")
         reasoning = self._officeqa_reasoning_from_text(llm_text) or "OfficeQA LLM bridge produced a candidate from packed evidence."
         if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(
             question,
@@ -4590,11 +4632,14 @@ class AegisForgeAgent:
             context,
             confidence=0.74,
         ):
+            self._officeqa_last_llm_status["valid"] = True
+            self._officeqa_last_llm_status["block"] = "accepted"
             return {
                 "answer": answer,
                 "reasoning": reasoning,
                 "confidence": 0.74,
             }
+        self._officeqa_last_llm_status["block"] = "validation_rejected"
         return None
 
 
@@ -5025,6 +5070,58 @@ class AegisForgeAgent:
         )
 
 
+    def _officeqa_compact_diagnostics(
+        self,
+        *,
+        question: str,
+        context: str,
+        local_context: str = "",
+    ) -> str:
+        """Short, front-loaded OfficeQA diagnostics that survive trace truncation.
+
+        The full diagnostics can be too long for the leaderboard result view.
+        This compact line intentionally contains only counts/booleans and safe
+        status codes, never source text, answers, API keys, tokens, or secrets.
+        """
+        counts = self._officeqa_context_diagnostic_counts(context)
+        local_counts = self._officeqa_context_diagnostic_counts(local_context)
+        cache = self._officeqa_local_corpus_cache
+        retrieval = getattr(self, "_officeqa_last_retrieval_status", {}) or {}
+        llm_diag = self._officeqa_llm_endpoint_diagnostics()
+        llm_status = getattr(self, "_officeqa_last_llm_status", {}) or {}
+        endpoint_source = self._coerce_text(llm_diag.get("endpoint_source") or "none")
+        endpoint_source = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", endpoint_source)[:48]
+        llm_block = self._coerce_text(llm_status.get("block") or "")
+        llm_block = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_block)[:48]
+        llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
+        llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
+        return (
+            "OFFICEQA_DIAG_V061 "
+            f"corpus_loaded={int(cache is not None)} "
+            f"corpus_records={len(cache) if cache is not None else 'NA'} "
+            f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
+            f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
+            f"retrieval_hits={int(retrieval.get('hits', 0) or 0)} "
+            f"retrieval_chars={int(retrieval.get('chars', 0) or 0)} "
+            f"retrieval_max_score={int(retrieval.get('max_score', 0) or 0)} "
+            f"ctx_chars={counts.get('context_chars', 0)} "
+            f"ctx_year_rows={counts.get('numeric_year_rows', 0)} "
+            f"ctx_dense={counts.get('numeric_dense_lines', 0)} "
+            f"local_chars={local_counts.get('context_chars', 0)} "
+            f"local_year_rows={local_counts.get('numeric_year_rows', 0)} "
+            f"local_dense={local_counts.get('numeric_dense_lines', 0)} "
+            f"llm_endpoint={int(bool(llm_diag.get('endpoint_configured')))} "
+            f"llm_source={endpoint_source} "
+            f"llm_api_key={int(bool(llm_diag.get('api_key_present')))} "
+            f"llm_enabled={int(bool(llm_status.get('enabled', _env_flag('AEGISFORGE_OFFICEQA_LLM_ENABLED', default=True))))} "
+            f"llm_called={int(bool(llm_status.get('called')))} "
+            f"llm_packed={int(llm_status.get('packed_chars', 0) or 0)} "
+            f"llm_text={int(llm_status.get('text_chars', 0) or 0)} "
+            f"llm_valid={int(bool(llm_status.get('valid')))} "
+            f"llm_block={llm_block or 'NA'} "
+            f"llm_error={llm_error or 'NA'}"
+        )
+
     def _officeqa_payload_diagnostics(
         self,
         *,
@@ -5114,7 +5211,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.6.0 embedded corpus/RAG diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.6.1 embedded corpus/RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -5143,7 +5240,11 @@ class AegisForgeAgent:
         if llm_result:
             return self._officeqa_output_firewall(
                 self._officeqa_format_response(
-                    reasoning=llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed source evidence.",
+                    reasoning=(
+                        self._officeqa_compact_diagnostics(question=question, context=context, local_context=local_context)
+                        + " "
+                        + (llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed source evidence.")
+                    ),
                     final_answer=llm_result.get("answer"),
                 ),
                 task_text=task_text,
@@ -5154,13 +5255,22 @@ class AegisForgeAgent:
         if deterministic_result:
             return self._officeqa_output_firewall(
                 self._officeqa_format_response(
-                    reasoning=deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from source context.",
+                    reasoning=(
+                        self._officeqa_compact_diagnostics(question=question, context=context, local_context=local_context)
+                        + " "
+                        + (deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from source context.")
+                    ),
                     final_answer=deterministic_result.get("answer"),
                 ),
                 task_text=task_text,
                 metadata=safe_metadata,
             )
 
+        compact_diagnostics = self._officeqa_compact_diagnostics(
+            question=question,
+            context=context,
+            local_context=local_context,
+        )
         diagnostics = self._officeqa_payload_diagnostics(
             task_text=task_text,
             question=question,
@@ -5178,8 +5288,9 @@ class AegisForgeAgent:
 
         return self._officeqa_format_response(
             reasoning=(
-                "OfficeQA answer engine v0.6.0 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and keeps safe diagnostics "
-                "to identify whether documents, tables, local corpus records, and LLM endpoint/auth configuration are actually visible. "
+                f"{compact_diagnostics} "
+                "OfficeQA answer engine v0.6.1 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and front-loads compact diagnostics "
+                "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
@@ -10852,11 +10963,15 @@ class AegisForgeAgent:
 
 
     def _call_llm(self, *, messages: list[dict[str, str]], temperature: float, max_tokens: int) -> str:
+        self._last_llm_error = ""
+        self._last_llm_response_chars = 0
         if self._current_llm_calls >= self.max_llm_calls_per_response:
+            self._last_llm_error = "call_budget_exhausted"
             return ""
 
         endpoint = self._llm_base_url()
         if not endpoint:
+            self._last_llm_error = "no_endpoint"
             return ""
 
         payload = {
@@ -10882,10 +10997,22 @@ class AegisForgeAgent:
             self._current_llm_calls += 1
             with urllib_request.urlopen(request, timeout=self.llm_timeout_seconds) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+        except urllib_error.HTTPError as exc:
+            self._last_llm_error = f"HTTPError:{getattr(exc, 'code', 'unknown')}"
+            return ""
+        except urllib_error.URLError as exc:
+            reason = self._coerce_text(getattr(exc, "reason", ""))[:48]
+            self._last_llm_error = f"URLError:{reason or exc.__class__.__name__}"
+            return ""
+        except (TimeoutError, json.JSONDecodeError, OSError) as exc:
+            self._last_llm_error = exc.__class__.__name__
             return ""
 
-        return self._extract_llm_text(data)
+        text = self._extract_llm_text(data)
+        self._last_llm_response_chars = len(text)
+        if not text:
+            self._last_llm_error = "empty_response"
+        return text
 
     def _extract_llm_text(self, payload: Mapping[str, Any]) -> str:
         choices = payload.get("choices")
