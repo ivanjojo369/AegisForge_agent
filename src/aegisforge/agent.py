@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_1_clean_bm25_sourcefile_rag_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_2_preindexed_corpus_sourcefile_lock_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1884,6 +1884,7 @@ class AegisForgeAgent:
         self._officeqa_local_corpus_error: str = ""
         self._officeqa_local_corpus_load_seconds: float = 0.0
         self._officeqa_local_corpus_truncated: bool = False
+        self._officeqa_local_corpus_index_cache_hit: bool = False
         self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
         self._officeqa_last_retrieval_status: dict[str, Any] = {}
         self._officeqa_last_llm_status: dict[str, Any] = {}
@@ -3153,12 +3154,46 @@ class AegisForgeAgent:
         raw = re.sub(r"_+", "_", raw).strip("._-/")
         return raw[:220]
 
+
+    def _officeqa_explicit_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
+        """Extract only explicit source_docs/source_files hints.
+
+        Unlike _officeqa_source_hints, this intentionally does not infer
+        year-month hints from the question.  v1.2 uses this narrower set for
+        source-file locking so a mere date in the question cannot over-restrict
+        retrieval to the wrong file.
+        """
+        pieces: list[str] = [self._coerce_text(question)]
+        if isinstance(metadata, Mapping):
+            pieces.append(_officeqa_stringify_for_signal(metadata, limit=24000))
+        raw = "\n".join(piece for piece in pieces if piece)
+        hints: set[str] = set()
+        for match in re.finditer(r"(?is)(?:relevant\s+source\s+(?:documents?|files?)|source_docs?|source_files?|source\s+documents?|source\s+files?)\s*[:=]\s*(.+?)(?:\n\s*\n|\n[A-Z][A-Za-z _-]{2,40}\s*[:=]|$)", raw):
+            chunk = match.group(1)
+            for token in re.split(r"[,;\n\[\]\(\){}\"']+", chunk):
+                norm = self._officeqa_normalize_source_hint(token)
+                if len(norm) >= 5:
+                    hints.add(norm)
+                    base = norm.split("/")[-1]
+                    if base:
+                        hints.add(base)
+                        hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
+        # Also accept literal Treasury source filenames when they are visible.
+        for token in re.findall(r"[A-Za-z0-9_./\-]*treasury[A-Za-z0-9_./\-]*(?:\.txt|\.csv|\.jsonl?|\.html?|\.zip)", raw, flags=re.IGNORECASE):
+            norm = self._officeqa_normalize_source_hint(token)
+            if len(norm) >= 5:
+                hints.add(norm)
+                base = norm.split("/")[-1]
+                hints.add(base)
+                hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
+        return {hint for hint in hints if hint and hint != "none"}
+
     def _officeqa_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
         """Extract reusable source-file/document hints from the visible prompt/metadata.
 
         OfficeQA prompts often include ``Relevant source documents`` or
         ``Relevant source files``.  These are provenance hints, not answers.
-        v1.1 uses them to boost retrieval toward the correct Treasury bulletin
+        v1.1/v1.2 use them to boost or lock retrieval toward the correct Treasury bulletin
         instead of relying only on broad semantic overlap.
         """
         pieces: list[str] = [self._coerce_text(question)]
@@ -3776,6 +3811,7 @@ class AegisForgeAgent:
         tail = limit - head
         return raw[:head] + "\n... [officeqa_block_scan_middle_trimmed] ...\n" + raw[-tail:]
 
+
     def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
         global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR, _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS, _OFFICEQA_GLOBAL_CORPUS_TRUNCATED
         if self._officeqa_local_corpus_cache is not None:
@@ -3785,6 +3821,7 @@ class AegisForgeAgent:
             self._officeqa_local_corpus_error = _OFFICEQA_GLOBAL_CORPUS_ERROR
             self._officeqa_local_corpus_load_seconds = float(_OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS or 0.0)
             self._officeqa_local_corpus_truncated = bool(_OFFICEQA_GLOBAL_CORPUS_TRUNCATED)
+            self._officeqa_local_corpus_index_cache_hit = bool(getattr(self, "_officeqa_local_corpus_index_cache_hit", False))
             return self._officeqa_local_corpus_cache
 
         enabled = _env_flag("AEGISFORGE_OFFICEQA_LOCAL_RETRIEVAL", default=True)
@@ -3795,165 +3832,247 @@ class AegisForgeAgent:
             _OFFICEQA_GLOBAL_CORPUS_TRUNCATED = False
             return self._officeqa_local_corpus_cache
 
-        # v0.6.4 keeps the expanded Databricks/Treasury reader but makes it safe
-        # for quick-submit: one bounded build-time scan per worker, enriched with
-        # a compact fast index.  Env vars can raise the caps for local experiments.
         import time
         load_start = time.monotonic()
-        load_budget = max(4.0, min(180.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "115") or "115")))
-        max_files = max(0, min(16000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "7000") or "7000")))
-        max_bytes = max(20000, min(4000000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "420000") or "420000")))
+        load_budget = max(6.0, min(240.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "135") or "135")))
+        max_files = max(0, min(18000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "12000") or "12000")))
+        # v1.2 keeps the index compact enough to cover the whole corpus in the
+        # quick-submit time budget. Exact source-file matches are lazy-read in
+        # full later, so the first-pass index does not need megabytes per file.
+        max_bytes = max(40000, min(1500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "180000") or "180000")))
         exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
         archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
         visited: set[str] = set()
         timed_out = False
+        index_cache_hit = False
 
-        try:
-            roots = self._officeqa_local_corpus_roots()
-            # If the official Dockerfile corpus exists, do not waste time on the
-            # repo/cwd fallback tree.  This is the usual quick-submit path and is
-            # the main fix for long /gateway/results polling with no shard close.
-            official_roots = [root for root in roots if str(root).lower().startswith("/app/data/officeqa")]
-            if official_roots:
-                # v1: avoid scanning the broad /app/data/officeqa parent before
-                # the prepared transformed corpus.  The parent walk can spend the
-                # whole load budget on duplicate JSON/text traversal and leave the
-                # runtime corpus truncated.  Prefer the clean transformed text
-                # directory, then jsons, then the parsed parent only as fallback.
-                preferred_roots: list[Path] = []
-                for marker in (
-                    "treasury_bulletins_parsed/transformed",
-                    "treasury_bulletins_parsed/jsons",
-                    "treasury_bulletins_parsed",
-                    "/app/data/officeqa",
-                ):
+        def _index_cache_path() -> Path | None:
+            raw = os.getenv("AEGISFORGE_OFFICEQA_INDEX_CACHE", "").strip()
+            if raw:
+                return Path(raw)
+            try:
+                return Path("/tmp") / "aegisforge_officeqa_v12_index.jsonl"
+            except Exception:
+                return None
+
+        def _load_disk_index(cache_path: Path | None) -> list[dict[str, Any]]:
+            if cache_path is None or not cache_path.exists():
+                return []
+            loaded: list[dict[str, Any]] = []
+            try:
+                with cache_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                    header = handle.readline()
+                    try:
+                        meta = json.loads(header)
+                    except Exception:
+                        meta = {}
+                    if meta.get("schema") != "aegisforge_officeqa_v1_2_index":
+                        return []
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(rec, dict) and rec.get("path") and rec.get("text"):
+                            loaded.append(rec)
+                        if len(loaded) >= max_files:
+                            break
+            except Exception:
+                return []
+            return loaded
+
+        def _write_disk_index(cache_path: Path | None, items: list[dict[str, Any]]) -> None:
+            if cache_path is None or not items:
+                return
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+                with tmp_path.open("w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"schema": "aegisforge_officeqa_v1_2_index", "count": len(items)}, sort_keys=True) + "\n")
+                    for rec in items:
+                        # Keep only safe/source fields. Do not persist secrets or
+                        # evaluator artifacts; records are already source-filtered.
+                        slim = {
+                            key: rec.get(key)
+                            for key in (
+                                "path", "name", "text", "data_quality", "search_text", "years",
+                                "path_l", "name_l", "source_key", "bm25_terms", "table_rows",
+                            )
+                            if key in rec
+                        }
+                        handle.write(json.dumps(slim, ensure_ascii=False, sort_keys=True) + "\n")
+                tmp_path.replace(cache_path)
+            except Exception:
+                pass
+
+        cache_path = _index_cache_path()
+        cached_records = _load_disk_index(cache_path)
+        if cached_records:
+            records = cached_records
+            index_cache_hit = True
+        else:
+            try:
+                roots = self._officeqa_local_corpus_roots()
+                official_roots = [root for root in roots if str(root).lower().startswith("/app/data/officeqa")]
+                if official_roots:
+                    # v1.2 source corpus policy: scan only specific prepared
+                    # OfficeQA corpus leaves, not broad parents. Walking the
+                    # parent tree was the main reason the runtime corpus kept
+                    # hitting corpus_truncated=1 at ~1100 records.
+                    transformed: list[Path] = []
+                    jsons: list[Path] = []
+                    archives: list[Path] = []
                     for root in official_roots:
                         root_l = str(root).replace("\\", "/").lower()
-                        if marker in root_l and root not in preferred_roots:
-                            preferred_roots.append(root)
-                roots = preferred_roots or official_roots
-            roots.sort(key=lambda p: (
-                0 if "treasury_bulletins_parsed/transformed" in str(p).replace("\\", "/").lower() else 1,
-                0 if "treasury_bulletins_parsed/jsons" in str(p).replace("\\", "/").lower() else 1,
-                0 if "treasury_bulletins_parsed" in str(p).replace("\\", "/").lower() else 1,
-                0 if str(p).lower().startswith("/app/data/officeqa") else 1,
-                len(str(p)),
-            ))
-            for root in roots:
-                if len(records) >= max_files or timed_out:
-                    break
-                try:
-                    iterator = root.rglob("*")
-                except Exception:
-                    continue
-                for path in iterator:
-                    if len(records) >= max_files:
-                        break
-                    if time.monotonic() - load_start > load_budget:
-                        timed_out = True
-                        self._officeqa_local_corpus_truncated = True
+                        if "treasury_bulletins_parsed/transformed" in root_l:
+                            transformed.append(root)
+                        elif "treasury_bulletins_parsed/jsons" in root_l:
+                            jsons.append(root)
+                    for root in official_roots:
+                        for rel in (
+                            "treasury_bulletins_parsed/transformed",
+                            "treasury_bulletins_parsed/jsons",
+                        ):
+                            child = root / rel
+                            if child.exists() and child.is_dir():
+                                child_l = str(child).replace("\\", "/").lower()
+                                if "transformed" in child_l and child not in transformed:
+                                    transformed.append(child)
+                                if "jsons" in child_l and child not in jsons:
+                                    jsons.append(child)
+                    include_jsons = _env_flag("AEGISFORGE_OFFICEQA_INCLUDE_JSONS", default=True)
+                    preferred_roots = transformed + (jsons if include_jsons else [])
+                    roots = preferred_roots or official_roots
+                roots.sort(key=lambda p: (
+                    0 if "treasury_bulletins_parsed/transformed" in str(p).replace("\\", "/").lower() else 1,
+                    0 if "treasury_bulletins_parsed/jsons" in str(p).replace("\\", "/").lower() else 1,
+                    0 if str(p).lower().startswith("/app/data/officeqa") else 1,
+                    len(str(p)),
+                ))
+                for root in roots:
+                    if len(records) >= max_files or timed_out:
                         break
                     try:
-                        if not path.is_file():
-                            continue
-                        suffix = path.suffix.lower()
-                        if suffix not in exts and suffix not in archive_exts:
-                            continue
-                        resolved = str(path.resolve())
-                        if resolved in visited:
-                            continue
-                        visited.add(resolved)
-                        if not self._officeqa_path_is_safe_context(path):
-                            continue
-                        size = path.stat().st_size
-                        if size <= 0:
-                            continue
-
-                        if suffix in archive_exts:
-                            remaining = max_files - len(records)
-                            archive_records = self._officeqa_records_from_zip(
-                                path,
-                                max_records=remaining,
-                                max_bytes=max_bytes,
-                            )
-                            for archive_record in archive_records:
-                                records.append(self._officeqa_enrich_local_record(archive_record))
-                            continue
-
-                        if size > max(max_bytes * 5, 4000000):
-                            continue
-                        if suffix in {".txt", ".md", ".csv", ".tsv"} and size > max_bytes:
-                            # v1.1: read bounded head+tail for fast full-corpus indexing;
-                            # exact source-file matches are lazy-read in full later.
-                            head_chars = max(120000, int(max_bytes * 0.70))
-                            tail_chars = max(60000, max_bytes - head_chars)
-                            try:
-                                with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                                    head_text = handle.read(head_chars)
-                                    handle.seek(max(0, size - tail_chars))
-                                    tail_text = handle.read(tail_chars)
-                                raw_text = head_text + "\n... [officeqa_v1_1_bounded_index_tail] ...\n" + tail_text
-                            except Exception:
-                                raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max_bytes]
-                        else:
-                            raw_text = path.read_text(encoding="utf-8", errors="ignore")
-                        text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
+                        iterator = root.rglob("*")
                     except Exception:
                         continue
-                    if not text.strip():
-                        continue
-                    lower = text[:50000].lower()
-                    path_l = str(path).lower()
-                    explicit_source_path = any(
-                        marker in path_l
-                        for marker in (
-                            "/app/data/officeqa",
-                            "treasury_bulletins_parsed",
-                            "officeqa",
-                            "treasury",
-                            "bulletin",
-                            "transformed",
-                            "jsons",
-                        )
-                    )
-                    plausible = explicit_source_path or any(
-                        marker in path_l or marker in lower
-                        for marker in (
-                            "officeqa",
-                            "treasury",
-                            "bulletin",
-                            "fiscal",
-                            "receipts",
-                            "outlays",
-                            "public debt",
-                            "cpi",
-                            "currency",
-                            "irs",
-                            "internal revenue",
-                            "federal reserve",
-                            "csv",
-                            "table",
-                        )
-                    )
-                    if not plausible:
-                        continue
-                    if not self._officeqa_local_file_is_data_like(path, text):
-                        continue
-                    records.append(
-                        self._officeqa_enrich_local_record(
-                            {
-                                "path": resolved,
-                                "name": path.name,
-                                "text": text[:max_bytes],
-                                "data_quality": self._officeqa_text_data_quality(text, resolved),
-                            }
-                        )
-                    )
-        except Exception as exc:
-            self._officeqa_local_corpus_error = str(exc)[:240]
+                    for path in iterator:
+                        if len(records) >= max_files:
+                            break
+                        if time.monotonic() - load_start > load_budget:
+                            timed_out = True
+                            self._officeqa_local_corpus_truncated = True
+                            break
+                        try:
+                            if not path.is_file():
+                                continue
+                            suffix = path.suffix.lower()
+                            if suffix not in exts and suffix not in archive_exts:
+                                continue
+                            resolved = str(path.resolve())
+                            if resolved in visited:
+                                continue
+                            visited.add(resolved)
+                            if not self._officeqa_path_is_safe_context(path):
+                                continue
+                            size = path.stat().st_size
+                            if size <= 0:
+                                continue
 
-        records.sort(key=lambda rec: int(rec.get("data_quality", 0) or 0), reverse=True)
+                            if suffix in archive_exts:
+                                remaining = max_files - len(records)
+                                archive_records = self._officeqa_records_from_zip(
+                                    path,
+                                    max_records=remaining,
+                                    max_bytes=max_bytes,
+                                )
+                                for archive_record in archive_records:
+                                    records.append(self._officeqa_enrich_local_record(archive_record))
+                                continue
+
+                            if size > max(max_bytes * 18, 9000000):
+                                continue
+                            if suffix in {".txt", ".md", ".csv", ".tsv", ".html", ".htm"} and size > max_bytes:
+                                # Binary head/tail is substantially faster than
+                                # text-mode seek on GitHub-hosted Linux runners.
+                                head_bytes = max(32000, int(max_bytes * 0.72))
+                                tail_bytes = max(12000, max_bytes - head_bytes)
+                                try:
+                                    with path.open("rb") as handle:
+                                        head_raw = handle.read(head_bytes)
+                                        handle.seek(max(0, size - tail_bytes))
+                                        tail_raw = handle.read(tail_bytes)
+                                    raw_text = (
+                                        head_raw.decode("utf-8", errors="ignore")
+                                        + "\n... [officeqa_v1_2_preindex_tail] ...\n"
+                                        + tail_raw.decode("utf-8", errors="ignore")
+                                    )
+                                except Exception:
+                                    raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max_bytes]
+                            else:
+                                raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max(max_bytes * 2, max_bytes)]
+                            text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
+                        except Exception:
+                            continue
+                        if not text.strip():
+                            continue
+                        lower = text[:50000].lower()
+                        path_l = str(path).lower()
+                        explicit_source_path = any(
+                            marker in path_l
+                            for marker in (
+                                "/app/data/officeqa",
+                                "treasury_bulletins_parsed",
+                                "officeqa",
+                                "treasury",
+                                "bulletin",
+                                "transformed",
+                                "jsons",
+                            )
+                        )
+                        plausible = explicit_source_path or any(
+                            marker in path_l or marker in lower
+                            for marker in (
+                                "officeqa",
+                                "treasury",
+                                "bulletin",
+                                "fiscal",
+                                "receipts",
+                                "outlays",
+                                "public debt",
+                                "cpi",
+                                "currency",
+                                "irs",
+                                "internal revenue",
+                                "federal reserve",
+                                "csv",
+                                "table",
+                            )
+                        )
+                        if not plausible:
+                            continue
+                        if not self._officeqa_local_file_is_data_like(path, text):
+                            continue
+                        records.append(
+                            self._officeqa_enrich_local_record(
+                                {
+                                    "path": resolved,
+                                    "name": path.name,
+                                    "text": text[:max_bytes],
+                                    "data_quality": self._officeqa_text_data_quality(text, resolved),
+                                }
+                            )
+                        )
+            except Exception as exc:
+                self._officeqa_local_corpus_error = str(exc)[:240]
+
+            records.sort(key=lambda rec: int(rec.get("data_quality", 0) or 0), reverse=True)
+            _write_disk_index(cache_path, records)
+
+        self._officeqa_local_corpus_index_cache_hit = bool(index_cache_hit)
         self._officeqa_local_corpus_cache = records
         self._officeqa_local_corpus_load_seconds = round(time.monotonic() - load_start, 3)
         _OFFICEQA_GLOBAL_CORPUS_CACHE = records
@@ -3961,6 +4080,7 @@ class AegisForgeAgent:
         _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS = self._officeqa_local_corpus_load_seconds
         _OFFICEQA_GLOBAL_CORPUS_TRUNCATED = bool(getattr(self, "_officeqa_local_corpus_truncated", False))
         return records
+
 
     def _officeqa_score_context_text(self, question: str, text: str, path: str = "") -> int:
         lowered = self._coerce_text(text).lower()
@@ -4121,10 +4241,14 @@ class AegisForgeAgent:
                 break
         return "\n\n".join(out)[:limit]
 
+
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 65000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
-        candidate_limit = max(20, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "1200") or "1200")))
-        block_limit = max(3, min(48, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "36") or "36")))
+        candidate_limit = max(20, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "1500") or "1500")))
+        block_limit = max(3, min(56, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "42") or "42")))
+        explicit_hints = self._officeqa_explicit_source_hints(question, metadata)
+        source_locked = False
+        source_matches: list[dict[str, Any]] = []
         self._officeqa_last_retrieval_status = {
             "records": len(cache),
             "scored_records": 0,
@@ -4134,24 +4258,65 @@ class AegisForgeAgent:
             "chars": 0,
             "max_score": 0,
             "load_seconds": float(getattr(self, "_officeqa_local_corpus_load_seconds", 0.0) or 0.0),
+            "source_hints": len(explicit_hints),
+            "source_matches": 0,
+            "sourcefile_lock": 0,
+            "index_cache_hit": int(bool(getattr(self, "_officeqa_local_corpus_index_cache_hit", False))),
         }
         if not cache:
             return ""
 
+        if explicit_hints:
+            for record in cache:
+                source_key = self._coerce_text(record.get("source_key"))
+                if not source_key:
+                    source_key = self._officeqa_normalize_source_hint(f"{record.get('path', '')}\n{record.get('name', '')}")
+                if any(len(hint) >= 5 and hint in source_key for hint in explicit_hints):
+                    source_matches.append(record)
+            # If the evaluator supplies source_files/source_docs, they are
+            # provenance hints, not answer labels. Lock retrieval to them when
+            # possible; this prevents broad Treasury terms from pulling a wrong
+            # bulletin/table and wasting the LLM call.
+            source_locked = bool(source_matches and _env_flag("AEGISFORGE_OFFICEQA_SOURCEFILE_LOCK", default=True))
+
         scored: list[tuple[int, dict[str, Any]]] = []
-        for record in cache:
+        scoring_pool = source_matches if source_locked else cache
+        for record in scoring_pool:
             try:
                 score = self._officeqa_fast_record_score(question, record)
             except Exception:
                 score = 0
+            if source_locked:
+                score += 220
             if score > 0:
                 scored.append((score, record))
+
+        # If source-file lock produced too little context, add a small general
+        # fallback tail. This keeps recall for prompts with imperfect file names
+        # while still prioritizing explicit provenance.
+        if source_locked and len(scored) < max(3, min(8, block_limit // 3)):
+            seen_paths = {self._coerce_text(rec.get("path")) for _, rec in scored}
+            fallback: list[tuple[int, dict[str, Any]]] = []
+            for record in cache:
+                if self._coerce_text(record.get("path")) in seen_paths:
+                    continue
+                try:
+                    score = self._officeqa_fast_record_score(question, record)
+                except Exception:
+                    score = 0
+                if score > 0:
+                    fallback.append((score, record))
+            fallback.sort(key=lambda item: item[0], reverse=True)
+            scored.extend(fallback[: max(4, block_limit // 4)])
+
         scored.sort(key=lambda item: item[0], reverse=True)
         candidates = scored[:candidate_limit]
         self._officeqa_last_retrieval_status.update({
             "scored_records": len(scored),
             "candidate_records": len(candidates),
             "max_score": int(scored[0][0]) if scored else 0,
+            "source_matches": len(source_matches),
+            "sourcefile_lock": int(bool(source_locked)),
         })
 
         pieces: list[str] = []
@@ -4160,10 +4325,11 @@ class AegisForgeAgent:
             text = self._coerce_text(record.get("text"))
             name = self._coerce_text(record.get("name")) or "local"
             path = self._coerce_text(record.get("path"))
-            if self._officeqa_record_matches_source_hints(question, record, metadata):
+            source_match = self._officeqa_record_matches_source_hints(question, record, metadata)
+            if source_match or (source_locked and record in source_matches):
                 full_text = self._officeqa_full_text_for_record(
                     record,
-                    max_chars=max(450000, min(2200000, int(os.getenv("AEGISFORGE_OFFICEQA_SOURCE_MATCH_MAX_CHARS", "1800000") or "1800000"))),
+                    max_chars=max(450000, min(2400000, int(os.getenv("AEGISFORGE_OFFICEQA_SOURCE_MATCH_MAX_CHARS", "2000000") or "2000000"))),
                 )
                 if full_text:
                     text = full_text
@@ -4172,7 +4338,7 @@ class AegisForgeAgent:
             row_context = self._officeqa_structured_rows_from_record(
                 question,
                 record,
-                limit=max(5000, min(15000, limit // 4)),
+                limit=max(5500, min(17000, limit // 4)),
             )
             if row_context:
                 pieces.append(row_context)
@@ -4182,9 +4348,11 @@ class AegisForgeAgent:
                 text,
                 name=name,
                 path=path,
-                limit=max(6500, min(18000, limit // 3)),
+                limit=max(7000, min(20000, limit // 3)),
             )
             if block_context:
+                if source_match or (source_locked and record in source_matches):
+                    block_context = "[officeqa_sourcefile_locked]\n" + block_context
                 pieces.append(block_context)
             if sum(len(piece) for piece in pieces) > limit:
                 break
@@ -4195,6 +4363,7 @@ class AegisForgeAgent:
             "chars": len(output),
         })
         return output
+
 
     def _officeqa_structured_records_from_context(self, context: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -5661,7 +5830,7 @@ class AegisForgeAgent:
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize excerpts whose filename/source matches the visible Relevant source files/documents lines. "
+            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize [officeqa_sourcefile_locked] excerpts and filenames/sources matching visible Relevant source files/documents lines. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
             "Do not use or copy ground_truth, gold answers, answer keys, labels, scores, rationales, or evaluator-only fields if present. "
@@ -5690,7 +5859,7 @@ class AegisForgeAgent:
         """
         instructions = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize excerpts whose filename/source matches the visible Relevant source files/documents lines. "
+            "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize any [officeqa_sourcefile_locked] excerpts and filenames/sources matching visible Relevant source files/documents lines. "
             "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
             "Never output [BUILD] or [ASK]. "
             "For every arithmetic/statistics/regression/rounding task, use the python tool/code interpreter when available, then return the final value only in <FINAL_ANSWER>. "
@@ -6488,13 +6657,17 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V1_1 "
+            "OFFICEQA_DIAG_V1_2 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"corpus_truncated={int(bool(getattr(self, '_officeqa_local_corpus_truncated', False)))} "
             f"fast_index=4 "
-            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 "
+            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 "
+            f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
+            f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
+            f"source_matches={int(retrieval.get('source_matches', 0) or 0)} "
+            f"index_cache_hit={int(retrieval.get('index_cache_hit', 0) or 0)} "
             f"row_hits={int(retrieval.get('row_hits', 0) or 0)} "
             f"load_s={float(retrieval.get('load_seconds', getattr(self, '_officeqa_local_corpus_load_seconds', 0.0)) or 0.0):.3f} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
