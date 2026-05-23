@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_2_expanded_corpus_reader_no_key_guard_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_3_fast_index_timeout_guard_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -82,6 +82,7 @@ OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_2_expanded_corpus_reader_n
 # evaluator outputs).
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
+_OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -1613,6 +1614,7 @@ class AegisForgeAgent:
         self._dom_max_chars = 12000
         self._officeqa_local_corpus_cache: list[dict[str, Any]] | None = None
         self._officeqa_local_corpus_error: str = ""
+        self._officeqa_local_corpus_load_seconds: float = 0.0
         self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
         self._officeqa_last_retrieval_status: dict[str, Any] = {}
         self._officeqa_last_llm_status: dict[str, Any] = {}
@@ -3179,42 +3181,184 @@ class AegisForgeAgent:
             self._officeqa_local_corpus_error = (self._officeqa_local_corpus_error + f";zip:{archive_path.name}:{exc.__class__.__name__}")[:240]
         return records
 
+    def _officeqa_record_search_summary(self, text: Any, *, limit: int | None = None) -> str:
+        """Compact text used only for fast OfficeQA candidate ranking.
+
+        Full transformed Treasury records can be hundreds of KB.  Ranking every
+        record by lowercasing/scanning the full body on each question is what can
+        make quick-submit look stuck while /gateway/results keeps polling.  This
+        summary keeps table headers, early rows, and trailing rows for routing;
+        exact evidence extraction still uses the full record text for the small
+        candidate set.
+        """
+        raw = self._coerce_text(text)
+        if not raw:
+            return ""
+        if limit is None:
+            limit = max(12000, min(90000, int(os.getenv("AEGISFORGE_OFFICEQA_FAST_SUMMARY_CHARS", "42000") or "42000")))
+        if len(raw) <= limit:
+            return raw
+        head = max(6000, int(limit * 0.72))
+        tail = max(3000, limit - head)
+        return raw[:head] + "\n... [officeqa_fast_summary_middle_trimmed] ...\n" + raw[-tail:]
+
+    def _officeqa_enrich_local_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach bounded fast-index fields to a source corpus record."""
+        enriched = dict(record)
+        text = self._coerce_text(enriched.get("text"))
+        path = self._coerce_text(enriched.get("path"))
+        name = self._coerce_text(enriched.get("name"))
+        summary = self._officeqa_record_search_summary(text)
+        search_blob = f"{name}\n{path}\n{summary}".lower()
+        enriched["search_text"] = search_blob[:max(16000, min(120000, int(os.getenv("AEGISFORGE_OFFICEQA_FAST_INDEX_CHARS", "56000") or "56000")))]
+        try:
+            years = sorted({int(token) for token in re.findall(r"\b(?:18|19|20)\d{2}\b", enriched["search_text"])})
+        except Exception:
+            years = []
+        enriched["years"] = years[:160]
+        enriched["path_l"] = path.lower()[:2000]
+        enriched["name_l"] = name.lower()[:500]
+        return enriched
+
+    def _officeqa_fast_record_score(self, question: str, record: Mapping[str, Any]) -> int:
+        """Fast first-pass score without scanning full record bodies."""
+        q = self._coerce_text(question).lower()
+        if not q.strip():
+            return 0
+        search = self._coerce_text(record.get("search_text"))
+        path_l = self._coerce_text(record.get("path_l") or record.get("path")).lower()
+        name_l = self._coerce_text(record.get("name_l") or record.get("name")).lower()
+        haystack = search + "\n" + path_l + "\n" + name_l
+        if not haystack.strip():
+            return 0
+
+        terms = set(self._officeqa_topic_terms_for_matching(question)) | set(self._officeqa_keyword_terms(question))
+        terms = {term.lower() for term in terms if len(term) >= 3}
+        q_years = self._officeqa_question_years(question)
+        record_years = set(record.get("years") or [])
+        score = int(record.get("data_quality", 0) or 0)
+
+        if q_years:
+            overlap = q_years & record_years
+            score += 10 * len(overlap)
+            if not overlap and not any(str(year) in haystack for year in q_years):
+                # Keep a very small base score for high-quality Treasury files,
+                # but strongly prefer matching years.
+                score -= 6
+        for term in terms:
+            if term in haystack:
+                score += 4 if " " in term else 2
+            if term in path_l or term in name_l:
+                score += 4
+
+        # Domain-specific path/content bonuses.  These are topic clusters, not
+        # answer tables; they simply move plausible Treasury files into the small
+        # extraction candidate set.
+        clusters = {
+            "esf": ("esf", "exchange stabilization"),
+            "public_debt": ("public debt", "debt", "marketable", "treasury bills", "treasury notes", "treasury bonds"),
+            "irs": ("internal revenue", "irs", "tax receipts", "income tax"),
+            "cpi": ("cpi", "consumer price index", "inflation"),
+            "currency": ("currency", "coin", "denomination", "seigniorage", "seignorage"),
+            "budget": ("receipts", "outlays", "deficit", "surplus", "fiscal operations"),
+            "savings_bonds": ("savings bonds", "series e", "series ee", "series i", "payroll savings"),
+            "capital": ("capital inflow", "capital outflow", "liabilities", "taiwan", "mainland china"),
+        }
+        for needles in clusters.values():
+            q_hit = any(needle in q for needle in needles)
+            r_hit = any(needle in haystack for needle in needles)
+            if q_hit and r_hit:
+                score += 12
+
+        if "treasury_bulletins_parsed" in path_l or "/app/data/officeqa" in path_l:
+            score += 6
+        if "transformed" in path_l or "jsons" in path_l:
+            score += 3
+        if any(marker in haystack for marker in ("treasury", "bulletin", "fiscal", "table", "receipts", "outlays")):
+            score += 2
+        return max(0, score)
+
+    def _officeqa_trim_text_for_block_scan(self, question: str, text: Any, *, limit: int | None = None) -> str:
+        """Bound expensive line scoring to windows likely to contain evidence."""
+        raw = self._coerce_text(text)
+        if not raw:
+            return ""
+        if limit is None:
+            limit = max(60000, min(420000, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_SCAN_CHARS", "220000") or "220000")))
+        if len(raw) <= limit:
+            return raw
+
+        q_terms = list(self._officeqa_topic_terms_for_matching(question))[:24]
+        q_years = [str(year) for year in sorted(self._officeqa_question_years(question))]
+        needles = [needle for needle in (q_years + q_terms) if len(needle) >= 3]
+        lowered = raw.lower()
+        windows: list[str] = []
+        seen: set[tuple[int, int]] = set()
+        for needle in needles[:32]:
+            pos = lowered.find(needle.lower())
+            if pos < 0:
+                continue
+            start = max(0, pos - 8000)
+            end = min(len(raw), pos + 14000)
+            key = (start // 4000, end // 4000)
+            if key in seen:
+                continue
+            seen.add(key)
+            windows.append(raw[start:end])
+            if sum(len(piece) for piece in windows) >= limit:
+                break
+        if windows:
+            return "\n\n... [officeqa_window_gap] ...\n\n".join(windows)[:limit]
+        head = int(limit * 0.75)
+        tail = limit - head
+        return raw[:head] + "\n... [officeqa_block_scan_middle_trimmed] ...\n" + raw[-tail:]
+
     def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
-        global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR
+        global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR, _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS
         if self._officeqa_local_corpus_cache is not None:
             return self._officeqa_local_corpus_cache
         if _OFFICEQA_GLOBAL_CORPUS_CACHE is not None:
             self._officeqa_local_corpus_cache = _OFFICEQA_GLOBAL_CORPUS_CACHE
             self._officeqa_local_corpus_error = _OFFICEQA_GLOBAL_CORPUS_ERROR
+            self._officeqa_local_corpus_load_seconds = float(_OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS or 0.0)
             return self._officeqa_local_corpus_cache
 
         enabled = _env_flag("AEGISFORGE_OFFICEQA_LOCAL_RETRIEVAL", default=True)
         if not enabled:
             self._officeqa_local_corpus_cache = []
             _OFFICEQA_GLOBAL_CORPUS_CACHE = []
+            _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS = 0.0
             return self._officeqa_local_corpus_cache
 
-        # The embedded OfficeQA corpus is source data, not answer labels.  It can
-        # contain thousands of transformed Treasury records after Dockerfile
-        # v0.6.2 expands Databricks ZIP archives.  Keep the cap high enough to
-        # index useful coverage but bounded for quick-submit.
-        max_files = max(0, min(8000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "4500") or "4500")))
-        max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "650000") or "650000")))
+        # v0.6.3 keeps the expanded Databricks/Treasury reader but makes it safe
+        # for quick-submit: one bounded build-time scan per worker, enriched with
+        # a compact fast index.  Env vars can raise the caps for local experiments.
+        import time
+        load_start = time.monotonic()
+        load_budget = max(4.0, min(90.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "24") or "24")))
+        max_files = max(0, min(8000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "1800") or "1800")))
+        max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "260000") or "260000")))
         exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
         archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
         visited: set[str] = set()
+        timed_out = False
 
         try:
             roots = self._officeqa_local_corpus_roots()
-            # Scan narrower official corpus directories first, then broader roots.
+            # If the official Dockerfile corpus exists, do not waste time on the
+            # repo/cwd fallback tree.  This is the usual quick-submit path and is
+            # the main fix for long /gateway/results polling with no shard close.
+            official_roots = [root for root in roots if str(root).lower().startswith("/app/data/officeqa")]
+            if official_roots:
+                roots = official_roots
             roots.sort(key=lambda p: (
                 0 if "treasury_bulletins_parsed" in str(p).lower() else 1,
                 0 if str(p).lower().startswith("/app/data/officeqa") else 1,
                 len(str(p)),
             ))
             for root in roots:
-                if len(records) >= max_files:
+                if len(records) >= max_files or timed_out:
                     break
                 try:
                     iterator = root.rglob("*")
@@ -3222,6 +3366,10 @@ class AegisForgeAgent:
                     continue
                 for path in iterator:
                     if len(records) >= max_files:
+                        break
+                    if time.monotonic() - load_start > load_budget:
+                        timed_out = True
+                        self._officeqa_local_corpus_error = (self._officeqa_local_corpus_error + ";load_budget_exceeded")[:240]
                         break
                     try:
                         if not path.is_file():
@@ -3246,10 +3394,11 @@ class AegisForgeAgent:
                                 max_records=remaining,
                                 max_bytes=max_bytes,
                             )
-                            records.extend(archive_records)
+                            for archive_record in archive_records:
+                                records.append(self._officeqa_enrich_local_record(archive_record))
                             continue
 
-                        if size > max(max_bytes * 4, 3000000):
+                        if size > max(max_bytes * 5, 4000000):
                             continue
                         raw_text = path.read_text(encoding="utf-8", errors="ignore")
                         text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
@@ -3259,10 +3408,6 @@ class AegisForgeAgent:
                         continue
                     lower = text[:50000].lower()
                     path_l = str(path).lower()
-                    # Keep only plausible OfficeQA/document-data files unless
-                    # the user explicitly sets a corpus dir.  Path-aware markers
-                    # are important because parsed page files may not repeat
-                    # "Treasury Bulletin" in every text fragment.
                     explicit_source_path = any(
                         marker in path_l
                         for marker in (
@@ -3299,22 +3444,24 @@ class AegisForgeAgent:
                     if not self._officeqa_local_file_is_data_like(path, text):
                         continue
                     records.append(
-                        {
-                            "path": resolved,
-                            "name": path.name,
-                            "text": text[:max_bytes],
-                            "data_quality": self._officeqa_text_data_quality(text, resolved),
-                        }
+                        self._officeqa_enrich_local_record(
+                            {
+                                "path": resolved,
+                                "name": path.name,
+                                "text": text[:max_bytes],
+                                "data_quality": self._officeqa_text_data_quality(text, resolved),
+                            }
+                        )
                     )
         except Exception as exc:
             self._officeqa_local_corpus_error = str(exc)[:240]
 
-        # Prefer higher-quality source corpus records and share them across agent
-        # instances inside the same worker process.
         records.sort(key=lambda rec: int(rec.get("data_quality", 0) or 0), reverse=True)
         self._officeqa_local_corpus_cache = records
+        self._officeqa_local_corpus_load_seconds = round(time.monotonic() - load_start, 3)
         _OFFICEQA_GLOBAL_CORPUS_CACHE = records
         _OFFICEQA_GLOBAL_CORPUS_ERROR = self._officeqa_local_corpus_error
+        _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS = self._officeqa_local_corpus_load_seconds
         return records
 
     def _officeqa_score_context_text(self, question: str, text: str, path: str = "") -> int:
@@ -3428,6 +3575,7 @@ class AegisForgeAgent:
         raw = self._coerce_text(text)
         if not raw.strip():
             return ""
+        raw = self._officeqa_trim_text_for_block_scan(question, raw)
         lines = raw.splitlines()
         scored: list[tuple[int, int]] = []
         for idx, line in enumerate(lines):
@@ -3477,41 +3625,49 @@ class AegisForgeAgent:
 
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 24000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
+        candidate_limit = max(20, min(800, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "180") or "180")))
+        block_limit = max(3, min(24, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "10") or "10")))
         self._officeqa_last_retrieval_status = {
             "records": len(cache),
             "scored_records": 0,
+            "candidate_records": 0,
             "hits": 0,
             "chars": 0,
             "max_score": 0,
+            "load_seconds": float(getattr(self, "_officeqa_local_corpus_load_seconds", 0.0) or 0.0),
         }
         if not cache:
             return ""
+
         scored: list[tuple[int, dict[str, Any]]] = []
         for record in cache:
-            text = self._coerce_text(record.get("text"))
-            path = self._coerce_text(record.get("path"))
-            if not text:
-                continue
-            score = self._officeqa_score_context_text(question, text, path)
-            score += max(0, min(12, self._officeqa_text_data_quality(text, path)))
+            try:
+                score = self._officeqa_fast_record_score(question, record)
+            except Exception:
+                score = 0
             if score > 0:
                 scored.append((score, record))
         scored.sort(key=lambda item: item[0], reverse=True)
+        candidates = scored[:candidate_limit]
         self._officeqa_last_retrieval_status.update({
             "scored_records": len(scored),
+            "candidate_records": len(candidates),
             "max_score": int(scored[0][0]) if scored else 0,
         })
+
         pieces: list[str] = []
-        for score, record in scored[:10]:
+        for score, record in candidates[:block_limit]:
             text = self._coerce_text(record.get("text"))
             name = self._coerce_text(record.get("name")) or "local"
             path = self._coerce_text(record.get("path"))
+            if not text:
+                continue
             block_context = self._officeqa_relevant_blocks_from_text(
                 question,
                 text,
                 name=name,
                 path=path,
-                limit=max(5000, min(16000, limit // 2)),
+                limit=max(4500, min(14000, limit // 2)),
             )
             if not block_context:
                 continue
@@ -5244,11 +5400,14 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V062 "
+            "OFFICEQA_DIAG_V063 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
+            f"fast_index=1 "
+            f"load_s={float(retrieval.get('load_seconds', getattr(self, '_officeqa_local_corpus_load_seconds', 0.0)) or 0.0):.3f} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
+            f"retrieval_candidates={int(retrieval.get('candidate_records', 0) or 0)} "
             f"retrieval_hits={int(retrieval.get('hits', 0) or 0)} "
             f"retrieval_chars={int(retrieval.get('chars', 0) or 0)} "
             f"retrieval_max_score={int(retrieval.get('max_score', 0) or 0)} "
@@ -5359,7 +5518,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.6.2 expanded corpus/RAG diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.6.3 fast-index corpus/RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -5437,7 +5596,7 @@ class AegisForgeAgent:
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v0.6.2 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and front-loads compact diagnostics "
+                "OfficeQA answer engine v0.6.3 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, builds a bounded fast index for quick-submit runtime, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation when available, and front-loads compact diagnostics "
                 "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
