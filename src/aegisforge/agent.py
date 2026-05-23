@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_7_amber_participant_secret_aliases_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_8_env_probe_safe_amber_secret_discovery_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1531,38 +1531,73 @@ HIGH_RISK_PATTERNS = (
 )
 
 
+def _env_normalize_name(name: Any) -> str:
+    """Normalize an environment/config key for matching only."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(name or "")).strip("_").upper()
+
+
+def _env_safe_name_token(name: Any, *, limit: int = 80) -> str:
+    """Return a safe diagnostic token for an environment name, never its value.
+
+    Environment *names* are normally not secret, but a user can accidentally
+    paste a secret into the name column of a UI.  Redact high-entropy/key-like
+    names so diagnostics cannot leak credentials even in that mistake case.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return "none"
+    if re.search(r"(?i)\bsk-[A-Za-z0-9_\-]{10,}\b", raw) or re.search(r"[A-Za-z0-9_\-]{48,}", raw):
+        digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:10]
+        return f"REDACTED_NAME_{digest}"
+    token = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", raw).strip("_")
+    return (token or "unnamed")[:limit]
+
+
 def _env_alias_names(name: str) -> tuple[str, ...]:
     """Return safe environment aliases for normal and Amber-injected secrets.
 
     AgentBeats/Amber Quick Submit does not necessarily expose participant
     secrets under their raw names.  For a participant role named
     ``officeqa_agent``, a UI secret such as ``OPENAI_API_KEY`` can arrive as
-    ``AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_KEY``.  Keep discovery centralized
-    so the OfficeQA bridge can see secrets without ever logging their values.
+    ``AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_KEY`` or inside a structured
+    ``AMBER_CONFIG_*`` blob.  Keep discovery centralized so the OfficeQA bridge
+    can see secrets without ever logging their values.
     """
     raw = str(name or "").strip()
     if not raw:
         return ()
-    upper = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").upper()
+    upper = _env_normalize_name(raw)
     aliases = [
         raw,
         upper,
         f"AMBER_CONFIG_OFFICEQA_AGENT_{upper}",
+        f"AMBER_CONFIG_OFFICEQA_AGENT_OFFICEQA_AGENT_{upper}",
         f"AMBER_CONFIG_PURPLE_AGENT_{upper}",
         f"AMBER_CONFIG_PURPLE_{upper}",
         f"AMBER_CONFIG_PARTICIPANT_{upper}",
+        f"AMBER_CONFIG_PARTICIPANT_1_{upper}",
+        f"AMBER_CONFIG_AGENT_{upper}",
         f"AMBER_CONFIG_GREEN_{upper}",
         f"AMBER_CONFIG_{upper}",
     ]
     # If the caller already passed an Amber-style name, also try the suffix.
-    marker = "AMBER_CONFIG_OFFICEQA_AGENT_"
-    if upper.startswith(marker):
-        suffix = upper[len(marker):]
-        aliases.extend([suffix, f"AMBER_CONFIG_{suffix}", f"AMBER_CONFIG_GREEN_{suffix}"])
-    marker = "AMBER_CONFIG_GREEN_"
-    if upper.startswith(marker):
-        suffix = upper[len(marker):]
-        aliases.extend([suffix, f"AMBER_CONFIG_OFFICEQA_AGENT_{suffix}", f"AMBER_CONFIG_{suffix}"])
+    for marker in (
+        "AMBER_CONFIG_OFFICEQA_AGENT_",
+        "AMBER_CONFIG_PURPLE_AGENT_",
+        "AMBER_CONFIG_PURPLE_",
+        "AMBER_CONFIG_PARTICIPANT_",
+        "AMBER_CONFIG_GREEN_",
+        "AMBER_CONFIG_",
+    ):
+        if upper.startswith(marker):
+            suffix = upper[len(marker):]
+            aliases.extend([
+                suffix,
+                f"AMBER_CONFIG_OFFICEQA_AGENT_{suffix}",
+                f"AMBER_CONFIG_PURPLE_{suffix}",
+                f"AMBER_CONFIG_GREEN_{suffix}",
+                f"AMBER_CONFIG_{suffix}",
+            ])
     seen: set[str] = set()
     ordered: list[str] = []
     for alias in aliases:
@@ -1573,12 +1608,122 @@ def _env_alias_names(name: str) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def _env_get(name: str, default: str = "") -> str:
+def _env_wanted_norms(name: str) -> set[str]:
+    wanted = {_env_normalize_name(alias) for alias in _env_alias_names(name)}
+    base = _env_normalize_name(name)
+    if base:
+        wanted.add(base)
+    # Also accept suffixes when Amber stores participant secrets as JSON fields.
+    for marker in (
+        "AMBER_CONFIG_OFFICEQA_AGENT_",
+        "AMBER_CONFIG_PURPLE_AGENT_",
+        "AMBER_CONFIG_PURPLE_",
+        "AMBER_CONFIG_PARTICIPANT_",
+        "AMBER_CONFIG_GREEN_",
+        "AMBER_CONFIG_",
+    ):
+        for item in list(wanted):
+            if item.startswith(marker):
+                wanted.add(item[len(marker):])
+    return {item for item in wanted if item}
+
+
+def _env_candidate_blob_names() -> list[str]:
+    """Return config-like env var names worth parsing for nested secrets."""
+    candidates: list[str] = []
+    for key in os.environ.keys():
+        upper = _env_normalize_name(key)
+        if (
+            upper.startswith("AMBER_CONFIG")
+            or "OFFICEQA" in upper
+            or upper.startswith("AGENTBEATS")
+            or upper.startswith("A2A_")
+        ):
+            candidates.append(key)
+    return sorted(candidates)
+
+
+def _env_value_is_nonempty(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def _env_extract_from_jsonish(value: Any, wanted: set[str], *, depth: int = 0) -> str:
+    """Extract a named config value from parsed JSON-like data without logging it."""
+    if depth > 7 or value is None:
+        return ""
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            norm = _env_normalize_name(key)
+            if norm in wanted and _env_value_is_nonempty(child) and not isinstance(child, (Mapping, list, tuple, set)):
+                return str(child).strip()
+            found = _env_extract_from_jsonish(child, wanted, depth=depth + 1)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple, set)):
+        for child in list(value)[:80]:
+            found = _env_extract_from_jsonish(child, wanted, depth=depth + 1)
+            if found:
+                return found
+    return ""
+
+
+def _env_extract_from_text_blob(blob: str, wanted: set[str]) -> str:
+    """Extract KEY=value or JSON-property-style entries from a config blob."""
+    text_blob = str(blob or "").replace("\x00", "").strip()
+    if not text_blob:
+        return ""
+    # Bounded parser: enough for Amber config/secrets, not an unbounded log scan.
+    text_blob = text_blob[:100000]
+    try:
+        parsed = json.loads(text_blob)
+        found = _env_extract_from_jsonish(parsed, wanted)
+        if found:
+            return found
+    except Exception:
+        pass
+
+    # Some runners expose config as dotenv-like text or YAML-ish lines.
+    for raw_line in re.split(r"[\r\n]+", text_blob):
+        line = raw_line.strip().strip(",")
+        if not line or len(line) > 6000:
+            continue
+        match = re.match(r'^[\'"]?([A-Za-z_][A-Za-z0-9_.:\-]{0,160})[\'"]?\s*[:=]\s*(.+?)\s*,?$', line)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2)
+        if _env_normalize_name(key) not in wanted:
+            continue
+        value = value.strip().strip("'\"")
+        if value:
+            return value
+    return ""
+
+
+def _env_blob_lookup(name: str) -> tuple[str, str]:
+    wanted = _env_wanted_norms(name)
+    if not wanted:
+        return "", ""
+    for container in _env_candidate_blob_names():
+        raw = os.environ.get(container)
+        if not raw:
+            continue
+        found = _env_extract_from_text_blob(raw, wanted)
+        if found:
+            return found, f"{_env_safe_name_token(container)}:blob"
+    return "", ""
+
+
+def _env_get_with_source(name: str) -> tuple[str, str]:
     for alias in _env_alias_names(name):
         raw = os.getenv(alias)
         if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    return default
+            return str(raw).strip(), alias
+    return _env_blob_lookup(name)
+
+
+def _env_get(name: str, default: str = "") -> str:
+    raw, _source = _env_get_with_source(name)
+    return raw if raw else default
 
 
 def _env_present_sources(name: str) -> list[str]:
@@ -1587,12 +1732,70 @@ def _env_present_sources(name: str) -> list[str]:
         raw = os.getenv(alias)
         if raw is not None and str(raw).strip():
             sources.append(alias)
+    _value, source = _env_blob_lookup(name)
+    if source and source not in sources:
+        sources.append(source)
     return sources
 
 
 def _env_first_source(name: str) -> str:
     sources = _env_present_sources(name)
     return sources[0] if sources else ""
+
+
+def _env_probe_summary() -> dict[str, Any]:
+    """List only env/config variable names relevant to the OpenAI-secret issue.
+
+    Values are never returned.  Names are also redacted if they look like a
+    pasted credential.  This is safe to emit in OfficeQA reasoning_trace.
+    """
+    names = list(os.environ.keys())
+
+    def selected(*markers: str, limit: int = 14) -> list[str]:
+        out: list[str] = []
+        for key in sorted(names):
+            upper = _env_normalize_name(key)
+            if any(marker in upper for marker in markers):
+                out.append(_env_safe_name_token(key))
+        return out[:limit]
+
+    openai_names = selected("OPENAI", limit=16)
+    amber_names = selected("AMBER_CONFIG", limit=16)
+    amber_openai_names = [
+        _env_safe_name_token(key)
+        for key in sorted(names)
+        if "AMBER_CONFIG" in _env_normalize_name(key) and "OPENAI" in _env_normalize_name(key)
+    ][:16]
+    officeqa_names = selected("OFFICEQA", limit=12)
+    secret_like_names = [
+        _env_safe_name_token(key)
+        for key in sorted(names)
+        if any(part in _env_normalize_name(key) for part in ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "API_KEY"))
+    ][:16]
+
+    key_sources = _env_present_sources("OPENAI_API_KEY")
+    base_sources = _env_present_sources("OPENAI_BASE_URL")
+    model_sources = _env_present_sources("OPENAI_MODEL")
+
+    return {
+        "env_openai_count": sum(1 for key in names if "OPENAI" in _env_normalize_name(key)),
+        "env_amber_count": sum(1 for key in names if "AMBER_CONFIG" in _env_normalize_name(key)),
+        "env_amber_openai_count": sum(
+            1 for key in names if "AMBER_CONFIG" in _env_normalize_name(key) and "OPENAI" in _env_normalize_name(key)
+        ),
+        "env_officeqa_count": sum(1 for key in names if "OFFICEQA" in _env_normalize_name(key)),
+        "env_secret_like_count": sum(
+            1 for key in names if any(part in _env_normalize_name(key) for part in ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "API_KEY"))
+        ),
+        "env_openai_names": "|".join(openai_names) or "none",
+        "env_amber_names": "|".join(amber_names) or "none",
+        "env_amber_openai_names": "|".join(amber_openai_names) or "none",
+        "env_officeqa_names": "|".join(officeqa_names) or "none",
+        "env_secret_like_names": "|".join(secret_like_names) or "none",
+        "key_sources": "|".join(_env_safe_name_token(source) for source in key_sources[:8]) or "none",
+        "base_sources": "|".join(_env_safe_name_token(source) for source in base_sources[:8]) or "none",
+        "model_sources": "|".join(_env_safe_name_token(source) for source in model_sources[:8]) or "none",
+    }
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -5755,6 +5958,7 @@ class AegisForgeAgent:
             "base_env_ignored": ignored_base[:8],
             "api_key_present": bool(key_sources),
             "api_key_sources": key_sources[:6],
+            "env_probe": _env_probe_summary(),
         }
 
 
@@ -6063,6 +6267,7 @@ class AegisForgeAgent:
         cache = self._officeqa_local_corpus_cache
         retrieval = getattr(self, "_officeqa_last_retrieval_status", {}) or {}
         llm_diag = self._officeqa_llm_endpoint_diagnostics()
+        env_probe = llm_diag.get("env_probe", {}) if isinstance(llm_diag.get("env_probe"), Mapping) else {}
         llm_status = getattr(self, "_officeqa_last_llm_status", {}) or {}
         endpoint_source = self._coerce_text(llm_diag.get("endpoint_source") or "none")
         endpoint_source = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", endpoint_source)[:48]
@@ -6071,7 +6276,7 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V067 "
+            "OFFICEQA_DIAG_V068 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -6094,7 +6299,17 @@ class AegisForgeAgent:
             f"llm_endpoint={int(bool(llm_diag.get('endpoint_configured')))} "
             f"llm_source={endpoint_source} "
             f"llm_api_key={int(bool(llm_diag.get('api_key_present')))} "
-            f"llm_key_source={self._coerce_text((llm_diag.get('api_key_sources') or ['none'])[0])[:64]} "
+            f"llm_key_source={_env_safe_name_token((llm_diag.get('api_key_sources') or ['none'])[0])[:64]} "
+            f"env_openai_count={int(env_probe.get('env_openai_count', 0) or 0)} "
+            f"env_amber_count={int(env_probe.get('env_amber_count', 0) or 0)} "
+            f"env_amber_openai_count={int(env_probe.get('env_amber_openai_count', 0) or 0)} "
+            f"env_officeqa_count={int(env_probe.get('env_officeqa_count', 0) or 0)} "
+            f"env_secret_like_count={int(env_probe.get('env_secret_like_count', 0) or 0)} "
+            f"env_openai_names={self._coerce_text(env_probe.get('env_openai_names') or 'none')[:260]} "
+            f"env_amber_openai_names={self._coerce_text(env_probe.get('env_amber_openai_names') or 'none')[:260]} "
+            f"env_key_sources={self._coerce_text(env_probe.get('key_sources') or 'none')[:220]} "
+            f"env_base_sources={self._coerce_text(env_probe.get('base_sources') or 'none')[:220]} "
+            f"env_model_sources={self._coerce_text(env_probe.get('model_sources') or 'none')[:220]} "
             f"llm_enabled={int(bool(llm_status.get('enabled', _env_flag('AEGISFORGE_OFFICEQA_LLM_ENABLED', default=True))))} "
             f"llm_called={int(bool(llm_status.get('called')))} "
             f"llm_responses={int(bool(llm_status.get('responses_called')))} "
@@ -6274,7 +6489,7 @@ class AegisForgeAgent:
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v0.6.6 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
+                "OfficeQA answer engine v0.6.8 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
                 "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
