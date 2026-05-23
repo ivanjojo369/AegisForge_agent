@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_2_manual_guard_patch_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_competition_style_evidence_packer_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -6686,7 +6686,7 @@ class AegisForgeAgent:
 
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
-            "You are AegisForge OfficeQA AgentBeats mode v1.5. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.6. "
             "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
@@ -6715,7 +6715,7 @@ class AegisForgeAgent:
         arithmetic-heavy OfficeQA tasks.
         """
         instructions = (
-            "You are AegisForge OfficeQA AgentBeats mode v1.5. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.6. "
             "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
             "Never output [BUILD] or [ASK]. "
@@ -6863,6 +6863,230 @@ class AegisForgeAgent:
             self._last_llm_error = "empty_responses_text"
         return text
 
+
+    def _officeqa_competition_focus_terms(self, question: str) -> list[str]:
+        """Build BM25-style focus terms for the OfficeQA evidence packer.
+
+        This is not an answer table.  It expands visible domain language into
+        reusable retrieval terms so the LLM/code-interpreter path receives a
+        compact evidence bundle similar to a classic BM25+calculator agent.
+        """
+        raw = self._coerce_text(question)
+        lowered = raw.lower()
+        terms: list[str] = []
+        terms.extend(self._officeqa_keyword_terms(raw))
+        terms.extend(self._officeqa_topic_terms_for_matching(raw))
+        terms.extend(self._officeqa_bm25_terms(raw, limit=80))
+
+        phrase_map = (
+            (("national defense", "associated activities"), ("national defense", "associated activities", "budget outlays by function", "defense")),
+            (("gross interest", "interest cost"), ("gross interest", "interest on the public debt", "budget outlays", "ffo")),
+            (("individual income", "tax receipts", "refunds"), ("individual income tax", "receipts net of refunds", "internal revenue", "irs")),
+            (("exchange stabilization", "esf"), ("exchange stabilization fund", "total assets", "statement of financial condition")),
+            (("savings bonds", "saving notes"), ("savings bonds", "saving notes", "sales", "redemptions", "accrued discount")),
+            (("average yields", "corporate bonds", "treasury bonds"), ("average yields", "high-grade corporate bonds", "aa corporate", "treasury bonds", "long-term bonds")),
+            (("public debt", "marketable", "interest-bearing"), ("public debt", "marketable", "interest-bearing debt", "treasury bills", "treasury notes", "treasury bonds")),
+            (("currency", "coin", "denomination"), ("currency in circulation", "coin and currency", "denomination", "outstanding")),
+            (("bank positions", "foreign assets"), ("bank positions", "foreign assets", "short-term", "weekly", "foreign current units")),
+            (("trust fund", "hospital insurance"), ("trust fund", "financial operations", "receipts", "interest and profits on investments")),
+            (("criminal cases", "district"), ("internal revenue", "criminal cases", "district court", "closed")),
+            (("operating balance", "general fund"), ("treasury operating balance", "general fund", "working balance", "federal reserve banks")),
+        )
+        for triggers, additions in phrase_map:
+            if any(trigger in lowered for trigger in triggers):
+                terms.extend(additions)
+
+        for year in self._officeqa_question_years(raw):
+            terms.append(str(year))
+        month_names = {
+            1: ("january", "jan"), 2: ("february", "feb"), 3: ("march", "mar"),
+            4: ("april", "apr"), 5: ("may",), 6: ("june", "jun"),
+            7: ("july", "jul"), 8: ("august", "aug"), 9: ("september", "sept", "sep"),
+            10: ("october", "oct"), 11: ("november", "nov"), 12: ("december", "dec"),
+        }
+        for month in self._officeqa_question_months(raw):
+            terms.extend(month_names.get(month, ()))
+        return [term for term in self._dedupe([self._coerce_text(t).lower().strip() for t in terms]) if len(term) >= 2][:140]
+
+    def _officeqa_competition_record_score(self, question: str, record: Mapping[str, Any], focus_terms: list[str]) -> int:
+        """Score corpus records for the v1.6 OfficeQA evidence packer."""
+        text = self._coerce_text(record.get("text"))
+        name = self._coerce_text(record.get("name"))
+        path = self._coerce_text(record.get("path"))
+        source_key = self._coerce_text(record.get("source_key")) or self._officeqa_normalize_source_hint(f"{path}\n{name}")
+        haystack = f"{name}\n{path}\n{source_key}\n{text[:120000]}".lower()
+        if not haystack.strip():
+            return 0
+
+        score = 0
+        try:
+            score += int(self._officeqa_fast_record_score(question, record) or 0)
+        except Exception:
+            score += 0
+
+        q_years = self._officeqa_question_years(question)
+        if q_years:
+            year_hits = sum(1 for year in q_years if str(year) in haystack)
+            score += min(60, 10 * year_hits)
+            if year_hits >= min(len(q_years), 3):
+                score += 18
+
+        q_months = self._officeqa_question_months(question)
+        if q_months:
+            month_names = {
+                1: ("january", "jan"), 2: ("february", "feb"), 3: ("march", "mar"),
+                4: ("april", "apr"), 5: ("may",), 6: ("june", "jun"),
+                7: ("july", "jul"), 8: ("august", "aug"), 9: ("september", "sept", "sep"),
+                10: ("october", "oct"), 11: ("november", "nov"), 12: ("december", "dec"),
+            }
+            for month in q_months:
+                if any(re.search(rf"\b{re.escape(name)}\b", haystack) for name in month_names.get(month, ())):
+                    score += 8
+
+        # BM25-like term overlap: exact phrases are much more valuable than
+        # generic financial words.
+        for term in focus_terms:
+            if not term:
+                continue
+            if term in haystack:
+                score += 7 if len(term) >= 7 or " " in term else 3
+            elif " " in term and all(part in haystack for part in term.split() if len(part) >= 3):
+                score += 4
+
+        for hint in self._officeqa_source_hints(question):
+            if len(hint) >= 5 and self._officeqa_source_key_matches_hint(source_key, hint):
+                score += 150
+
+        # Prefer table-like records, but do not require explicit sourcefile_lock.
+        counts = self._officeqa_context_diagnostic_counts(text[:160000])
+        score += min(40, 3 * int(counts.get("table_like_lines", 0) or 0))
+        score += min(50, 4 * int(counts.get("numeric_year_rows", 0) or 0))
+        score += min(40, 2 * int(counts.get("numeric_dense_lines", 0) or 0))
+
+        path_l = path.lower()
+        for marker in ("treasury", "bulletin", "transformed", "jsons", "table", "csv", "ffo", "esf", "public_debt"):
+            if marker in path_l:
+                score += 3
+
+        return int(score)
+
+    def _officeqa_competition_evidence_pack(
+        self,
+        question: str,
+        metadata: Mapping[str, Any] | None,
+        fallback_context: str,
+        *,
+        limit: int = 42000,
+    ) -> str:
+        """Build a compact BM25/source-table evidence pack for LLM+Code Interpreter.
+
+        v1.5.2 correctly stopped accepting weak deterministic calculations, but
+        many questions still reached the LLM with broad mixed context.  This
+        packer re-ranks source records directly and sends a smaller set of
+        high-signal table windows to the LLM/code-interpreter path.
+        """
+        self._officeqa_last_evidence_pack_status = {
+            "enabled": 1,
+            "records_scored": 0,
+            "records_selected": 0,
+            "blocks": 0,
+            "chars": 0,
+            "max_score": 0,
+            "fallback_used": 0,
+        }
+
+        cache = self._officeqa_load_local_corpus_cache()
+        focus_terms = self._officeqa_competition_focus_terms(question)
+        if not cache:
+            fallback = self._officeqa_context_for_llm(question, fallback_context, limit=limit)
+            self._officeqa_last_evidence_pack_status.update({
+                "fallback_used": 1,
+                "chars": len(fallback),
+            })
+            return fallback
+
+        scored: list[tuple[int, int, Mapping[str, Any]]] = []
+        for idx, record in enumerate(cache):
+            score = self._officeqa_competition_record_score(question, record, focus_terms)
+            if score > 0:
+                scored.append((score, idx, record))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        top_records = scored[: max(12, min(90, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_RECORDS", "48") or "48")))]
+        max_score = int(top_records[0][0]) if top_records else 0
+        self._officeqa_last_evidence_pack_status.update({
+            "records_scored": len(scored),
+            "records_selected": len(top_records),
+            "max_score": max_score,
+        })
+
+        pieces: list[str] = []
+        seen_blocks: set[str] = set()
+        block_budget = max(8, min(80, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_BLOCKS", "36") or "36")))
+        per_record_limit = max(2500, min(18000, limit // max(3, min(18, len(top_records) or 1))))
+
+        for rank, (score, _idx, record) in enumerate(top_records[:block_budget], 1):
+            text = self._coerce_text(record.get("text"))
+            if not text:
+                continue
+            name = self._coerce_text(record.get("name")) or "local"
+            path = self._coerce_text(record.get("path"))
+
+            row_context = self._officeqa_structured_rows_from_record(
+                question,
+                record,
+                limit=max(2500, min(10000, per_record_limit)),
+            )
+            block_context = self._officeqa_relevant_blocks_from_text(
+                question,
+                text,
+                name=name,
+                path=path,
+                limit=max(2500, min(12000, per_record_limit)),
+            )
+
+            for label, payload in (("rows", row_context), ("blocks", block_context)):
+                clean = self._coerce_text(payload).strip()
+                if not clean:
+                    continue
+                digest = hashlib.sha256(clean[:2200].encode("utf-8", errors="ignore")).hexdigest()[:16]
+                if digest in seen_blocks:
+                    continue
+                seen_blocks.add(digest)
+                safe_name = re.sub(r"[^A-Za-z0-9_.:\-]+", "_", name)[:96]
+                header = (
+                    f"[officeqa_evidence_pack rank={rank} score={int(score)} kind={label} "
+                    f"source={safe_name}]"
+                )
+                pieces.append(f"{header}\n{clean[:per_record_limit]}")
+                if len(pieces) >= block_budget or sum(len(piece) for piece in pieces) > limit:
+                    break
+            if len(pieces) >= block_budget or sum(len(piece) for piece in pieces) > limit:
+                break
+
+        packed = "\n\n".join(pieces).strip()
+
+        # Add a short fallback tail from the already-built retrieval context if
+        # direct corpus packing was too thin.  Keep the tail small so it cannot
+        # swamp the high-rank evidence blocks.
+        if len(packed) < min(9000, limit // 3):
+            tail = self._officeqa_context_for_llm(question, fallback_context, limit=max(4000, min(12000, limit // 3)))
+            if tail and tail not in packed:
+                packed = (packed + "\n\n[officeqa_evidence_pack fallback_tail]\n" + tail).strip() if packed else tail
+                self._officeqa_last_evidence_pack_status["fallback_used"] = 1
+
+        if not packed:
+            packed = self._officeqa_context_for_llm(question, fallback_context, limit=limit)
+            self._officeqa_last_evidence_pack_status["fallback_used"] = 1
+
+        packed = packed[:limit]
+        self._officeqa_last_evidence_pack_status.update({
+            "blocks": len(pieces),
+            "chars": len(packed),
+        })
+        return packed
+
+
     def _officeqa_context_for_llm(self, question: str, context: str, *, limit: int = 16000) -> str:
         """Pack OfficeQA evidence into a smaller LLM context window."""
         raw = self._coerce_text(context)
@@ -6967,10 +7191,12 @@ class AegisForgeAgent:
             self._officeqa_last_llm_status["error"] = "no_api_key"
             return None
 
-        packed_context = self._officeqa_context_for_llm(
+        context_limit = max(8000, min(48000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "36000") or "36000")))
+        packed_context = self._officeqa_competition_evidence_pack(
             question,
+            metadata,
             context,
-            limit=max(8000, min(42000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "28000") or "28000"))),
+            limit=context_limit,
         )
         self._officeqa_last_llm_status["packed_chars"] = len(packed_context)
         max_tokens = max(700, min(3000, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1800") or "1800")))
@@ -7505,6 +7731,7 @@ class AegisForgeAgent:
         env_probe = llm_diag.get("env_probe", {}) if isinstance(llm_diag.get("env_probe"), Mapping) else {}
         llm_status = getattr(self, "_officeqa_last_llm_status", {}) or {}
         calc_status = getattr(self, "_officeqa_last_calc_status", {}) or {}
+        evidence_pack = getattr(self, "_officeqa_last_evidence_pack_status", {}) or {}
         endpoint_source = self._coerce_text(llm_diag.get("endpoint_source") or "none")
         endpoint_source = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", endpoint_source)[:48]
         llm_block = self._coerce_text(llm_status.get("block") or "")
@@ -7520,7 +7747,7 @@ class AegisForgeAgent:
         calc_reject_token = self._coerce_text(calc_status.get("reject_reason") or "none")
         calc_reject_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_reject_token)[:64]
         return (
-            "OFFICEQA_DIAG_V1_5_2 "
+            "OFFICEQA_DIAG_V1_6 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -7584,6 +7811,12 @@ class AegisForgeAgent:
             f"llm_responses={int(bool(llm_status.get('responses_called')))} "
             f"llm_chat={int(bool(llm_status.get('chat_called')))} "
             f"code_interpreter={int(bool(llm_status.get('code_interpreter')))} "
+            f"evidence_pack={int(evidence_pack.get('enabled', 0) or 0)} "
+            f"evidence_records={int(evidence_pack.get('records_selected', 0) or 0)} "
+            f"evidence_blocks={int(evidence_pack.get('blocks', 0) or 0)} "
+            f"evidence_chars={int(evidence_pack.get('chars', 0) or 0)} "
+            f"evidence_max_score={int(evidence_pack.get('max_score', 0) or 0)} "
+            f"evidence_fallback={int(evidence_pack.get('fallback_used', 0) or 0)} "
             f"llm_packed={int(llm_status.get('packed_chars', 0) or 0)} "
             f"llm_text={int(llm_status.get('text_chars', 0) or 0)} "
             f"llm_valid={int(bool(llm_status.get('valid')))} "
