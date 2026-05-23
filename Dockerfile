@@ -11,6 +11,7 @@ WORKDIR /app
 # Runtime deps.
 # bash is required by run.sh.
 # git is used only at build time to fetch a sparse OfficeQA source-corpus checkout.
+# Python's stdlib zipfile is used to expand the OfficeQA source corpus archives.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
@@ -58,12 +59,12 @@ RUN set -eux; \
     cd officeqa; \
     git remote add origin "${OFFICEQA_REPO_URL}"; \
     git config core.sparseCheckout true; \
-    git config core.sparseCheckoutCone true; \
+    git config core.sparseCheckoutCone false; \
     printf '%s\n' \
-      '/treasury_bulletins_parsed/jsons/' \
-      '/treasury_bulletins_parsed/transformed/' \
+      'treasury_bulletins_parsed/jsons/*' \
+      'treasury_bulletins_parsed/transformed/*' \
       > .git/info/sparse-checkout; \
-    echo "[Dockerfile] Sparse-fetching OfficeQA source corpus commit ${OFFICEQA_CORPUS_COMMIT}"; \
+    echo "[Dockerfile] Sparse-fetching OfficeQA source corpus archives at commit ${OFFICEQA_CORPUS_COMMIT}"; \
     git fetch --depth 1 --filter=blob:none --progress origin "${OFFICEQA_CORPUS_COMMIT}"; \
     git checkout --progress FETCH_HEAD; \
     mkdir -p "${AEGISFORGE_OFFICEQA_DATA_DIR}"; \
@@ -71,7 +72,13 @@ RUN set -eux; \
     rm -rf "${AEGISFORGE_OFFICEQA_DATA_DIR}/treasury_bulletins_parsed/transform_scripts" || true; \
     rm -rf /tmp/officeqa_download
 
-# Safety filter and corpus metadata.
+# Safety filter, zip expansion, and corpus metadata.
+#
+# The upstream OfficeQA source tree stores the useful parsed Treasury corpus as
+# ZIP archives under treasury_bulletins_parsed/jsons and transformed.  If those
+# ZIPs are left compressed, the runtime only sees a couple of archive records.
+# This step safely expands them at build time so agent.py can retrieve the real
+# parsed document/table files.
 RUN set -eux; \
     find "${AEGISFORGE_OFFICEQA_DATA_DIR}" -type f \( \
       -iname '*answer*' -o \
@@ -89,32 +96,99 @@ RUN set -eux; \
       -iname '*credential*' -o \
       -iname '*api_key*' \
     \) -delete; \
-    python - <<'PY'
+    python - <<'DOCKER_PY'
 import json
 import os
-from pathlib import Path
+import shutil
+import zipfile
+from pathlib import Path, PurePosixPath
 
 root = Path(os.environ["AEGISFORGE_OFFICEQA_DATA_DIR"])
 corpus = root / "treasury_bulletins_parsed"
-files = [p for p in corpus.rglob("*") if p.is_file()]
+extract_root = corpus / "_extracted"
+blocked_name_fragments = (
+    "answer",
+    "gold",
+    "ground_truth",
+    "correct_answer",
+    "expected_answer",
+    "solution",
+    "results",
+    "provenance",
+    "leaderboard",
+    "submission",
+    "secret",
+    "token",
+    "credential",
+    "api_key",
+)
+
+if not corpus.exists():
+    raise SystemExit(f"OfficeQA source corpus directory missing: {corpus}")
+
+extract_root.mkdir(parents=True, exist_ok=True)
+zip_files = sorted(p for p in corpus.rglob("*.zip") if p.is_file())
+print(f"[Dockerfile] OfficeQA source corpus ZIP archives found: {len(zip_files)}", flush=True)
+for zpath in zip_files:
+    target_base = extract_root / zpath.relative_to(corpus).with_suffix("")
+    target_base.mkdir(parents=True, exist_ok=True)
+    print(f"[Dockerfile] Extracting {zpath.relative_to(corpus)} -> {target_base.relative_to(corpus)}", flush=True)
+    try:
+        with zipfile.ZipFile(zpath) as zf:
+            for info in zf.infolist():
+                raw_name = info.filename.replace("\\", "/")
+                if not raw_name or raw_name.endswith("/"):
+                    continue
+                rel = PurePosixPath(raw_name)
+                if rel.is_absolute() or ".." in rel.parts:
+                    continue
+                rel_text = str(rel).lower()
+                if any(fragment in rel_text for fragment in blocked_name_fragments):
+                    continue
+                out_path = target_base.joinpath(*rel.parts)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src_f, out_path.open("wb") as dst_f:
+                    shutil.copyfileobj(src_f, dst_f)
+    except zipfile.BadZipFile as exc:
+        raise SystemExit(f"Bad OfficeQA ZIP archive {zpath}: {exc}") from exc
+
+# Remove compressed archives after extraction. This keeps the image smaller and
+# prevents the runtime corpus loader from treating ZIP files as the only source.
+for zpath in zip_files:
+    zpath.unlink(missing_ok=True)
+
+# Apply the safety filename filter again after extraction.
+for path in list(corpus.rglob("*")):
+    if not path.is_file():
+        continue
+    lower = str(path.relative_to(root)).lower()
+    if any(fragment in lower for fragment in blocked_name_fragments):
+        path.unlink(missing_ok=True)
+
+files = sorted(p for p in corpus.rglob("*") if p.is_file())
+text_like_suffixes = {".json", ".jsonl", ".txt", ".csv", ".tsv", ".md", ".html", ".htm", ".xml"}
+text_like = [p for p in files if p.suffix.lower() in text_like_suffixes]
 metadata = {
     "source": "databricks/officeqa",
     "commit": os.environ.get("AEGISFORGE_OFFICEQA_CORPUS_COMMIT", ""),
     "included_tree": "treasury_bulletins_parsed/{jsons,transformed}",
+    "expanded_archives": [str(p.relative_to(root)) for p in zip_files],
     "excluded": [
         "officeqa.csv",
         "answer/gold/ground_truth/solution/results/provenance-like filenames",
         "transform_scripts",
     ],
     "file_count": len(files),
-    "sample_files": [str(p.relative_to(root)) for p in files[:10]],
+    "text_like_file_count": len(text_like),
+    "sample_files": [str(p.relative_to(root)) for p in files[:20]],
 }
 (root / "OFFICEQA_CORPUS_METADATA.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
-print(f"[Dockerfile] OfficeQA source corpus file count after safety filter: {len(files)}", flush=True)
+print(f"[Dockerfile] OfficeQA source corpus file count after unzip/safety filter: {len(files)}", flush=True)
+print(f"[Dockerfile] OfficeQA text-like source file count: {len(text_like)}", flush=True)
 print(f"[Dockerfile] OfficeQA corpus root: {corpus}", flush=True)
-if not files:
-    raise SystemExit("OfficeQA source corpus is empty after sparse checkout/safety filter.")
-PY
+if len(files) < 20:
+    raise SystemExit(f"OfficeQA source corpus still looks too small after archive extraction: {len(files)} files")
+DOCKER_PY
 
 # OpenAI-compatible endpoint defaults.
 #
@@ -124,7 +198,7 @@ PY
 ENV OPENAI_BASE_URL=https://api.openai.com/v1 \
     AEGISFORGE_LLM_TIMEOUT_SECONDS=75 \
     AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE=1 \
-    AEGISFORGE_OFFICEQA_RUNTIME_PROFILE=v0_6_1_sparse_corpus_llm_ready
+    AEGISFORGE_OFFICEQA_RUNTIME_PROFILE=v0_6_2_unzipped_corpus_llm_ready
 
 # Make entrypoint executable.
 RUN chmod +x /app/run.sh
