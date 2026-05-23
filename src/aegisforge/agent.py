@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_3_filesystem_forensic_loader_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_3_1_smoke_probe_guard_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -2102,17 +2102,57 @@ class AegisForgeAgent:
 
 
     def _is_generic_smoke_request(self, task_text: Any, metadata: Mapping[str, Any] | None = None) -> bool:
-        """Detect tiny health/smoke probes so protocol firewalls do not hide artifacts."""
-        text = self._coerce_text(task_text).strip().lower()
-        compact = re.sub(r"[^a-z0-9]+", "", text)
-        if compact in {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}:
+        """Detect tiny health/smoke probes so protocol firewalls do not hide artifacts.
+
+        Unit and platform health checks often arrive as a JSON-ish envelope such
+        as {"task":"ping","text":"ping"}.  The old detector only tested the
+        whole serialized blob, so that envelope compacted to "taskpingtextping"
+        and could be misrouted into OfficeQA by broad runner/context heuristics.
+        This detector treats exact leaf values as smoke signals while keeping
+        normal OfficeQA questions protected by the OfficeQA firewall.
+        """
+        smoke_terms = {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}
+
+        def _compact(value: Any) -> str:
+            return re.sub(r"[^a-z0-9]+", "", self._coerce_text(value).strip().lower())
+
+        def _leaf_smoke(value: Any, *, depth: int = 0) -> bool:
+            if value is None or depth > 4:
+                return False
+            if isinstance(value, Mapping):
+                for key in ("task", "text", "command", "message", "query", "input", "content"):
+                    if key in value and _leaf_smoke(value.get(key), depth=depth + 1):
+                        return True
+                return any(_leaf_smoke(child, depth=depth + 1) for child in value.values())
+            if isinstance(value, (list, tuple, set)):
+                return any(_leaf_smoke(child, depth=depth + 1) for child in list(value)[:20])
+            return _compact(value) in smoke_terms
+
+        if _leaf_smoke(task_text):
             return True
+
+        text = self._coerce_text(task_text).strip()
+        compact = _compact(text)
+        if compact in smoke_terms:
+            return True
+
+        # Parse common JSON envelope forms emitted by A2A/unit-test harnesses.
+        parsed = self._maybe_parse_json_mapping(text)
+        if isinstance(parsed, Mapping) and _leaf_smoke(parsed):
+            return True
+
+        # Last-resort regex for repr-like strings from dummy messages.
+        if re.search(r"[\"'](?:task|text|command|message)[\"']\s*[:=]\s*[\"'](?:ping|health|healthcheck|smoke|test|status|ok)[\"']", text, flags=re.IGNORECASE):
+            return True
+
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        if _leaf_smoke(safe_metadata):
+            return True
         meta_task = self._coerce_text(
             safe_metadata.get("task") or safe_metadata.get("text") or safe_metadata.get("command") or ""
         ).strip().lower()
         meta_compact = re.sub(r"[^a-z0-9]+", "", meta_task)
-        return meta_compact in {"ping", "health", "healthcheck", "smoke", "test", "status", "ok"}
+        return meta_compact in smoke_terms
 
     def _looks_like_build_it_request(self, task_text: Any, metadata: Mapping[str, Any] | None = None) -> bool:
         """Return True only for clear BWIM/Build-it block-construction prompts."""
@@ -2649,7 +2689,7 @@ class AegisForgeAgent:
         reason = self._officeqa_scrub_protocol_markup(reasoning).strip()
         answer = self._officeqa_clean_final_answer(final_answer)
         if not reason:
-            reason = "OfficeQA mode produced an answer from the available question, context, and evidence."
+            reason = "AegisForge OfficeQA runtime produced an answer from the available question, context, and evidence."
         # Keep reasoning compact and free of literal XML-like protocol tags so
         # the scorer can reliably extract exactly one FINAL_ANSWER block.
         reason = re.sub(r"\s+", " ", reason).strip()
