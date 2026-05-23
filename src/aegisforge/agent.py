@@ -26,6 +26,7 @@ import logging
 import math
 import os
 import re
+import zipfile
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
 from importlib import import_module
@@ -72,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_1_compact_diagnostics_2026_05_22"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_2_expanded_corpus_reader_no_key_guard_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3089,6 +3090,95 @@ class AegisForgeAgent:
             return self._officeqa_strip_html_for_corpus(raw_text)[:max_chars]
         return raw_text[:max_chars]
 
+    def _officeqa_archive_member_is_safe(self, member_name: str) -> bool:
+        """Return whether an archive member is safe source-document material."""
+        lowered = self._coerce_text(member_name).lower().replace("\\", "/")
+        if not lowered or lowered.endswith("/"):
+            return False
+        blocked = (
+            "../", "/.git/", "__pycache__", ".venv", "site-packages", "node_modules",
+            "ground_truth", "gold", "golden", "answer_key", "answers", "correct_answer",
+            "expected_answer", "reference_answer", "solution", "solutions", "submission",
+            "results", "provenance", "leaderboard", "secret", "token", "credential", "api_key",
+            "apikey", "private_key", "password", "cookie", "authorization",
+        )
+        if any(part in lowered for part in blocked):
+            return False
+        return Path(lowered).suffix.lower() in {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
+
+    def _officeqa_records_from_zip(
+        self,
+        archive_path: Path,
+        *,
+        max_records: int,
+        max_bytes: int,
+    ) -> list[dict[str, Any]]:
+        """Read source-document records directly from a ZIP archive.
+
+        This is a safety net for OfficeQA corpus builds where Git sparse checkout
+        downloads the Databricks parsed Treasury archives but they are not fully
+        expanded, or where the build leaves both expanded files and archives.
+        """
+        records: list[dict[str, Any]] = []
+        if max_records <= 0:
+            return records
+        try:
+            if archive_path.stat().st_size <= 0:
+                return records
+        except Exception:
+            return records
+
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                infos = [info for info in zf.infolist() if not info.is_dir()]
+                # Prefer table/data-looking names first; bounded for quick-submit.
+                infos.sort(key=lambda info: (
+                    0 if re.search(r"(treasury|bulletin|table|fiscal|debt|receipts|outlays|esf|cpi|irs)", info.filename, re.I) else 1,
+                    info.file_size,
+                ))
+                member_limit = max(10, min(len(infos), int(os.getenv("AEGISFORGE_OFFICEQA_ZIP_MEMBER_LIMIT", "2500") or "2500")))
+                for info in infos[:member_limit]:
+                    if len(records) >= max_records:
+                        break
+                    if not self._officeqa_archive_member_is_safe(info.filename):
+                        continue
+                    try:
+                        if info.file_size <= 0 or info.file_size > max(max_bytes * 4, 3000000):
+                            continue
+                        raw = zf.read(info)
+                    except Exception:
+                        continue
+                    try:
+                        raw_text = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    if not raw_text.strip():
+                        continue
+                    pseudo_path = Path(info.filename)
+                    text = self._officeqa_corpus_text_from_file(pseudo_path, raw_text, max_chars=max_bytes)
+                    if not text.strip():
+                        continue
+                    virtual_path = f"{archive_path.resolve()}::{info.filename}"
+                    if not self._officeqa_local_file_is_data_like(Path(str(archive_path)), text):
+                        # Archive members under explicit OfficeQA roots can be
+                        # sparse fragments; allow clear numeric/table signal.
+                        counts = self._officeqa_context_diagnostic_counts(text[:200000])
+                        if counts.get("numeric_year_rows", 0) < 1 and counts.get("numeric_dense_lines", 0) < 2:
+                            continue
+                    records.append(
+                        {
+                            "path": virtual_path,
+                            "name": info.filename[-180:],
+                            "text": text[:max_bytes],
+                            "data_quality": self._officeqa_text_data_quality(text, virtual_path),
+                        }
+                    )
+        except zipfile.BadZipFile:
+            return records
+        except Exception as exc:
+            self._officeqa_local_corpus_error = (self._officeqa_local_corpus_error + f";zip:{archive_path.name}:{exc.__class__.__name__}")[:240]
+        return records
+
     def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
         global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR
         if self._officeqa_local_corpus_cache is not None:
@@ -3105,16 +3195,25 @@ class AegisForgeAgent:
             return self._officeqa_local_corpus_cache
 
         # The embedded OfficeQA corpus is source data, not answer labels.  It can
-        # contain hundreds of transformed Treasury files; keep the cap high enough
-        # to index the corpus but bounded for the quick-submit container.
-        max_files = max(0, min(2500, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "1200") or "1200")))
+        # contain thousands of transformed Treasury records after Dockerfile
+        # v0.6.2 expands Databricks ZIP archives.  Keep the cap high enough to
+        # index useful coverage but bounded for quick-submit.
+        max_files = max(0, min(8000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "4500") or "4500")))
         max_bytes = max(20000, min(2500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "650000") or "650000")))
         exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
+        archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
         visited: set[str] = set()
 
         try:
-            for root in self._officeqa_local_corpus_roots():
+            roots = self._officeqa_local_corpus_roots()
+            # Scan narrower official corpus directories first, then broader roots.
+            roots.sort(key=lambda p: (
+                0 if "treasury_bulletins_parsed" in str(p).lower() else 1,
+                0 if str(p).lower().startswith("/app/data/officeqa") else 1,
+                len(str(p)),
+            ))
+            for root in roots:
                 if len(records) >= max_files:
                     break
                 try:
@@ -3125,7 +3224,10 @@ class AegisForgeAgent:
                     if len(records) >= max_files:
                         break
                     try:
-                        if not path.is_file() or path.suffix.lower() not in exts:
+                        if not path.is_file():
+                            continue
+                        suffix = path.suffix.lower()
+                        if suffix not in exts and suffix not in archive_exts:
                             continue
                         resolved = str(path.resolve())
                         if resolved in visited:
@@ -3134,7 +3236,20 @@ class AegisForgeAgent:
                         if not self._officeqa_path_is_safe_context(path):
                             continue
                         size = path.stat().st_size
-                        if size <= 0 or size > max(max_bytes * 4, 2000000):
+                        if size <= 0:
+                            continue
+
+                        if suffix in archive_exts:
+                            remaining = max_files - len(records)
+                            archive_records = self._officeqa_records_from_zip(
+                                path,
+                                max_records=remaining,
+                                max_bytes=max_bytes,
+                            )
+                            records.extend(archive_records)
+                            continue
+
+                        if size > max(max_bytes * 4, 3000000):
                             continue
                         raw_text = path.read_text(encoding="utf-8", errors="ignore")
                         text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
@@ -3145,8 +3260,22 @@ class AegisForgeAgent:
                     lower = text[:50000].lower()
                     path_l = str(path).lower()
                     # Keep only plausible OfficeQA/document-data files unless
-                    # the user explicitly sets a corpus dir.
-                    plausible = any(
+                    # the user explicitly sets a corpus dir.  Path-aware markers
+                    # are important because parsed page files may not repeat
+                    # "Treasury Bulletin" in every text fragment.
+                    explicit_source_path = any(
+                        marker in path_l
+                        for marker in (
+                            "/app/data/officeqa",
+                            "treasury_bulletins_parsed",
+                            "officeqa",
+                            "treasury",
+                            "bulletin",
+                            "transformed",
+                            "jsons",
+                        )
+                    )
+                    plausible = explicit_source_path or any(
                         marker in path_l or marker in lower
                         for marker in (
                             "officeqa",
@@ -3205,7 +3334,12 @@ class AegisForgeAgent:
         return score
 
     def _officeqa_text_data_quality(self, text: str, path: str = "") -> int:
-        """Score whether a local file is actual data, not merely repo prose/code."""
+        """Score whether a local file is actual data, not merely repo prose/code.
+
+        v0.6.2 adds path-aware scoring because the embedded Databricks corpus
+        often stores parsed Treasury material under archive/member names whose
+        individual text chunks may not repeat "Treasury Bulletin" in every page.
+        """
         raw = self._coerce_text(text)
         if not raw.strip():
             return 0
@@ -3214,15 +3348,21 @@ class AegisForgeAgent:
         counts = self._officeqa_context_diagnostic_counts(raw[:200000])
         quality = 0
         quality += min(12, counts.get("table_like_lines", 0))
-        quality += min(12, counts.get("numeric_year_rows", 0) * 2)
-        quality += min(10, counts.get("numeric_dense_lines", 0))
-        if path_l.endswith((".csv", ".tsv", ".json", ".jsonl")):
+        quality += min(14, counts.get("numeric_year_rows", 0) * 2)
+        quality += min(12, counts.get("numeric_dense_lines", 0))
+        if path_l.endswith((".csv", ".tsv", ".json", ".jsonl", ".txt", ".html", ".htm")):
             quality += 5
         for marker in (
             "treasury bulletin", "monthly treasury", "fiscal", "receipts", "outlays", "public debt",
             "exchange stabilization fund", "average yields", "internal revenue", "cpi", "currency in circulation",
         ):
             if marker in lower:
+                quality += 2
+        for marker in (
+            "treasury_bulletins_parsed", "treasury", "bulletin", "fiscal", "public_debt", "public debt",
+            "ffo", "esf", "exchange_stabilization", "cpi", "irs", "internal_revenue", "transformed", "jsons",
+        ):
+            if marker in path_l:
                 quality += 2
         repo_markers = (
             "officeqa_agent_version", "build_it_builder_version", "def _officeqa", "class aegisforgeagent",
@@ -3234,15 +3374,17 @@ class AegisForgeAgent:
     def _officeqa_local_file_is_data_like(self, path: Path, text: str) -> bool:
         """Keep local retrieval focused on corpus/table files and away from repo docs."""
         lowered_path = str(path).lower()
-        # Explicit corpus roots supplied by the runner/user are trusted a little more,
-        # but still must have some numeric/document signal.
+        # Explicit corpus roots supplied by the runner/user are trusted more,
+        # but still must have at least a light numeric/document signal.
         explicit_root = any(
             os.getenv(name, "").strip() and lowered_path.startswith(str(Path(os.getenv(name, "")).expanduser()).lower())
             for name in ("AEGISFORGE_OFFICEQA_DATA_DIR", "AEGISFORGE_OFFICEQA_CORPUS_DIR", "AEGISFORGE_OFFICEQA_CORPUS_ROOT", "OFFICEQA_CORPUS_DIR", "OFFICEQA_DATA_DIR", "AGENTBEATS_DATA_DIR", "A2A_DATA_DIR")
         )
         quality = self._officeqa_text_data_quality(text, lowered_path)
         if explicit_root:
-            return quality >= 3
+            return quality >= 2
+        if "treasury_bulletins_parsed" in lowered_path or "/app/data/officeqa" in lowered_path:
+            return quality >= 2
         # Default cwd scans are noisy; demand stronger data signal.
         return quality >= 6
 
@@ -4603,6 +4745,12 @@ class AegisForgeAgent:
         if not endpoint:
             self._officeqa_last_llm_status["block"] = "no_endpoint"
             return None
+        if "api.openai.com" in endpoint.lower() and not self._openai_api_key():
+            # Dockerfile provides the standard OpenAI base URL, but AgentBeats
+            # may not pass a key.  Do not waste time or emit repeated 401s.
+            self._officeqa_last_llm_status["block"] = "no_api_key"
+            self._officeqa_last_llm_status["error"] = "no_api_key"
+            return None
 
         packed_context = self._officeqa_context_for_llm(
             question,
@@ -5096,9 +5244,9 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V061 "
+            "OFFICEQA_DIAG_V062 "
             f"corpus_loaded={int(cache is not None)} "
-            f"corpus_records={len(cache) if cache is not None else 'NA'} "
+            f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
             f"retrieval_hits={int(retrieval.get('hits', 0) or 0)} "
@@ -5211,7 +5359,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.6.1 embedded corpus/RAG diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.6.2 expanded corpus/RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -5289,7 +5437,7 @@ class AegisForgeAgent:
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v0.6.1 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and front-loads compact diagnostics "
+                "OfficeQA answer engine v0.6.2 keeps the protocol/answer channel clean, reads the embedded Databricks/Treasury source corpus when present, flattens parsed JSON/table files into searchable evidence, prefers the OpenAI-compatible LLM bridge for grounded calculation, and front-loads compact diagnostics "
                 "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
