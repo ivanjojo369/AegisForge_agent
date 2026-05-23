@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_8_env_probe_safe_amber_secret_discovery_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_clean_rag_acceptance_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3669,9 +3669,27 @@ class AegisForgeAgent:
             # the main fix for long /gateway/results polling with no shard close.
             official_roots = [root for root in roots if str(root).lower().startswith("/app/data/officeqa")]
             if official_roots:
-                roots = official_roots
+                # v1: avoid scanning the broad /app/data/officeqa parent before
+                # the prepared transformed corpus.  The parent walk can spend the
+                # whole load budget on duplicate JSON/text traversal and leave the
+                # runtime corpus truncated.  Prefer the clean transformed text
+                # directory, then jsons, then the parsed parent only as fallback.
+                preferred_roots: list[Path] = []
+                for marker in (
+                    "treasury_bulletins_parsed/transformed",
+                    "treasury_bulletins_parsed/jsons",
+                    "treasury_bulletins_parsed",
+                    "/app/data/officeqa",
+                ):
+                    for root in official_roots:
+                        root_l = str(root).replace("\\", "/").lower()
+                        if marker in root_l and root not in preferred_roots:
+                            preferred_roots.append(root)
+                roots = preferred_roots or official_roots
             roots.sort(key=lambda p: (
-                0 if "treasury_bulletins_parsed" in str(p).lower() else 1,
+                0 if "treasury_bulletins_parsed/transformed" in str(p).replace("\\", "/").lower() else 1,
+                0 if "treasury_bulletins_parsed/jsons" in str(p).replace("\\", "/").lower() else 1,
+                0 if "treasury_bulletins_parsed" in str(p).replace("\\", "/").lower() else 1,
                 0 if str(p).lower().startswith("/app/data/officeqa") else 1,
                 len(str(p)),
             ))
@@ -5799,21 +5817,43 @@ class AegisForgeAgent:
         self._officeqa_last_llm_status["answer_chars"] = len(answer or "")
         reasoning = self._officeqa_reasoning_from_text(llm_text) or "OfficeQA OpenAI RAG bridge produced a candidate from packed evidence."
 
-        # LLM/Code Interpreter outputs can be computed values not literally
-        # present in context, so use structural validation rather than requiring
-        # every number to already appear in the excerpts.
-        if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(
-            question,
-            answer,
-            context,
-            confidence=0.80,
-        ):
+        # v1 acceptance policy: after the manifest fix, the LLM + Code
+        # Interpreter path is the primary OfficeQA solver.  Keep protocol-safety
+        # checks, but do not discard a well-formed LLM final answer merely
+        # because it is a computed value that does not literally appear in the
+        # retrieved excerpts.  This reduces the old v0.6.x pattern where useful
+        # LLM answers were converted back to INSUFFICIENT_INFORMATION.
+        strict_valid = False
+        if answer and answer != "INSUFFICIENT_INFORMATION":
+            strict_valid = self._officeqa_validate_final_answer_candidate(
+                question,
+                answer,
+                context,
+                confidence=0.80,
+            )
+
+        relaxed_valid = False
+        if answer and answer != "INSUFFICIENT_INFORMATION" and not strict_valid:
+            cleaned_answer = self._officeqa_clean_final_answer(answer)
+            lowered_answer = cleaned_answer.lower()
+            relaxed_valid = (
+                bool(cleaned_answer)
+                and len(cleaned_answer) <= 260
+                and not re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", cleaned_answer, flags=re.IGNORECASE)
+                and not re.search(r"\[(?:BUILD|ASK)\]", cleaned_answer, flags=re.IGNORECASE)
+                and not self._officeqa_line_is_question_echo(question, cleaned_answer)
+                and "insufficient_information" not in lowered_answer
+                and "unable to determine" not in lowered_answer
+                and "no answer found" not in lowered_answer
+            )
+
+        if answer and answer != "INSUFFICIENT_INFORMATION" and (strict_valid or relaxed_valid):
             self._officeqa_last_llm_status["valid"] = True
-            self._officeqa_last_llm_status["block"] = "accepted"
+            self._officeqa_last_llm_status["block"] = "accepted" if strict_valid else "accepted_relaxed"
             return {
                 "answer": answer,
-                "reasoning": reasoning,
-                "confidence": 0.80,
+                "reasoning": reasoning if strict_valid else (reasoning + " [v1 accepted via relaxed LLM final-answer gate.]"),
+                "confidence": 0.82 if strict_valid else 0.76,
             }
         self._officeqa_last_llm_status["block"] = "validation_rejected"
         return None
@@ -6276,7 +6316,7 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V068 "
+            "OFFICEQA_DIAG_V1 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -6411,7 +6451,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.6.5 structured-table-index corpus/RAG diagnostics: " + "; ".join(signals)
+        return "OfficeQA v1 clean-RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -6489,7 +6529,7 @@ class AegisForgeAgent:
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v0.6.8 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
+                "OfficeQA answer engine v1 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
                 "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
                 f"{evidence_note} {diagnostics}"
             ),
