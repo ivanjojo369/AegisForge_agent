@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_2_preindexed_corpus_sourcefile_lock_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_3_filesystem_forensic_loader_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -84,6 +84,7 @@ _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
 _OFFICEQA_GLOBAL_CORPUS_TRUNCATED: bool = False
+_OFFICEQA_GLOBAL_CORPUS_FORENSICS: dict[str, Any] = {}
 
 
 def _officeqa_stringify_for_signal(value: Any, *, depth: int = 0, limit: int = 60000) -> str:
@@ -1885,6 +1886,7 @@ class AegisForgeAgent:
         self._officeqa_local_corpus_load_seconds: float = 0.0
         self._officeqa_local_corpus_truncated: bool = False
         self._officeqa_local_corpus_index_cache_hit: bool = False
+        self._officeqa_forensic_counts: dict[str, Any] = {}
         self._officeqa_answer_engine_version = OFFICEQA_AGENT_VERSION
         self._officeqa_last_retrieval_status: dict[str, Any] = {}
         self._officeqa_last_llm_status: dict[str, Any] = {}
@@ -2635,7 +2637,9 @@ class AegisForgeAgent:
             return "INSUFFICIENT_INFORMATION"
         if re.search(r"\b(?:red|blue|green|yellow|black|white)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+", cleaned, flags=re.IGNORECASE):
             return "INSUFFICIENT_INFORMATION"
-        if re.search(r"\b(?:officeqa answer engine|protocol detected|evidence/context was present|deterministic officeqa|reasoning)\b", cleaned, flags=re.IGNORECASE):
+        if re.search(r"\b(?:officeqa answer engine|protocol detected|evidence/context was present|deterministic officeqa|reasoning|aegisforge structured_response|task excerpt|execute the plan|evidence should stay|currently do not see|no openai-compatible model response)\b", cleaned, flags=re.IGNORECASE):
+            return "INSUFFICIENT_INFORMATION"
+        if len(cleaned) > 220 and not re.search(r"^\s*\[[^\]]+\]\s*$", cleaned):
             return "INSUFFICIENT_INFORMATION"
         if not cleaned:
             return "INSUFFICIENT_INFORMATION"
@@ -3319,6 +3323,16 @@ class AegisForgeAgent:
                 Path("/app/data/officeqa/treasury_bulletins_parsed"),
                 Path("/app/data/officeqa/treasury_bulletins_parsed/transformed"),
                 Path("/app/data/officeqa/treasury_bulletins_parsed/jsons"),
+                Path("/app/data"),
+                Path("/app/datasets"),
+                Path("/app/officeqa"),
+                Path("/workspace/data/officeqa"),
+                Path("/workspace/data"),
+                Path("/workspace/datasets"),
+                Path("/github/workspace/data/officeqa"),
+                Path("/github/workspace/data"),
+                Path("/github/workspace/datasets"),
+                Path("/home/runner/work"),
                 cwd,
                 cwd / "data",
                 cwd / "data" / "officeqa",
@@ -3330,6 +3344,7 @@ class AegisForgeAgent:
                 cwd / "src" / "aegisforge" / "adapters" / "officeqa",
                 cwd.parent / "officeqa-agentbeats-leaderboard",
                 cwd.parent / "data",
+                cwd.parent / "datasets",
             ]
             roots.extend(candidates)
         except Exception:
@@ -3812,47 +3827,126 @@ class AegisForgeAgent:
         return raw[:head] + "\n... [officeqa_block_scan_middle_trimmed] ...\n" + raw[-tail:]
 
 
+    def _officeqa_forensic_probe_roots(self) -> list[Path]:
+        """Return broad-but-safe fallback roots for OfficeQA corpus discovery.
+
+        The fallback only runs when the normal v1.3 index path yields zero
+        records.  It is intentionally filesystem-oriented because the quick
+        submit container can mount benchmark data under runner/workspace paths
+        that are not visible in local development.
+        """
+        candidates: list[Path] = []
+        try:
+            cwd = Path.cwd()
+            candidates.extend([
+                Path("/app"),
+                Path("/app/data"),
+                Path("/app/datasets"),
+                Path("/app/officeqa"),
+                Path("/workspace"),
+                Path("/workspace/data"),
+                Path("/workspace/datasets"),
+                Path("/github/workspace"),
+                Path("/github/workspace/data"),
+                Path("/github/workspace/datasets"),
+                Path("/home/runner/work"),
+                cwd,
+                cwd / "data",
+                cwd / "datasets",
+                cwd.parent,
+                cwd.parent / "data",
+                cwd.parent / "datasets",
+            ])
+            for env_name in (
+                "AEGISFORGE_OFFICEQA_DATA_DIR",
+                "AEGISFORGE_OFFICEQA_CORPUS_DIR",
+                "AEGISFORGE_OFFICEQA_CORPUS_ROOT",
+                "OFFICEQA_CORPUS_DIR",
+                "OFFICEQA_DATA_DIR",
+                "AGENTBEATS_DATA_DIR",
+                "A2A_DATA_DIR",
+                "DATA_DIR",
+                "DATASET_DIR",
+                "CORPUS_DIR",
+            ):
+                raw = os.getenv(env_name, "").strip()
+                if raw:
+                    candidates.insert(0, Path(raw))
+        except Exception:
+            pass
+
+        clean: list[Path] = []
+        seen: set[str] = set()
+        for root in candidates:
+            try:
+                resolved = root.expanduser().resolve()
+            except Exception:
+                continue
+            key = str(resolved)
+            if key in seen or not resolved.exists() or not resolved.is_dir():
+                continue
+            seen.add(key)
+            clean.append(resolved)
+        return clean
+
     def _officeqa_load_local_corpus_cache(self) -> list[dict[str, Any]]:
-        global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR, _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS, _OFFICEQA_GLOBAL_CORPUS_TRUNCATED
-        if self._officeqa_local_corpus_cache is not None:
+        global _OFFICEQA_GLOBAL_CORPUS_CACHE, _OFFICEQA_GLOBAL_CORPUS_ERROR, _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS, _OFFICEQA_GLOBAL_CORPUS_TRUNCATED, _OFFICEQA_GLOBAL_CORPUS_FORENSICS
+        if self._officeqa_local_corpus_cache is not None and len(self._officeqa_local_corpus_cache) > 0:
             return self._officeqa_local_corpus_cache
-        if _OFFICEQA_GLOBAL_CORPUS_CACHE is not None:
+        if _OFFICEQA_GLOBAL_CORPUS_CACHE is not None and len(_OFFICEQA_GLOBAL_CORPUS_CACHE) > 0:
             self._officeqa_local_corpus_cache = _OFFICEQA_GLOBAL_CORPUS_CACHE
             self._officeqa_local_corpus_error = _OFFICEQA_GLOBAL_CORPUS_ERROR
             self._officeqa_local_corpus_load_seconds = float(_OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS or 0.0)
             self._officeqa_local_corpus_truncated = bool(_OFFICEQA_GLOBAL_CORPUS_TRUNCATED)
+            self._officeqa_forensic_counts = dict(_OFFICEQA_GLOBAL_CORPUS_FORENSICS or {})
             self._officeqa_local_corpus_index_cache_hit = bool(getattr(self, "_officeqa_local_corpus_index_cache_hit", False))
             return self._officeqa_local_corpus_cache
 
         enabled = _env_flag("AEGISFORGE_OFFICEQA_LOCAL_RETRIEVAL", default=True)
         if not enabled:
             self._officeqa_local_corpus_cache = []
-            _OFFICEQA_GLOBAL_CORPUS_CACHE = []
-            _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS = 0.0
-            _OFFICEQA_GLOBAL_CORPUS_TRUNCATED = False
+            self._officeqa_forensic_counts = {"disabled": 1}
             return self._officeqa_local_corpus_cache
 
         import time
         load_start = time.monotonic()
-        load_budget = max(6.0, min(240.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "135") or "135")))
-        max_files = max(0, min(18000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "12000") or "12000")))
-        # v1.2 keeps the index compact enough to cover the whole corpus in the
-        # quick-submit time budget. Exact source-file matches are lazy-read in
-        # full later, so the first-pass index does not need megabytes per file.
-        max_bytes = max(40000, min(1500000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "180000") or "180000")))
-        exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
+        load_budget = max(8.0, min(260.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "160") or "160")))
+        max_files = max(0, min(24000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "16000") or "16000")))
+        max_bytes = max(50000, min(1800000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "240000") or "240000")))
+        exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm", ".xml", ".log"}
         archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
         visited: set[str] = set()
         timed_out = False
         index_cache_hit = False
+        self._officeqa_local_corpus_error = ""
+        self._officeqa_local_corpus_truncated = False
+        self._officeqa_forensic_counts = {
+            "schema": "v1_3",
+            "deep_probe": 0,
+            "roots_total": 0,
+            "roots_scanned": 0,
+            "files_seen": 0,
+            "archives_seen": 0,
+            "archive_records": 0,
+            "records_added": 0,
+            "reject_ext": 0,
+            "reject_safe_path": 0,
+            "reject_empty": 0,
+            "reject_huge": 0,
+            "reject_read": 0,
+            "reject_plausible": 0,
+            "reject_data_like": 0,
+            "disk_index_records": 0,
+            "global_empty_cache_ignored": int(_OFFICEQA_GLOBAL_CORPUS_CACHE is not None and len(_OFFICEQA_GLOBAL_CORPUS_CACHE or []) == 0),
+        }
 
         def _index_cache_path() -> Path | None:
             raw = os.getenv("AEGISFORGE_OFFICEQA_INDEX_CACHE", "").strip()
             if raw:
                 return Path(raw)
             try:
-                return Path("/tmp") / "aegisforge_officeqa_v12_index.jsonl"
+                return Path("/tmp") / "aegisforge_officeqa_v13_index.jsonl"
             except Exception:
                 return None
 
@@ -3867,7 +3961,7 @@ class AegisForgeAgent:
                         meta = json.loads(header)
                     except Exception:
                         meta = {}
-                    if meta.get("schema") != "aegisforge_officeqa_v1_2_index":
+                    if meta.get("schema") != "aegisforge_officeqa_v1_3_index":
                         return []
                     for line in handle:
                         if not line.strip():
@@ -3891,10 +3985,8 @@ class AegisForgeAgent:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
                 with tmp_path.open("w", encoding="utf-8") as handle:
-                    handle.write(json.dumps({"schema": "aegisforge_officeqa_v1_2_index", "count": len(items)}, sort_keys=True) + "\n")
+                    handle.write(json.dumps({"schema": "aegisforge_officeqa_v1_3_index", "count": len(items)}, sort_keys=True) + "\n")
                     for rec in items:
-                        # Keep only safe/source fields. Do not persist secrets or
-                        # evaluator artifacts; records are already source-filtered.
                         slim = {
                             key: rec.get(key)
                             for key in (
@@ -3908,169 +4000,153 @@ class AegisForgeAgent:
             except Exception:
                 pass
 
+        def _roots_key(root: Path) -> tuple[int, int, int, int]:
+            root_l = str(root).replace("\\", "/").lower()
+            return (
+                0 if "treasury_bulletins_parsed/transformed" in root_l else 1,
+                0 if "treasury_bulletins_parsed/jsons" in root_l else 1,
+                0 if "/app/data/officeqa" in root_l or "officeqa" in root_l else 1,
+                len(root_l),
+            )
+
+        def _plausible_source(path: Path, text_value: str) -> bool:
+            path_l = str(path).replace("\\", "/").lower()
+            lower = text_value[:80000].lower()
+            if any(marker in path_l for marker in (
+                "/app/data", "/workspace/data", "/github/workspace/data",
+                "officeqa", "treasury", "bulletin", "transformed", "jsons",
+                "monthly_treasury", "fiscal", "public_debt", "irs", "esf",
+            )):
+                return True
+            return any(marker in lower for marker in (
+                "treasury bulletin", "monthly treasury", "fiscal year",
+                "public debt", "budget receipts", "budget outlays", "internal revenue",
+                "exchange stabilization fund", "currency in circulation",
+                "consumer price index", "millions of dollars", "table",
+            ))
+
+        def _read_source_file(path: Path, suffix: str, size: int) -> str:
+            if suffix in {".txt", ".md", ".csv", ".tsv", ".html", ".htm", ".xml", ".log"} and size > max_bytes:
+                head_bytes = max(36000, int(max_bytes * 0.72))
+                tail_bytes = max(14000, max_bytes - head_bytes)
+                with path.open("rb") as handle:
+                    head_raw = handle.read(head_bytes)
+                    handle.seek(max(0, size - tail_bytes))
+                    tail_raw = handle.read(tail_bytes)
+                return (
+                    head_raw.decode("utf-8", errors="ignore")
+                    + "\n... [officeqa_v1_3_preindex_tail] ...\n"
+                    + tail_raw.decode("utf-8", errors="ignore")
+                )
+            return path.read_text(encoding="utf-8", errors="ignore")[:max(max_bytes * 2, max_bytes)]
+
+        def _scan_roots(roots_to_scan: list[Path], *, deep_probe: bool = False) -> None:
+            nonlocal timed_out
+            self._officeqa_forensic_counts["roots_total"] = int(self._officeqa_forensic_counts.get("roots_total", 0) or 0) + len(roots_to_scan)
+            for root in sorted(roots_to_scan, key=_roots_key):
+                if len(records) >= max_files or timed_out:
+                    break
+                try:
+                    iterator = root.rglob("*")
+                except Exception:
+                    continue
+                self._officeqa_forensic_counts["roots_scanned"] = int(self._officeqa_forensic_counts.get("roots_scanned", 0) or 0) + 1
+                for path in iterator:
+                    if len(records) >= max_files:
+                        break
+                    if time.monotonic() - load_start > load_budget:
+                        timed_out = True
+                        self._officeqa_local_corpus_truncated = True
+                        break
+                    try:
+                        if not path.is_file():
+                            continue
+                        suffix = path.suffix.lower()
+                        if suffix not in exts and suffix not in archive_exts:
+                            self._officeqa_forensic_counts["reject_ext"] = int(self._officeqa_forensic_counts.get("reject_ext", 0) or 0) + 1
+                            continue
+                        resolved = str(path.resolve())
+                        if resolved in visited:
+                            continue
+                        visited.add(resolved)
+                        self._officeqa_forensic_counts["files_seen"] = int(self._officeqa_forensic_counts.get("files_seen", 0) or 0) + 1
+                        if not self._officeqa_path_is_safe_context(path):
+                            self._officeqa_forensic_counts["reject_safe_path"] = int(self._officeqa_forensic_counts.get("reject_safe_path", 0) or 0) + 1
+                            continue
+                        size = path.stat().st_size
+                        if size <= 0:
+                            self._officeqa_forensic_counts["reject_empty"] = int(self._officeqa_forensic_counts.get("reject_empty", 0) or 0) + 1
+                            continue
+
+                        if suffix in archive_exts:
+                            self._officeqa_forensic_counts["archives_seen"] = int(self._officeqa_forensic_counts.get("archives_seen", 0) or 0) + 1
+                            remaining = max_files - len(records)
+                            archive_records = self._officeqa_records_from_zip(path, max_records=remaining, max_bytes=max_bytes)
+                            for archive_record in archive_records:
+                                if archive_record.get("text"):
+                                    records.append(self._officeqa_enrich_local_record(archive_record))
+                            self._officeqa_forensic_counts["archive_records"] = int(self._officeqa_forensic_counts.get("archive_records", 0) or 0) + len(archive_records)
+                            self._officeqa_forensic_counts["records_added"] = len(records)
+                            continue
+
+                        if size > max(max_bytes * 22, 12000000):
+                            self._officeqa_forensic_counts["reject_huge"] = int(self._officeqa_forensic_counts.get("reject_huge", 0) or 0) + 1
+                            continue
+                        raw_text = _read_source_file(path, suffix, size)
+                        text_value = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
+                    except Exception as exc:
+                        self._officeqa_forensic_counts["reject_read"] = int(self._officeqa_forensic_counts.get("reject_read", 0) or 0) + 1
+                        if not self._officeqa_local_corpus_error:
+                            self._officeqa_local_corpus_error = f"read:{path.name}:{exc.__class__.__name__}"[:240]
+                        continue
+
+                    if not text_value.strip():
+                        self._officeqa_forensic_counts["reject_empty"] = int(self._officeqa_forensic_counts.get("reject_empty", 0) or 0) + 1
+                        continue
+                    if not _plausible_source(path, text_value):
+                        self._officeqa_forensic_counts["reject_plausible"] = int(self._officeqa_forensic_counts.get("reject_plausible", 0) or 0) + 1
+                        continue
+                    if not self._officeqa_local_file_is_data_like(path, text_value):
+                        self._officeqa_forensic_counts["reject_data_like"] = int(self._officeqa_forensic_counts.get("reject_data_like", 0) or 0) + 1
+                        continue
+
+                    records.append(
+                        self._officeqa_enrich_local_record(
+                            {
+                                "path": resolved,
+                                "name": path.name,
+                                "text": text_value[:max_bytes],
+                                "data_quality": self._officeqa_text_data_quality(text_value, resolved),
+                                "deep_probe": int(deep_probe),
+                            }
+                        )
+                    )
+                    self._officeqa_forensic_counts["records_added"] = len(records)
+
         cache_path = _index_cache_path()
         cached_records = _load_disk_index(cache_path)
         if cached_records:
             records = cached_records
             index_cache_hit = True
+            self._officeqa_forensic_counts["disk_index_records"] = len(cached_records)
         else:
             try:
                 roots = self._officeqa_local_corpus_roots()
-                official_roots = [root for root in roots if str(root).lower().startswith("/app/data/officeqa")]
-                if official_roots:
-                    # v1.2 source corpus policy: scan only specific prepared
-                    # OfficeQA corpus leaves, not broad parents. Walking the
-                    # parent tree was the main reason the runtime corpus kept
-                    # hitting corpus_truncated=1 at ~1100 records.
-                    transformed: list[Path] = []
-                    jsons: list[Path] = []
-                    archives: list[Path] = []
-                    for root in official_roots:
-                        root_l = str(root).replace("\\", "/").lower()
-                        if "treasury_bulletins_parsed/transformed" in root_l:
-                            transformed.append(root)
-                        elif "treasury_bulletins_parsed/jsons" in root_l:
-                            jsons.append(root)
-                    for root in official_roots:
-                        for rel in (
-                            "treasury_bulletins_parsed/transformed",
-                            "treasury_bulletins_parsed/jsons",
-                        ):
-                            child = root / rel
-                            if child.exists() and child.is_dir():
-                                child_l = str(child).replace("\\", "/").lower()
-                                if "transformed" in child_l and child not in transformed:
-                                    transformed.append(child)
-                                if "jsons" in child_l and child not in jsons:
-                                    jsons.append(child)
-                    include_jsons = _env_flag("AEGISFORGE_OFFICEQA_INCLUDE_JSONS", default=True)
-                    preferred_roots = transformed + (jsons if include_jsons else [])
-                    roots = preferred_roots or official_roots
-                roots.sort(key=lambda p: (
-                    0 if "treasury_bulletins_parsed/transformed" in str(p).replace("\\", "/").lower() else 1,
-                    0 if "treasury_bulletins_parsed/jsons" in str(p).replace("\\", "/").lower() else 1,
-                    0 if str(p).lower().startswith("/app/data/officeqa") else 1,
-                    len(str(p)),
-                ))
-                for root in roots:
-                    if len(records) >= max_files or timed_out:
-                        break
-                    try:
-                        iterator = root.rglob("*")
-                    except Exception:
-                        continue
-                    for path in iterator:
-                        if len(records) >= max_files:
-                            break
-                        if time.monotonic() - load_start > load_budget:
-                            timed_out = True
-                            self._officeqa_local_corpus_truncated = True
-                            break
-                        try:
-                            if not path.is_file():
-                                continue
-                            suffix = path.suffix.lower()
-                            if suffix not in exts and suffix not in archive_exts:
-                                continue
-                            resolved = str(path.resolve())
-                            if resolved in visited:
-                                continue
-                            visited.add(resolved)
-                            if not self._officeqa_path_is_safe_context(path):
-                                continue
-                            size = path.stat().st_size
-                            if size <= 0:
-                                continue
+                _scan_roots(roots, deep_probe=False)
 
-                            if suffix in archive_exts:
-                                remaining = max_files - len(records)
-                                archive_records = self._officeqa_records_from_zip(
-                                    path,
-                                    max_records=remaining,
-                                    max_bytes=max_bytes,
-                                )
-                                for archive_record in archive_records:
-                                    records.append(self._officeqa_enrich_local_record(archive_record))
-                                continue
-
-                            if size > max(max_bytes * 18, 9000000):
-                                continue
-                            if suffix in {".txt", ".md", ".csv", ".tsv", ".html", ".htm"} and size > max_bytes:
-                                # Binary head/tail is substantially faster than
-                                # text-mode seek on GitHub-hosted Linux runners.
-                                head_bytes = max(32000, int(max_bytes * 0.72))
-                                tail_bytes = max(12000, max_bytes - head_bytes)
-                                try:
-                                    with path.open("rb") as handle:
-                                        head_raw = handle.read(head_bytes)
-                                        handle.seek(max(0, size - tail_bytes))
-                                        tail_raw = handle.read(tail_bytes)
-                                    raw_text = (
-                                        head_raw.decode("utf-8", errors="ignore")
-                                        + "\n... [officeqa_v1_2_preindex_tail] ...\n"
-                                        + tail_raw.decode("utf-8", errors="ignore")
-                                    )
-                                except Exception:
-                                    raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max_bytes]
-                            else:
-                                raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max(max_bytes * 2, max_bytes)]
-                            text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
-                        except Exception:
-                            continue
-                        if not text.strip():
-                            continue
-                        lower = text[:50000].lower()
-                        path_l = str(path).lower()
-                        explicit_source_path = any(
-                            marker in path_l
-                            for marker in (
-                                "/app/data/officeqa",
-                                "treasury_bulletins_parsed",
-                                "officeqa",
-                                "treasury",
-                                "bulletin",
-                                "transformed",
-                                "jsons",
-                            )
-                        )
-                        plausible = explicit_source_path or any(
-                            marker in path_l or marker in lower
-                            for marker in (
-                                "officeqa",
-                                "treasury",
-                                "bulletin",
-                                "fiscal",
-                                "receipts",
-                                "outlays",
-                                "public debt",
-                                "cpi",
-                                "currency",
-                                "irs",
-                                "internal revenue",
-                                "federal reserve",
-                                "csv",
-                                "table",
-                            )
-                        )
-                        if not plausible:
-                            continue
-                        if not self._officeqa_local_file_is_data_like(path, text):
-                            continue
-                        records.append(
-                            self._officeqa_enrich_local_record(
-                                {
-                                    "path": resolved,
-                                    "name": path.name,
-                                    "text": text[:max_bytes],
-                                    "data_quality": self._officeqa_text_data_quality(text, resolved),
-                                }
-                            )
-                        )
+                # v1.3 safety net: if the canonical corpus policy still finds
+                # nothing, do not freeze an empty cache.  Instead probe broader
+                # mounted data/workspace roots and expose counters in diagnostics.
+                if not records and not timed_out:
+                    self._officeqa_forensic_counts["deep_probe"] = 1
+                    probe_roots = self._officeqa_forensic_probe_roots()
+                    _scan_roots(probe_roots, deep_probe=True)
             except Exception as exc:
                 self._officeqa_local_corpus_error = str(exc)[:240]
 
             records.sort(key=lambda rec: int(rec.get("data_quality", 0) or 0), reverse=True)
-            _write_disk_index(cache_path, records)
+            if records:
+                _write_disk_index(cache_path, records)
 
         self._officeqa_local_corpus_index_cache_hit = bool(index_cache_hit)
         self._officeqa_local_corpus_cache = records
@@ -4079,6 +4155,7 @@ class AegisForgeAgent:
         _OFFICEQA_GLOBAL_CORPUS_ERROR = self._officeqa_local_corpus_error
         _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS = self._officeqa_local_corpus_load_seconds
         _OFFICEQA_GLOBAL_CORPUS_TRUNCATED = bool(getattr(self, "_officeqa_local_corpus_truncated", False))
+        _OFFICEQA_GLOBAL_CORPUS_FORENSICS = dict(self._officeqa_forensic_counts or {})
         return records
 
 
@@ -4137,20 +4214,43 @@ class AegisForgeAgent:
         return quality
 
     def _officeqa_local_file_is_data_like(self, path: Path, text: str) -> bool:
-        """Keep local retrieval focused on corpus/table files and away from repo docs."""
-        lowered_path = str(path).lower()
-        # Explicit corpus roots supplied by the runner/user are trusted more,
-        # but still must have at least a light numeric/document signal.
+        """Keep local retrieval focused on corpus/table files and away from repo docs.
+
+        v1.3 intentionally relaxes the gate for OfficeQA/Treasury-looking files.
+        The previous v1.2 run proved that an over-strict preindex can leave the
+        agent with corpus_records=0 even while the runner/model/protocol are all
+        healthy.  This gate still blocks repo/evaluator artifacts elsewhere via
+        _officeqa_path_is_safe_context, but it accepts weakly-signaled source
+        files under likely OfficeQA data roots so retrieval can inspect them.
+        """
+        lowered_path = str(path).replace("\\", "/").lower()
+        lower_text = self._coerce_text(text[:50000]).lower()
         explicit_root = any(
-            os.getenv(name, "").strip() and lowered_path.startswith(str(Path(os.getenv(name, "")).expanduser()).lower())
+            os.getenv(name, "").strip() and lowered_path.startswith(str(Path(os.getenv(name, "")).expanduser()).replace("\\", "/").lower())
             for name in ("AEGISFORGE_OFFICEQA_DATA_DIR", "AEGISFORGE_OFFICEQA_CORPUS_DIR", "AEGISFORGE_OFFICEQA_CORPUS_ROOT", "OFFICEQA_CORPUS_DIR", "OFFICEQA_DATA_DIR", "AGENTBEATS_DATA_DIR", "A2A_DATA_DIR")
         )
+        likely_source_path = any(
+            marker in lowered_path
+            for marker in (
+                "/app/data", "/workspace/data", "/github/workspace/data",
+                "officeqa", "office_qa", "treasury", "bulletin",
+                "treasury_bulletins_parsed", "transformed", "jsons",
+                "monthly_treasury", "fiscal", "public_debt", "irs", "esf",
+            )
+        )
+        source_text_signal = any(
+            marker in lower_text
+            for marker in (
+                "treasury bulletin", "monthly treasury", "fiscal year",
+                "public debt", "budget receipts", "budget outlays",
+                "exchange stabilization fund", "internal revenue",
+                "currency in circulation", "consumer price index",
+                "table", "reported", "millions of dollars",
+            )
+        )
         quality = self._officeqa_text_data_quality(text, lowered_path)
-        if explicit_root:
-            return quality >= 2
-        if "treasury_bulletins_parsed" in lowered_path or "/app/data/officeqa" in lowered_path:
-            return quality >= 2
-        # Default cwd scans are noisy; demand stronger data signal.
+        if explicit_root or likely_source_path:
+            return quality >= 1 or source_text_signal or bool(re.search(r"\b(?:18|19|20)\d{2}\b", lower_text))
         return quality >= 6
 
     def _officeqa_line_score(self, question: str, line: str, *, path: str = "") -> int:
@@ -6657,13 +6757,23 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V1_2 "
+            "OFFICEQA_DIAG_V1_3 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"corpus_truncated={int(bool(getattr(self, '_officeqa_local_corpus_truncated', False)))} "
-            f"fast_index=4 "
-            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 "
+            f"deep_probe={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('deep_probe', 0) or 0)} "
+            f"roots_scanned={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('roots_scanned', 0) or 0)} "
+            f"files_seen={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('files_seen', 0) or 0)} "
+            f"archives_seen={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('archives_seen', 0) or 0)} "
+            f"archive_records={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('archive_records', 0) or 0)} "
+            f"records_added={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('records_added', 0) or 0)} "
+            f"reject_safe_path={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('reject_safe_path', 0) or 0)} "
+            f"reject_plausible={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('reject_plausible', 0) or 0)} "
+            f"reject_data_like={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('reject_data_like', 0) or 0)} "
+            f"global_empty_cache_ignored={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('global_empty_cache_ignored', 0) or 0)} "
+            f"fast_index=5 "
+            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 forensic_loader=1 "
             f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
             f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
             f"source_matches={int(retrieval.get('source_matches', 0) or 0)} "
@@ -6806,6 +6916,25 @@ class AegisForgeAgent:
         local_context = self._officeqa_local_retrieval_context(question, safe_metadata)
         if local_context:
             context = (context + "\n\n" + local_context).strip() if context else local_context
+
+        # v1.3 guard: the previous run showed llm_called=1 but corpus_records=0,
+        # which encouraged unsupported numeric guesses and long generic escapes.
+        # If no local source evidence and no raw-A2A context are visible, do not
+        # ask the LLM to invent a Treasury answer.
+        if not local_context and not self._officeqa_context_has_real_evidence(question, context):
+            compact_diagnostics = self._officeqa_compact_diagnostics(
+                question=question,
+                context=context,
+                local_context=local_context,
+            )
+            return self._officeqa_format_response(
+                reasoning=(
+                    f"{compact_diagnostics} "
+                    "OfficeQA v1.3 filesystem forensic loader found no source evidence for this turn; "
+                    "the answer channel is kept conservative instead of guessing from an empty corpus."
+                ),
+                final_answer="INSUFFICIENT_INFORMATION",
+            )
 
         adapter_result = self._officeqa_try_adapter_answer(question, context, safe_metadata)
         if adapter_result:
