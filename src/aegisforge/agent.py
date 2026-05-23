@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_6_openai_responses_code_interpreter_rag_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_7_amber_participant_secret_aliases_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1531,16 +1531,80 @@ HIGH_RISK_PATTERNS = (
 )
 
 
+def _env_alias_names(name: str) -> tuple[str, ...]:
+    """Return safe environment aliases for normal and Amber-injected secrets.
+
+    AgentBeats/Amber Quick Submit does not necessarily expose participant
+    secrets under their raw names.  For a participant role named
+    ``officeqa_agent``, a UI secret such as ``OPENAI_API_KEY`` can arrive as
+    ``AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_KEY``.  Keep discovery centralized
+    so the OfficeQA bridge can see secrets without ever logging their values.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return ()
+    upper = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").upper()
+    aliases = [
+        raw,
+        upper,
+        f"AMBER_CONFIG_OFFICEQA_AGENT_{upper}",
+        f"AMBER_CONFIG_PURPLE_AGENT_{upper}",
+        f"AMBER_CONFIG_PURPLE_{upper}",
+        f"AMBER_CONFIG_PARTICIPANT_{upper}",
+        f"AMBER_CONFIG_GREEN_{upper}",
+        f"AMBER_CONFIG_{upper}",
+    ]
+    # If the caller already passed an Amber-style name, also try the suffix.
+    marker = "AMBER_CONFIG_OFFICEQA_AGENT_"
+    if upper.startswith(marker):
+        suffix = upper[len(marker):]
+        aliases.extend([suffix, f"AMBER_CONFIG_{suffix}", f"AMBER_CONFIG_GREEN_{suffix}"])
+    marker = "AMBER_CONFIG_GREEN_"
+    if upper.startswith(marker):
+        suffix = upper[len(marker):]
+        aliases.extend([suffix, f"AMBER_CONFIG_OFFICEQA_AGENT_{suffix}", f"AMBER_CONFIG_{suffix}"])
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for alias in aliases:
+        alias = str(alias or "").strip()
+        if alias and alias not in seen:
+            seen.add(alias)
+            ordered.append(alias)
+    return tuple(ordered)
+
+
+def _env_get(name: str, default: str = "") -> str:
+    for alias in _env_alias_names(name):
+        raw = os.getenv(alias)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    return default
+
+
+def _env_present_sources(name: str) -> list[str]:
+    sources: list[str] = []
+    for alias in _env_alias_names(name):
+        raw = os.getenv(alias)
+        if raw is not None and str(raw).strip():
+            sources.append(alias)
+    return sources
+
+
+def _env_first_source(name: str) -> str:
+    sources = _env_present_sources(name)
+    return sources[0] if sources else ""
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
+    raw = _env_get(name)
+    if not raw:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_float(name: str, default: float = 0.0) -> float:
-    raw = os.getenv(name)
-    if raw is None:
+    raw = _env_get(name)
+    if not raw:
         return default
     try:
         return float(raw.strip())
@@ -1634,7 +1698,7 @@ class AegisForgeAgent:
         self.debug_artifacts_enabled = _env_flag("AEGISFORGE_DEBUG_ARTIFACTS", default=False)
         self.trace_artifacts_enabled = _env_flag("AEGISFORGE_TRACE_ARTIFACTS", default=False)
 
-        self.llm_model = (os.getenv("OPENAI_MODEL") or os.getenv("MODEL_NAME") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+        self.llm_model = (_env_get("OPENAI_MODEL") or _env_get("MODEL_NAME") or "gpt-4o-mini").strip() or "gpt-4o-mini"
         self.llm_timeout_seconds = max(5, int(os.getenv("AEGISFORGE_LLM_TIMEOUT_SECONDS", "75") or "75"))
         self.max_llm_calls_per_response = max(
             1,
@@ -5263,11 +5327,13 @@ class AegisForgeAgent:
         candidates = (
             "OPENAI_RESPONSES_URL",
             "AEGISFORGE_OPENAI_RESPONSES_URL",
+            "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_RESPONSES_URL",
+            "AMBER_CONFIG_PURPLE_OPENAI_RESPONSES_URL",
             "AMBER_CONFIG_GREEN_OPENAI_RESPONSES_URL",
             "AMBER_CONFIG_OPENAI_RESPONSES_URL",
         )
         for name in candidates:
-            raw = (os.getenv(name) or "").strip().rstrip("/")
+            raw = _env_get(name).strip().rstrip("/")
             if raw.lower().startswith(("http://", "https://")):
                 return raw
         base = ""
@@ -5276,10 +5342,12 @@ class AegisForgeAgent:
             "OPENAI_API_BASE",
             "OPENAI_BASE",
             "AEGISFORGE_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_BASE_URL",
+            "AMBER_CONFIG_PURPLE_OPENAI_BASE_URL",
             "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
             "AMBER_CONFIG_OPENAI_BASE_URL",
         ):
-            raw = (os.getenv(name) or "").strip().rstrip("/")
+            raw = _env_get(name).strip().rstrip("/")
             if raw.lower().startswith(("http://", "https://")) and "agentbeats.dev" not in raw.lower():
                 base = raw
                 break
@@ -5323,9 +5391,9 @@ class AegisForgeAgent:
             return ""
 
         model = (
-            os.getenv("AEGISFORGE_OFFICEQA_OPENAI_MODEL")
-            or os.getenv("OPENAI_MODEL")
-            or os.getenv("MODEL_NAME")
+            _env_get("AEGISFORGE_OFFICEQA_OPENAI_MODEL")
+            or _env_get("OPENAI_MODEL")
+            or _env_get("MODEL_NAME")
             or self.llm_model
             or "gpt-4.1-mini"
         ).strip()
@@ -5337,7 +5405,7 @@ class AegisForgeAgent:
             "max_output_tokens": int(max_output_tokens),
         }
         if _env_flag("AEGISFORGE_OFFICEQA_CODE_INTERPRETER", default=True):
-            memory_limit = (os.getenv("AEGISFORGE_OFFICEQA_CODE_INTERPRETER_MEMORY", "1g") or "1g").strip()
+            memory_limit = (_env_get("AEGISFORGE_OFFICEQA_CODE_INTERPRETER_MEMORY", "1g") or "1g").strip()
             payload["tools"] = [{
                 "type": "code_interpreter",
                 "container": {"type": "auto", "memory_limit": memory_limit},
@@ -5649,6 +5717,8 @@ class AegisForgeAgent:
             "LLM_BASE_URL",
             "VLLM_OPENAI_BASE_URL",
             "OLLAMA_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_BASE_URL",
+            "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_BASE",
             "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
             "AMBER_CONFIG_GREEN_OPENAI_API_BASE",
             "AMBER_CONFIG_OPENAI_BASE_URL",
@@ -5658,21 +5728,21 @@ class AegisForgeAgent:
         ignored_base: list[str] = []
         usable_source = ""
         for name in base_candidates:
-            raw = (os.getenv(name) or "").strip()
+            raw = _env_get(name)
+            source = _env_first_source(name) or name
             if not raw:
                 continue
             lowered = raw.lower()
             if "agentbeats.dev" in lowered or lowered.rstrip("/").endswith("/results") or "/quick-submit/" in lowered:
-                ignored_base.append(name)
+                ignored_base.append(source)
                 continue
-            present_base.append(name)
+            present_base.append(source)
             if not usable_source and lowered.startswith(("http://", "https://")):
-                usable_source = name
+                usable_source = source
 
-        key_sources: list[str] = []
-        for name in ("OPENAI_API_KEY", "AMBER_CONFIG_GREEN_OPENAI_API_KEY", "AMBER_CONFIG_OPENAI_API_KEY"):
-            if (os.getenv(name) or "").strip():
-                key_sources.append(name)
+        key_sources = _env_present_sources("OPENAI_API_KEY")
+        if not key_sources:
+            key_sources = _env_present_sources("AEGISFORGE_OPENAI_API_KEY") + _env_present_sources("OFFICEQA_OPENAI_API_KEY")
 
         endpoint = self._llm_base_url()
         if endpoint and not usable_source and key_sources:
@@ -5684,7 +5754,7 @@ class AegisForgeAgent:
             "base_env_present": present_base[:8],
             "base_env_ignored": ignored_base[:8],
             "api_key_present": bool(key_sources),
-            "api_key_sources": key_sources[:3],
+            "api_key_sources": key_sources[:6],
         }
 
 
@@ -6001,7 +6071,7 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V066 "
+            "OFFICEQA_DIAG_V067 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -6024,6 +6094,7 @@ class AegisForgeAgent:
             f"llm_endpoint={int(bool(llm_diag.get('endpoint_configured')))} "
             f"llm_source={endpoint_source} "
             f"llm_api_key={int(bool(llm_diag.get('api_key_present')))} "
+            f"llm_key_source={re.sub(r'[^A-Za-z0-9_\-:.]+', '_', self._coerce_text((llm_diag.get('api_key_sources') or ['none'])[0]))[:64]} "
             f"llm_enabled={int(bool(llm_status.get('enabled', _env_flag('AEGISFORGE_OFFICEQA_LLM_ENABLED', default=True))))} "
             f"llm_called={int(bool(llm_status.get('called')))} "
             f"llm_responses={int(bool(llm_status.get('responses_called')))} "
@@ -11813,10 +11884,14 @@ class AegisForgeAgent:
         """
         for name in (
             "OPENAI_API_KEY",
+            "AEGISFORGE_OPENAI_API_KEY",
+            "OFFICEQA_OPENAI_API_KEY",
+            "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_KEY",
+            "AMBER_CONFIG_PURPLE_OPENAI_API_KEY",
             "AMBER_CONFIG_GREEN_OPENAI_API_KEY",
             "AMBER_CONFIG_OPENAI_API_KEY",
         ):
-            raw = (os.getenv(name) or "").strip()
+            raw = _env_get(name)
             if not raw:
                 continue
             raw = re.sub(r"^Bearer\s+", "", raw, flags=re.IGNORECASE).strip()
@@ -11852,7 +11927,7 @@ class AegisForgeAgent:
         )
         raw = ""
         for name in candidates:
-            value = (os.getenv(name) or "").strip().rstrip("/")
+            value = _env_get(name).strip().rstrip("/")
             if not value:
                 continue
             lowered = value.lower()
