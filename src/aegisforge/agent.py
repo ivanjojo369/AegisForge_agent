@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_3_1_smoke_probe_guard_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_4_sourcefile_table_calc_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3200,12 +3200,13 @@ class AegisForgeAgent:
 
 
     def _officeqa_explicit_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
-        """Extract only explicit source_docs/source_files hints.
+        """Extract source-doc hints strong enough for retrieval locking.
 
-        Unlike _officeqa_source_hints, this intentionally does not infer
-        year-month hints from the question.  v1.2 uses this narrower set for
-        source-file locking so a mere date in the question cannot over-restrict
-        retrieval to the wrong file.
+        v1.4 keeps explicit ``source_docs``/``source_files`` support and adds a
+        safe derived-provenance case for questions that name a specific Treasury
+        Bulletin/report month and year (for example, "June 1992 bulletin" or
+        "December 1990 report").  The derived hints identify source files only;
+        they do not encode answers or gold labels.
         """
         pieces: list[str] = [self._coerce_text(question)]
         if isinstance(metadata, Mapping):
@@ -3230,16 +3231,145 @@ class AegisForgeAgent:
                 base = norm.split("/")[-1]
                 hints.add(base)
                 hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
+
+        # v1.4: when the question explicitly names a source bulletin/report by
+        # month+year, lock retrieval to that source family.  This is provenance,
+        # not answer memorization, and fixes the v1.3 pattern where every shard
+        # had corpus_records>0 but sourcefile_lock=0/source_matches=0.
+        hints.update(self._officeqa_bulletin_date_source_hints(raw))
         return {hint for hint in hints if hint and hint != "none"}
 
-    def _officeqa_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
-        """Extract reusable source-file/document hints from the visible prompt/metadata.
 
-        OfficeQA prompts often include ``Relevant source documents`` or
-        ``Relevant source files``.  These are provenance hints, not answers.
-        v1.1/v1.2 use them to boost or lock retrieval toward the correct Treasury bulletin
-        instead of relying only on broad semantic overlap.
-        """
+    def _officeqa_bulletin_date_pairs(self, raw: Any) -> list[tuple[int, int]]:
+        """Return source-publication month/year pairs explicitly named in a prompt."""
+        text = self._coerce_text(raw)
+        if not text.strip():
+            return []
+        month_map = {
+            "january": 1, "jan": 1,
+            "february": 2, "feb": 2,
+            "march": 3, "mar": 3,
+            "april": 4, "apr": 4,
+            "may": 5,
+            "june": 6, "jun": 6,
+            "july": 7, "jul": 7,
+            "august": 8, "aug": 8,
+            "september": 9, "sept": 9, "sep": 9,
+            "october": 10, "oct": 10,
+            "november": 11, "nov": 11,
+            "december": 12, "dec": 12,
+        }
+        month_re = r"(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)"
+        pairs: list[tuple[int, int]] = []
+
+        def add(month_token: str, year_token: str) -> None:
+            month = month_map.get(month_token.lower().strip("."))
+            try:
+                year = int(year_token)
+            except Exception:
+                return
+            if month is None or year < 1800 or year > 2099:
+                return
+            pair = (year, month)
+            if pair not in pairs:
+                pairs.append(pair)
+
+        # "June 1992 bulletin", "September 1988 U.S Treasury Bulletin",
+        # "December 1990 report".
+        pattern_a = rf"\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,90}}\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:bulletin|report)\b"
+        for match in re.finditer(pattern_a, text, flags=re.IGNORECASE):
+            add(match.group(1), match.group(2))
+
+        # "bulletin/report for/of/in June 1992".
+        pattern_b = rf"\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:bulletin|report)\b[^\n.;:]{{0,90}}\b(?:for|of|from|in|dated|published)\s+{month_re}\.?\s+((?:18|19|20)\d{{2}})\b"
+        for match in re.finditer(pattern_b, text, flags=re.IGNORECASE):
+            add(match.group(1), match.group(2))
+
+        # "as reported in the December 1990 report" / "from the June 1992 bulletin".
+        pattern_c = rf"\b(?:reported\s+in|from|using|according\s+to)[^\n.;:]{{0,80}}\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,80}}\b(?:bulletin|report)\b"
+        for match in re.finditer(pattern_c, text, flags=re.IGNORECASE):
+            add(match.group(1), match.group(2))
+
+        return pairs[:6]
+
+    def _officeqa_bulletin_date_source_hints(self, raw: Any) -> set[str]:
+        """Build normalized source-file hints from explicit Treasury Bulletin dates."""
+        hints: set[str] = set()
+        for year, month in self._officeqa_bulletin_date_pairs(raw):
+            mm = f"{month:02d}"
+            yyyy = str(year)
+            month_names = {
+                1: ("january", "jan"), 2: ("february", "feb"), 3: ("march", "mar"),
+                4: ("april", "apr"), 5: ("may",), 6: ("june", "jun"),
+                7: ("july", "jul"), 8: ("august", "aug"), 9: ("september", "sept", "sep"),
+                10: ("october", "oct"), 11: ("november", "nov"), 12: ("december", "dec"),
+            }.get(month, ())
+            raw_hints = [
+                f"{yyyy}_{mm}", f"{yyyy}-{mm}", f"{yyyy}{mm}", f"{mm}_{yyyy}", f"{mm}-{yyyy}",
+                f"treasury_bulletin_{yyyy}_{mm}", f"treasury-bulletin-{yyyy}-{mm}",
+                f"treasury_bulletins_{yyyy}_{mm}", f"bulletin_{yyyy}_{mm}",
+                f"{yyyy}_{mm}_treasury", f"{yyyy}_{mm}_bulletin",
+            ]
+            for name in month_names:
+                raw_hints.extend([
+                    f"{name}_{yyyy}", f"{name}-{yyyy}", f"{yyyy}_{name}", f"{yyyy}-{name}",
+                    f"treasury_bulletin_{name}_{yyyy}", f"treasury-bulletin-{name}-{yyyy}",
+                    f"{name}_{yyyy}_bulletin", f"{name}_{yyyy}_report",
+                ])
+            for item in raw_hints:
+                norm = self._officeqa_normalize_source_hint(item)
+                if len(norm) >= 5:
+                    hints.add(norm)
+        return hints
+
+    def _officeqa_source_key_matches_hint(self, source_key: Any, hint: Any) -> bool:
+        """Flexible source-key matching for safe provenance hints."""
+        key = self._officeqa_normalize_source_hint(source_key)
+        hint_norm = self._officeqa_normalize_source_hint(hint)
+        if not key or not hint_norm:
+            return False
+        if hint_norm in key:
+            return True
+        compact_key = re.sub(r"[^a-z0-9]+", "", key)
+        compact_hint = re.sub(r"[^a-z0-9]+", "", hint_norm)
+        if len(compact_hint) >= 6 and compact_hint in compact_key:
+            return True
+
+        # Match date hints across separator/month-name differences.
+        date_match = re.search(r"\b((?:18|19|20)\d{2})[_\-]?([01]\d)\b", hint_norm)
+        if not date_match:
+            date_match = re.search(r"\b([01]\d)[_\-]((?:18|19|20)\d{2})\b", hint_norm)
+            if date_match:
+                month_s, year_s = date_match.group(1), date_match.group(2)
+            else:
+                month_s = year_s = ""
+        else:
+            year_s, month_s = date_match.group(1), date_match.group(2)
+        if year_s and month_s and year_s in key:
+            month_i = int(month_s)
+            month_names = {
+                1: ("01", "1", "jan", "january"),
+                2: ("02", "2", "feb", "february"),
+                3: ("03", "3", "mar", "march"),
+                4: ("04", "4", "apr", "april"),
+                5: ("05", "5", "may"),
+                6: ("06", "6", "jun", "june"),
+                7: ("07", "7", "jul", "july"),
+                8: ("08", "8", "aug", "august"),
+                9: ("09", "9", "sep", "sept", "september"),
+                10: ("10", "oct", "october"),
+                11: ("11", "nov", "november"),
+                12: ("12", "dec", "december"),
+            }.get(month_i, ())
+            if any(re.search(rf"(?:^|[^a-z0-9]){re.escape(m)}(?:$|[^a-z0-9])", key) for m in month_names):
+                return True
+            # Some transformed corpus paths use yyyymm without separators.
+            if f"{year_s}{month_s}" in compact_key:
+                return True
+        return False
+
+    def _officeqa_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
+        """Extract reusable source-file/document hints from the visible prompt/metadata."""
         pieces: list[str] = [self._coerce_text(question)]
         if isinstance(metadata, Mapping):
             pieces.append(_officeqa_stringify_for_signal(metadata, limit=16000))
@@ -3265,6 +3395,8 @@ class AegisForgeAgent:
                 hints.add(base)
                 hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
 
+        hints.update(self._officeqa_bulletin_date_source_hints(raw))
+
         lowered = raw.lower()
         month_map = {
             "january": "01", "jan": "01", "february": "02", "feb": "02", "march": "03", "mar": "03",
@@ -3273,6 +3405,8 @@ class AegisForgeAgent:
             "november": "11", "nov": "11", "december": "12", "dec": "12",
         }
         years = sorted(self._officeqa_question_years(raw))[:16]
+        # Soft hints for non-source dates; these boost but should not be relied
+        # on alone for strict source locking.
         for m_name, m_num in month_map.items():
             if re.search(rf"\b{re.escape(m_name)}\b", lowered):
                 for year in years:
@@ -3313,7 +3447,7 @@ class AegisForgeAgent:
         source_key = self._coerce_text(record.get("source_key"))
         if not source_key:
             source_key = self._officeqa_normalize_source_hint(f"{record.get('path', '')}\n{record.get('name', '')}")
-        return any(len(hint) >= 5 and hint in source_key for hint in hints)
+        return any(len(hint) >= 5 and self._officeqa_source_key_matches_hint(source_key, hint) for hint in hints)
 
     def _officeqa_full_text_for_record(self, record: Mapping[str, Any], *, max_chars: int = 1800000) -> str:
         """Lazy-read the full source file for exact source-file matches only."""
@@ -3725,6 +3859,36 @@ class AegisForgeAgent:
         enriched["path_l"] = path.lower()[:2000]
         enriched["name_l"] = name.lower()[:500]
         source_key = self._officeqa_normalize_source_hint(f"{path}\n{name}")
+        # v1.4: add normalized date variants to the source key so questions like
+        # "June 1992 bulletin" can lock onto transformed paths named with
+        # yyyymm/yyyy-mm/month-year variants.
+        try:
+            raw_key = f"{path}\n{name}".lower()
+            extra_hints: set[str] = set()
+            month_lookup = {
+                "january": "01", "jan": "01", "february": "02", "feb": "02",
+                "march": "03", "mar": "03", "april": "04", "apr": "04",
+                "may": "05", "june": "06", "jun": "06", "july": "07", "jul": "07",
+                "august": "08", "aug": "08", "september": "09", "sept": "09", "sep": "09",
+                "october": "10", "oct": "10", "november": "11", "nov": "11", "december": "12", "dec": "12",
+            }
+            for y, m in re.findall(r"\b((?:18|19|20)\d{2})[-_/]?([01]\d)\b", raw_key):
+                extra_hints.update({f"{y}_{m}", f"{y}-{m}", f"{y}{m}", f"{m}_{y}"})
+            for m, y in re.findall(r"\b([01]\d)[-_/]((?:18|19|20)\d{2})\b", raw_key):
+                extra_hints.update({f"{y}_{m}", f"{y}-{m}", f"{y}{m}", f"{m}_{y}"})
+            month_re = r"(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)"
+            for m_name, y in re.findall(rf"\b{month_re}[-_\s]+((?:18|19|20)\d{{2}})\b", raw_key, flags=re.IGNORECASE):
+                mm = month_lookup.get(m_name.lower())
+                if mm:
+                    extra_hints.update({f"{y}_{mm}", f"{y}-{mm}", f"{y}{mm}", f"{m_name.lower()}_{y}"})
+            for y, m_name in re.findall(rf"\b((?:18|19|20)\d{{2}})[-_\s]+{month_re}\b", raw_key, flags=re.IGNORECASE):
+                mm = month_lookup.get(m_name.lower())
+                if mm:
+                    extra_hints.update({f"{y}_{mm}", f"{y}-{mm}", f"{y}{mm}", f"{m_name.lower()}_{y}"})
+            if extra_hints:
+                source_key = self._officeqa_normalize_source_hint(source_key + " " + " ".join(sorted(extra_hints)))
+        except Exception:
+            pass
         enriched["source_key"] = source_key
         try:
             bm25_blob = f"{name}\n{path}\n{summary}"
@@ -3741,7 +3905,7 @@ class AegisForgeAgent:
                     table_rows.append(clean[:2000])
                 elif re.search(r"\b(?:18|19|20)\d{2}\b", clean) and len(re.findall(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", clean)) >= 2:
                     table_rows.append(clean[:2000])
-                if len(table_rows) >= 360:
+                if len(table_rows) >= 520:
                     break
             enriched["table_rows"] = table_rows
         except Exception:
@@ -3766,67 +3930,65 @@ class AegisForgeAgent:
         record_years = set(record.get("years") or [])
         score = int(record.get("data_quality", 0) or 0)
 
-        # v1.1: dependency-free BM25-style overlap and explicit source-file
-        # boosts. Source-file lines are provenance hints from the evaluator, not
-        # answer labels; they are safe to use for retrieval.
         source_hints = self._officeqa_source_hints(question)
         source_key = self._coerce_text(record.get("source_key")) or self._officeqa_normalize_source_hint(f"{path_l}\n{name_l}")
-        source_hits = sum(1 for hint in source_hints if len(hint) >= 5 and hint in source_key)
+        source_hits = sum(1 for hint in source_hints if len(hint) >= 5 and self._officeqa_source_key_matches_hint(source_key, hint))
         if source_hits:
-            score += min(140, 70 * source_hits)
-        elif source_hints and ("relevant source" in q or "source file" in q or "source document" in q):
+            score += min(220, 92 * source_hits)
+        elif source_hints and ("relevant source" in q or "source file" in q or "source document" in q or "bulletin" in q or "report" in q):
             score -= 16
 
         q_bm25 = set(self._officeqa_bm25_terms(question, limit=180))
         r_bm25 = set(record.get("bm25_terms") or [])
         if q_bm25 and r_bm25:
             overlap = q_bm25 & r_bm25
-            score += min(90, 4 * len(overlap))
-            for token in ("public", "debt", "receipts", "outlays", "currency", "denomination", "cpi", "irs", "esf", "interest", "defense"):
+            score += min(110, 5 * len(overlap))
+            for token in ("public", "debt", "receipts", "outlays", "currency", "denomination", "cpi", "irs", "esf", "interest", "defense", "trust", "fund", "reserve"):
                 if token in q_bm25 and token in r_bm25:
-                    score += 3
+                    score += 4
 
         if q_years:
             overlap = q_years & record_years
-            score += 10 * len(overlap)
+            score += 11 * len(overlap)
             if not overlap and not any(str(year) in haystack for year in q_years):
-                # Keep a very small base score for high-quality Treasury files,
-                # but strongly prefer matching years.
-                score -= 6
+                score -= 7
+        q_months = set(self._officeqa_question_months(question))
+        if q_months and any(self._officeqa_month_number(token) in q_months for token in re.findall(r"[A-Za-z]{3,9}", haystack[:5000])):
+            score += 8
+
         for term in terms:
             if term in haystack:
-                score += 4 if " " in term else 2
+                score += 5 if " " in term else 2
             if term in path_l or term in name_l:
-                score += 4
+                score += 5
 
-        # Domain-specific path/content bonuses.  These are topic clusters, not
-        # answer tables; they simply move plausible Treasury files into the small
-        # extraction candidate set.
         clusters = {
-            "esf": ("esf", "exchange stabilization"),
-            "public_debt": ("public debt", "debt", "marketable", "treasury bills", "treasury notes", "treasury bonds"),
-            "irs": ("internal revenue", "irs", "tax receipts", "income tax"),
+            "esf": ("esf", "exchange stabilization", "reserve assets", "special drawing"),
+            "public_debt": ("public debt", "debt", "marketable", "treasury bills", "treasury notes", "treasury bonds", "statutory debt"),
+            "irs": ("internal revenue", "irs", "tax receipts", "income tax", "criminal cases", "district court"),
             "cpi": ("cpi", "consumer price index", "inflation"),
-            "currency": ("currency", "coin", "denomination", "seigniorage", "seignorage"),
-            "budget": ("receipts", "outlays", "deficit", "surplus", "fiscal operations"),
-            "savings_bonds": ("savings bonds", "series e", "series ee", "series i", "payroll savings"),
-            "capital": ("capital inflow", "capital outflow", "liabilities", "taiwan", "mainland china", "united kingdom", "foreigners"),
-            "employment": ("payroll employment", "employment", "profile of the economy", "non-farm", "productivity"),
+            "currency": ("currency", "coin", "denomination", "seigniorage", "seignorage", "paper money", "circulation"),
+            "budget": ("receipts", "outlays", "deficit", "surplus", "fiscal operations", "budget"),
+            "trust_funds": ("trust fund", "airport and airway", "unemployment insurance", "liquid fuel"),
+            "savings_bonds": ("savings bonds", "series e", "series ee", "series i", "payroll savings", "redemption"),
+            "capital": ("capital inflow", "capital outflow", "liabilities", "taiwan", "mainland china", "united kingdom", "foreigners", "claims owed"),
+            "employment": ("payroll employment", "employment", "profile of the economy", "non-farm", "productivity", "unemployment"),
             "rates": ("yield", "corporate aa", "treasury bonds", "market yields", "constant maturity", "rates"),
             "defense": ("national defense", "department of defense", "associated activities"),
             "agencies": ("federal home loan", "federal national mortgage", "government-sponsored", "rural electrification", "central bank for cooperatives"),
             "imports": ("imports", "fish", "quotas", "tariff"),
+            "research": ("research paper series", "national bureau of economic research", "journal"),
         }
         for needles in clusters.values():
             q_hit = any(needle in q for needle in needles)
             r_hit = any(needle in haystack for needle in needles)
             if q_hit and r_hit:
-                score += 12
+                score += 15
 
         if "treasury_bulletins_parsed" in path_l or "/app/data/officeqa" in path_l:
             score += 6
         if "transformed" in path_l or "jsons" in path_l:
-            score += 3
+            score += 4
         if any(marker in haystack for marker in ("treasury", "bulletin", "fiscal", "table", "receipts", "outlays")):
             score += 2
         return max(0, score)
@@ -4385,8 +4547,9 @@ class AegisForgeAgent:
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 65000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
         candidate_limit = max(20, min(2200, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "1500") or "1500")))
-        block_limit = max(3, min(56, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "42") or "42")))
+        block_limit = max(3, min(64, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "48") or "48")))
         explicit_hints = self._officeqa_explicit_source_hints(question, metadata)
+        derived_pairs = self._officeqa_bulletin_date_pairs(question)
         source_locked = False
         source_matches: list[dict[str, Any]] = []
         self._officeqa_last_retrieval_status = {
@@ -4401,6 +4564,7 @@ class AegisForgeAgent:
             "source_hints": len(explicit_hints),
             "source_matches": 0,
             "sourcefile_lock": 0,
+            "derived_source_pairs": len(derived_pairs),
             "index_cache_hit": int(bool(getattr(self, "_officeqa_local_corpus_index_cache_hit", False))),
         }
         if not cache:
@@ -4411,12 +4575,22 @@ class AegisForgeAgent:
                 source_key = self._coerce_text(record.get("source_key"))
                 if not source_key:
                     source_key = self._officeqa_normalize_source_hint(f"{record.get('path', '')}\n{record.get('name', '')}")
-                if any(len(hint) >= 5 and hint in source_key for hint in explicit_hints):
+                if any(len(hint) >= 5 and self._officeqa_source_key_matches_hint(source_key, hint) for hint in explicit_hints):
                     source_matches.append(record)
-            # If the evaluator supplies source_files/source_docs, they are
-            # provenance hints, not answer labels. Lock retrieval to them when
-            # possible; this prevents broad Treasury terms from pulling a wrong
-            # bulletin/table and wasting the LLM call.
+
+            # Fallback for transformed corpora that carry only a year/month in
+            # filenames but not a full Treasury name.  Still source provenance:
+            # it uses the named bulletin/report date, not answer content.
+            if not source_matches and derived_pairs:
+                for record in cache:
+                    source_key = self._coerce_text(record.get("source_key"))
+                    if not source_key:
+                        source_key = self._officeqa_normalize_source_hint(f"{record.get('path', '')}\n{record.get('name', '')}")
+                    for year, month in derived_pairs:
+                        if self._officeqa_source_key_matches_hint(source_key, f"{year}_{month:02d}"):
+                            source_matches.append(record)
+                            break
+
             source_locked = bool(source_matches and _env_flag("AEGISFORGE_OFFICEQA_SOURCEFILE_LOCK", default=True))
 
         scored: list[tuple[int, dict[str, Any]]] = []
@@ -4427,14 +4601,12 @@ class AegisForgeAgent:
             except Exception:
                 score = 0
             if source_locked:
-                score += 220
+                score += 260
             if score > 0:
                 scored.append((score, record))
 
-        # If source-file lock produced too little context, add a small general
-        # fallback tail. This keeps recall for prompts with imperfect file names
-        # while still prioritizing explicit provenance.
-        if source_locked and len(scored) < max(3, min(8, block_limit // 3)):
+        # If source lock produced too little context, add a small general tail.
+        if source_locked and len(scored) < max(3, min(10, block_limit // 3)):
             seen_paths = {self._coerce_text(rec.get("path")) for _, rec in scored}
             fallback: list[tuple[int, dict[str, Any]]] = []
             for record in cache:
@@ -4478,9 +4650,11 @@ class AegisForgeAgent:
             row_context = self._officeqa_structured_rows_from_record(
                 question,
                 record,
-                limit=max(5500, min(17000, limit // 4)),
+                limit=max(6500, min(22000, limit // 3)),
             )
             if row_context:
+                if source_match or (source_locked and record in source_matches):
+                    row_context = "[officeqa_sourcefile_locked]\n" + row_context
                 pieces.append(row_context)
                 row_hits += 1
             block_context = self._officeqa_relevant_blocks_from_text(
@@ -4488,7 +4662,7 @@ class AegisForgeAgent:
                 text,
                 name=name,
                 path=path,
-                limit=max(7000, min(20000, limit // 3)),
+                limit=max(8000, min(24000, limit // 3)),
             )
             if block_context:
                 if source_match or (source_locked and record in source_matches):
@@ -5788,7 +5962,14 @@ class AegisForgeAgent:
             return 2
         if any(marker in lowered for marker in ("cagr", "annual decay factor", "arc elasticity")):
             return 3
+        if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
+            return None
         if any(marker in lowered for marker in ("single value", "single number", "single numeric", "as a single", "provide as a single")):
+            return 1
+        if any(marker in lowered for marker in (
+            "what was", "what is", "what were", "how much", "how many", "calculate", "compute",
+            "determine", "find the", "report your answer", "return the", "round to", "rounded to",
+        )):
             return 1
         return None
 
@@ -5969,8 +6150,8 @@ class AegisForgeAgent:
 
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
-            "You are AegisForge OfficeQA AgentBeats mode. "
-            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize [officeqa_sourcefile_locked] excerpts and filenames/sources matching visible Relevant source files/documents lines. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.4. "
+            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
             "Do not use or copy ground_truth, gold answers, answer keys, labels, scores, rationales, or evaluator-only fields if present. "
@@ -5998,8 +6179,8 @@ class AegisForgeAgent:
         arithmetic-heavy OfficeQA tasks.
         """
         instructions = (
-            "You are AegisForge OfficeQA AgentBeats mode. "
-            "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize any [officeqa_sourcefile_locked] excerpts and filenames/sources matching visible Relevant source files/documents lines. "
+            "You are AegisForge OfficeQA AgentBeats mode v1.4. "
+            "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize [officeqa_sourcefile_locked] table rows/excerpts and source filenames that match a visible or derived Treasury Bulletin/report month-year. "
             "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
             "Never output [BUILD] or [ASK]. "
             "For every arithmetic/statistics/regression/rounding task, use the python tool/code interpreter when available, then return the final value only in <FINAL_ANSWER>. "
@@ -6147,14 +6328,7 @@ class AegisForgeAgent:
         return text
 
     def _officeqa_context_for_llm(self, question: str, context: str, *, limit: int = 16000) -> str:
-        """Pack OfficeQA evidence into a smaller LLM context window.
-
-        v0.5.1 could pass very large evidence strings to the OpenAI-compatible
-        endpoint.  If the endpoint rejects the request for context length, the
-        agent silently falls back to INSUFFICIENT_INFORMATION.  This packer keeps
-        the highest-signal rows/excerpts while preserving enough surrounding text
-        for calculations.
-        """
+        """Pack OfficeQA evidence into a smaller LLM context window."""
         raw = self._coerce_text(context)
         if not raw.strip():
             return ""
@@ -6166,47 +6340,51 @@ class AegisForgeAgent:
         blocks = [block.strip() for block in re.split(r"\n\s*\n", raw) if block.strip()]
         if not blocks:
             blocks = [line.strip() for line in raw.splitlines() if line.strip()]
+
         scored: list[tuple[int, int, str]] = []
         for idx, block in enumerate(blocks):
             lower = block.lower()
             score = 0
+            if "[officeqa_sourcefile_locked]" in lower:
+                score += 180
+            if "[officeqa_local_table:" in lower:
+                score += 35
+            if "[officeqa_local_block:" in lower:
+                score += 12
             for term in terms:
                 if term and term in lower:
-                    score += 4
+                    score += 5 if len(term) >= 5 else 2
             for hint in source_hints:
-                if len(hint) >= 5 and hint in lower:
-                    score += 12
+                if len(hint) >= 5 and self._officeqa_source_key_matches_hint(lower, hint):
+                    score += 30
             for marker in (
-                "treasury",
-                "bulletin",
-                "fiscal",
-                "receipts",
-                "outlays",
-                "public debt",
-                "cpi",
-                "irs",
-                "internal revenue",
-                "currency",
-                "bond",
-                "bill",
-                "note",
-                "table",
-                "csv",
+                "treasury", "bulletin", "fiscal", "receipts", "outlays", "public debt",
+                "cpi", "irs", "internal revenue", "currency", "bond", "bill", "note",
+                "table", "csv", "exchange stabilization", "savings bonds", "research paper",
+                "statutory debt", "district court", "trust fund",
             ):
                 if marker in lower:
                     score += 2
             if re.search(r"\b(?:18|19|20)\d{2}\b", block):
-                score += 1
-            if re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", block):
-                score += 1
-            if "|" in block or "\t" in block:
                 score += 2
-            scored.append((score, idx, block[:5000]))
+            if re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", block):
+                score += 2
+            if "|" in block or "\t" in block:
+                score += 3
+            scored.append((score, idx, block[:6500]))
 
-        scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
-        selected = sorted(scored[:12], key=lambda item: item[1])
+        # Preserve locked-source rows first, then highest signal blocks in their
+        # original order.  v1.3 often packed broad, mixed Treasury context; this
+        # v1.4 packer keeps the exact bulletin/table rows in the prompt.
+        locked = [item for item in scored if "[officeqa_sourcefile_locked]" in item[2].lower()]
+        unlocked = [item for item in scored if item not in locked]
+        locked.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        unlocked.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        budget_items = locked[:18] + unlocked[:24]
+        budget_items = sorted(budget_items, key=lambda item: item[1])
+
         packed: list[str] = []
-        for score, idx, block in selected:
+        for score, idx, block in budget_items:
             if score <= 0 and packed:
                 continue
             packed.append(block)
@@ -6797,7 +6975,7 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V1_3 "
+            "OFFICEQA_DIAG_V1_4 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -6816,6 +6994,7 @@ class AegisForgeAgent:
             f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 forensic_loader=1 "
             f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
             f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
+            f"derived_source_pairs={int(retrieval.get('derived_source_pairs', 0) or 0)} "
             f"source_matches={int(retrieval.get('source_matches', 0) or 0)} "
             f"index_cache_hit={int(retrieval.get('index_cache_hit', 0) or 0)} "
             f"row_hits={int(retrieval.get('row_hits', 0) or 0)} "
@@ -6957,10 +7136,6 @@ class AegisForgeAgent:
         if local_context:
             context = (context + "\n\n" + local_context).strip() if context else local_context
 
-        # v1.3 guard: the previous run showed llm_called=1 but corpus_records=0,
-        # which encouraged unsupported numeric guesses and long generic escapes.
-        # If no local source evidence and no raw-A2A context are visible, do not
-        # ask the LLM to invent a Treasury answer.
         if not local_context and not self._officeqa_context_has_real_evidence(question, context):
             compact_diagnostics = self._officeqa_compact_diagnostics(
                 question=question,
@@ -6970,7 +7145,7 @@ class AegisForgeAgent:
             return self._officeqa_format_response(
                 reasoning=(
                     f"{compact_diagnostics} "
-                    "OfficeQA v1.3 filesystem forensic loader found no source evidence for this turn; "
+                    "OfficeQA v1.4 sourcefile/table engine found no source evidence for this turn; "
                     "the answer channel is kept conservative instead of guessing from an empty corpus."
                 ),
                 final_answer="INSUFFICIENT_INFORMATION",
@@ -6987,24 +7162,9 @@ class AegisForgeAgent:
                 metadata=safe_metadata,
             )
 
-        # With the Dockerfile v0.6.0 corpus path, the most reliable route is:
-        # retrieve source-document evidence -> let the OpenAI-compatible model
-        # parse/calculate -> fall back to conservative deterministic solvers.
-        llm_result = self._officeqa_try_llm_answer(question, context, safe_metadata)
-        if llm_result:
-            return self._officeqa_output_firewall(
-                self._officeqa_format_response(
-                    reasoning=(
-                        self._officeqa_compact_diagnostics(question=question, context=context, local_context=local_context)
-                        + " "
-                        + (llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed source evidence.")
-                    ),
-                    final_answer=llm_result.get("answer"),
-                ),
-                task_text=task_text,
-                metadata=safe_metadata,
-            )
-
+        # v1.4: deterministic/source-table solvers get the first chance once
+        # real local corpus context exists.  The prior v1.3 run proved that the
+        # model often saw 65k chars but answered from the wrong broad snippet.
         deterministic_result = self._officeqa_try_deterministic_answer(question, context, safe_metadata)
         if deterministic_result:
             return self._officeqa_output_firewall(
@@ -7015,6 +7175,21 @@ class AegisForgeAgent:
                         + (deterministic_result.get("reasoning") or "OfficeQA deterministic answer engine produced an answer from source context.")
                     ),
                     final_answer=deterministic_result.get("answer"),
+                ),
+                task_text=task_text,
+                metadata=safe_metadata,
+            )
+
+        llm_result = self._officeqa_try_llm_answer(question, context, safe_metadata)
+        if llm_result:
+            return self._officeqa_output_firewall(
+                self._officeqa_format_response(
+                    reasoning=(
+                        self._officeqa_compact_diagnostics(question=question, context=context, local_context=local_context)
+                        + " "
+                        + (llm_result.get("reasoning") or "OfficeQA LLM bridge produced a grounded answer from packed source evidence.")
+                    ),
+                    final_answer=llm_result.get("answer"),
                 ),
                 task_text=task_text,
                 metadata=safe_metadata,
@@ -7033,18 +7208,17 @@ class AegisForgeAgent:
             local_context=local_context,
         )
 
-        evidence_note = "No OpenAI-compatible model response, adapter answer, raw-A2A document/table payload, data-like local corpus block, or deterministic document calculation was available."
+        evidence_note = "No adapter answer, deterministic document calculation, validated LLM answer, or sufficient raw-A2A evidence was available."
         if self._officeqa_context_has_real_evidence(question, context):
             if self._llm_base_url():
-                evidence_note = "Evidence/context was present, but no adapter, deterministic solver, or validated LLM answer produced a sufficiently grounded answer."
+                evidence_note = "Evidence/context was present, but no deterministic solver or validated LLM answer produced a sufficiently grounded answer."
             else:
                 evidence_note = "Evidence/context was present, but no configured OpenAI-compatible endpoint was available and no deterministic OfficeQA solver could answer it."
 
         return self._officeqa_format_response(
             reasoning=(
                 f"{compact_diagnostics} "
-                "OfficeQA answer engine v1 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus when present, builds a bounded structured/RAG index, prefers the OpenAI Responses API with Code Interpreter when an API key is available, falls back to chat-completions/deterministic solvers, and front-loads compact diagnostics "
-                "so corpus/retrieval/LLM status survives leaderboard trace truncation. "
+                "OfficeQA answer engine v1.4 keeps the protocol/answer channel clean, reads embedded Databricks/Treasury source corpus, derives safe source-file locks from explicit bulletin/report month-year references, packs source-locked table rows first, then falls back to the OpenAI bridge. "
                 f"{evidence_note} {diagnostics}"
             ),
             final_answer="INSUFFICIENT_INFORMATION",
