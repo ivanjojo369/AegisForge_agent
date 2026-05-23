@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_1_python311_lint_fix_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_2_manual_guard_patch_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3240,7 +3240,6 @@ class AegisForgeAgent:
         hints.update(self._officeqa_bulletin_date_source_hints(raw))
         return {hint for hint in hints if hint and hint != "none"}
 
-
     def _officeqa_bulletin_date_pairs(self, raw: Any) -> list[tuple[int, int]]:
         """Return source-publication month/year pairs explicitly named in a prompt."""
         text = self._coerce_text(raw)
@@ -3276,22 +3275,36 @@ class AegisForgeAgent:
                 pairs.append(pair)
 
         # "June 1992 bulletin", "September 1988 U.S Treasury Bulletin",
-        # "December 1990 report".
-        pattern_a = rf"\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,90}}\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:bulletin|report)\b"
+        # "December 1990 report", "May 1980 edition/publication".
+        pattern_a = rf"\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,110}}\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:monthly\s*)?(?:bulletin|report|edition|publication|publications)\b"
         for match in re.finditer(pattern_a, text, flags=re.IGNORECASE):
             add(match.group(1), match.group(2))
 
-        # "bulletin/report for/of/in June 1992".
-        pattern_b = rf"\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:bulletin|report)\b[^\n.;:]{{0,90}}\b(?:for|of|from|in|dated|published)\s+{month_re}\.?\s+((?:18|19|20)\d{{2}})\b"
+        # "bulletin/report/edition for/of/in/published in June 1992".
+        pattern_b = rf"\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:monthly\s*)?(?:bulletin|report|edition|publication|publications)\b[^\n.;:]{{0,110}}\b(?:for|of|from|in|dated|published|published\s+in)\s+{month_re}\.?\s+((?:18|19|20)\d{{2}})\b"
         for match in re.finditer(pattern_b, text, flags=re.IGNORECASE):
             add(match.group(1), match.group(2))
 
         # "as reported in the December 1990 report" / "from the June 1992 bulletin".
-        pattern_c = rf"\b(?:reported\s+in|from|using|according\s+to)[^\n.;:]{{0,80}}\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,80}}\b(?:bulletin|report)\b"
+        pattern_c = rf"\b(?:reported\s+in|from|using|according\s+to|published\s+in)[^\n.;:]{{0,100}}\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,100}}\b(?:bulletin|report|edition|publication|publications)\b"
         for match in re.finditer(pattern_c, text, flags=re.IGNORECASE):
             add(match.group(1), match.group(2))
 
-        return pairs[:6]
+        # "September 2010 and 2011 Treasury Bulletin publications" should
+        # generate both September 2010 and September 2011.  This is source-file
+        # provenance only; it does not encode a final answer.
+        pattern_d = rf"\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\s+(?:and|&|,)\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,130}}\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:monthly\s*)?(?:bulletin|report|edition|publication|publications)\b"
+        for match in re.finditer(pattern_d, text, flags=re.IGNORECASE):
+            add(match.group(1), match.group(2))
+            add(match.group(1), match.group(3))
+
+        # "September 2010 and September 2011 Treasury Bulletin".
+        pattern_e = rf"\b{month_re}\.?\s+((?:18|19|20)\d{{2}})\s+(?:and|&|,)\s+{month_re}\.?\s+((?:18|19|20)\d{{2}})\b[^\n.;:]{{0,130}}\b(?:u\.?s\.?\s*)?(?:treasury\s*)?(?:monthly\s*)?(?:bulletin|report|edition|publication|publications)\b"
+        for match in re.finditer(pattern_e, text, flags=re.IGNORECASE):
+            add(match.group(1), match.group(2))
+            add(match.group(3), match.group(4))
+
+        return pairs[:10]
 
     def _officeqa_bulletin_date_source_hints(self, raw: Any) -> set[str]:
         """Build normalized source-file hints from explicit Treasury Bulletin dates."""
@@ -4945,28 +4958,59 @@ class AegisForgeAgent:
         return default
 
     def _officeqa_try_series_period_answer(self, question: str, context: str) -> dict[str, Any] | None:
-        """Table-first reusable period/statistics calculator for OfficeQA v1.5.
+        """Conservative table-first period/statistics calculator for OfficeQA.
 
-        This is not a lookup table: it extracts a numeric series from the
-        retrieved source rows, expands year ranges, then applies generic
-        arithmetic/statistical operations requested by the prompt.
+        v1.5 accepted too many weak broad-RAG series.  This version only handles
+        one-series calculations when the prompt does not require numerator /
+        denominator series alignment and the extracted series has enough source
+        strength to be trusted.
         """
         lowered = self._coerce_text(question).lower()
         years = sorted(self._officeqa_question_years(question))
         if not years:
             return None
+
         family = self._officeqa_calc_family(question)
         if family in {"unknown", "lookup", "ols"}:
             return None
 
-        series = self._officeqa_series_values_for_years(question, context, min_score=1)
+        # Do not pretend that a single extracted series can answer ratio-of-two-
+        # series questions.  Those require table-specific numerator/denominator
+        # alignment and were a major source of false accepted answers.
+        ratio_of_two_series = (
+            "ratio of" in lowered
+            or "ratios of" in lowered
+            or "mean of the ratios" in lowered
+            or "average of the ratios" in lowered
+            or "divide" in lowered
+            or "divided by" in lowered
+        )
+        if ratio_of_two_series and family in {"average", "median", "stddev", "variance", "coefficient_variation"}:
+            return None
+
+        strength = self._officeqa_retrieval_strength()
+        min_score = 2 if not strength["strong"] else 1
+        series = self._officeqa_series_values_for_years(question, context, min_score=min_score)
+
         min_points = self._officeqa_series_min_points(years)
         if len(series) < min_points:
+            return None
+
+        # For short explicit ranges, missing even one year usually means we
+        # grabbed a nearby/unrelated row.  Reject instead of extrapolating.
+        if len(years) <= 6 and len(series) < len(years):
+            return None
+
+        # If the source is weak, only allow simple year/count-like operations.
+        # Higher-order statistics from weak broad-RAG rows produced false
+        # accepted answers in v1.5.1.
+        if not strength["strong"] and family not in {"difference", "sum", "range"}:
             return None
 
         values = [value for _year, value, _source, _score in series]
         if not values:
             return None
+
         first_year, first_value = series[0][0], series[0][1]
         last_year, last_value = series[-1][0], series[-1][1]
         decimals = self._officeqa_series_rounding(question, default=3)
@@ -4991,10 +5035,7 @@ class AegisForgeAgent:
             if len(values) < 2:
                 return None
             mean = sum(values) / len(values)
-            if "population" in lowered and "sample" not in lowered:
-                denom = len(values)
-            else:
-                denom = len(values) - 1
+            denom = len(values) if "population" in lowered and "sample" not in lowered else len(values) - 1
             if denom <= 0:
                 return None
             value = math.sqrt(max(0.0, sum((v - mean) ** 2 for v in values) / denom))
@@ -5062,20 +5103,34 @@ class AegisForgeAgent:
         return {
             "answer": answer,
             "reasoning": (
-                f"OfficeQA v1.5 specific solver ({family}) used {len(values)} table-first year values "
-                f"from {first_year}-{last_year}; specific solver structured_table"
+                f"OfficeQA v1.5.2 specific solver ({family}) used {len(values)} table-first year values "
+                f"from {first_year}-{last_year}; source_strength={strength.get('strong', 0)}; specific solver structured_table"
             ),
-            "confidence": 0.76,
+            "confidence": 0.78 if strength["strong"] else 0.70,
         }
 
     def _officeqa_try_series_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
         lowered = self._coerce_text(question).lower()
         if "ordinary least squares" not in lowered and "linear regression" not in lowered and "ols" not in lowered:
             return None
-        series = self._officeqa_series_values_for_years(question, context, min_score=1)
-        years = sorted(self._officeqa_question_years(question))
-        if len(series) < self._officeqa_series_min_points(years):
+
+        # This solver only emits [slope, intercept].  Do not handle prompts that
+        # ask for a three-value regression/forecast/list.
+        expected_count = self._officeqa_question_expected_answer_count(question)
+        if expected_count not in (None, 2):
             return None
+
+        strength = self._officeqa_retrieval_strength()
+        if not strength["strong"]:
+            return None
+
+        series = self._officeqa_series_values_for_years(question, context, min_score=2)
+        years = sorted(self._officeqa_question_years(question))
+        if len(series) < max(4, self._officeqa_series_min_points(years)):
+            return None
+        if len(years) <= 6 and len(series) < len(years):
+            return None
+
         result = self._officeqa_ols([(year, value) for year, value, _source, _score in series])
         if result is None:
             return None
@@ -5084,8 +5139,8 @@ class AegisForgeAgent:
         answer = f"[{self._officeqa_format_number(slope, decimals=decimals)}, {self._officeqa_format_number(intercept, decimals=decimals)}]"
         return {
             "answer": answer,
-            "reasoning": f"OfficeQA v1.5 specific solver ran OLS on {len(series)} table-first year values; specific solver structured_table",
-            "confidence": 0.77,
+            "reasoning": f"OfficeQA v1.5.2 specific solver ran OLS on {len(series)} locked/high-score table-first year values; specific solver structured_table",
+            "confidence": 0.80,
         }
 
     def _officeqa_try_ols_answer(self, question: str, context: str) -> dict[str, Any] | None:
@@ -6179,7 +6234,6 @@ class AegisForgeAgent:
             return {"answer": answer, "reasoning": "Dense local OfficeQA ratio/share calculation from a high-overlap numeric row.", "confidence": 0.66}
         return None
 
-
     def _officeqa_final_answer_number_list(self, answer: Any) -> list[float]:
         cleaned = self._officeqa_clean_final_answer(answer)
         values: list[float] = []
@@ -6191,14 +6245,32 @@ class AegisForgeAgent:
 
     def _officeqa_question_expected_answer_count(self, question: str) -> int | None:
         lowered = self._coerce_text(question).lower()
-        if any(marker in lowered for marker in ("slope and intercept", "order of the subquestions", "two numbers", "2 numbers")):
+
+        if any(marker in lowered for marker in (
+            "three numbers", "3 numbers", "three values", "3 values",
+            "annual decay factor", "arc elasticity",
+            "slope, intercept, and", "slope, intercept and",
+        )):
+            return 3
+
+        if any(marker in lowered for marker in (
+            "slope and intercept", "slope, intercept", "intercept and slope",
+            "two numbers", "2 numbers", "two values", "2 values",
+            "pair of", "ordered pair",
+        )):
             return 2
+
+        if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
+            # Bracket questions are frequently list-shaped.  Keep unknown only
+            # when the prompt does not tell us the list length.
+            if any(marker in lowered for marker in ("three", "3 ", "3-", "three-part")):
+                return 3
+            if any(marker in lowered for marker in ("two", "2 ", "2-", "pair", "slope", "intercept")):
+                return 2
+            return None
+
         if "cagr" in lowered or "compound annual growth" in lowered:
             return 1
-        if any(marker in lowered for marker in ("annual decay factor", "arc elasticity")):
-            return 3
-        if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
-            return None
         if any(marker in lowered for marker in ("single value", "single number", "single numeric", "as a single", "provide as a single")):
             return 1
         if any(marker in lowered for marker in (
@@ -6208,26 +6280,198 @@ class AegisForgeAgent:
             return 1
         return None
 
-    def _officeqa_answer_fails_precision_guard(self, question: str, answer: Any, reasoning: Any = "", confidence: float = 0.0) -> bool:
-        """Reject generic numeric guesses that look format-valid but unsupported.
+    def _officeqa_expected_answer_shape(self, question: str) -> str:
+        """Coarse expected answer shape used only to reject weak candidates.
 
-        v0.6.4 was fast but over-eager: it emitted low-confidence year lookups,
-        OLS fits, and dense-row arithmetic from partially related Treasury rows.
-        This guard is not an answer table; it only applies reusable shape,
-        unit, and complexity sanity checks before a deterministic answer can
-        leave the OfficeQA channel.
+        This is a reusable format guard, not an answer table.  It prevents the
+        table-first solver from accepting a single number when the prompt asks
+        for a list, a year when the prompt asks for a ratio, or a huge raw table
+        value when the prompt asks for a percent/ratio.
         """
+        lowered = self._coerce_text(question).lower()
+
+        if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
+            count = self._officeqa_question_expected_answer_count(question)
+            if count == 2:
+                return "list_2"
+            if count == 3:
+                return "list_3"
+            return "list"
+
+        if any(marker in lowered for marker in ("what year", "which year", "in what year", "around what year")):
+            return "year"
+
+        if any(marker in lowered for marker in ("what date", "which date", "issue date", "auction date", "month and year")):
+            return "date"
+
+        if any(marker in lowered for marker in ("how many", "count of", "number of", "leading digit", "digit count")):
+            return "count"
+
+        if any(marker in lowered for marker in (
+            "percent", "percentage", "ratio", "rate", "yield", "spread",
+            "correlation", "coefficient", "cagr", "log return", "log growth",
+            "arc elasticity", "z-score", "z score",
+        )):
+            return "ratio"
+
+        if any(marker in lowered for marker in (
+            "dollar", "dollars", "millions", "billions", "thousands",
+            "assets", "liabilities", "receipts", "outlays", "expenditures",
+            "debt", "deficit", "surplus", "balance", "amount",
+        )):
+            return "money"
+
+        return "single_number"
+
+    def _officeqa_retrieval_strength(self) -> dict[str, Any]:
+        retrieval = getattr(self, "_officeqa_last_retrieval_status", {}) or {}
+        try:
+            sourcefile_lock = int(retrieval.get("sourcefile_lock", 0) or 0)
+            source_matches = int(retrieval.get("source_matches", 0) or 0)
+            source_hints = int(retrieval.get("source_hints", 0) or 0)
+            row_hits = int(retrieval.get("row_hits", 0) or 0)
+            max_score = int(retrieval.get("max_score", 0) or 0)
+            hits = int(retrieval.get("hits", 0) or 0)
+        except Exception:
+            sourcefile_lock = source_matches = source_hints = row_hits = max_score = hits = 0
+
+        # v1.5.2 manual guard:
+        # Broad BM25 row_hits/max_score alone are NOT reliable enough to accept
+        # deterministic numeric calculations.  Previous wrong answers had
+        # row_hits>0 and high max_score while sourcefile_lock=0/source_matches=0.
+        strong = bool(
+            (sourcefile_lock == 1 and source_matches > 0)
+            or (source_hints > 0 and source_matches > 0)
+        )
+
+        weak = not strong
+        return {
+            "sourcefile_lock": sourcefile_lock,
+            "source_matches": source_matches,
+            "source_hints": source_hints,
+            "row_hits": row_hits,
+            "max_score": max_score,
+            "hits": hits,
+            "strong": int(strong),
+            "weak": int(weak),
+        }
+
+    def _officeqa_candidate_shape_ok(self, question: str, answer: Any) -> tuple[bool, str]:
+        lowered = self._coerce_text(question).lower()
+        cleaned = self._officeqa_clean_final_answer(answer).strip()
+        nums = self._officeqa_final_answer_number_list(cleaned)
+        shape = self._officeqa_expected_answer_shape(question)
+        expected_count = self._officeqa_question_expected_answer_count(question)
+
+        if expected_count is not None and len(nums) != expected_count:
+            return False, f"count_expected_{expected_count}_got_{len(nums)}"
+
+        if shape.startswith("list"):
+            if not (cleaned.startswith("[") and cleaned.endswith("]")):
+                return False, "list_shape_required"
+            if shape == "list_2" and len(nums) != 2:
+                return False, f"list2_got_{len(nums)}"
+            if shape == "list_3" and len(nums) != 3:
+                return False, f"list3_got_{len(nums)}"
+            return True, "ok"
+
+        if not nums and shape not in {"date"}:
+            return False, "no_numeric_candidate"
+
+        # Prevent accidental years from being emitted as numeric answers.
+        if nums and shape not in {"year", "date"}:
+            if len(nums) == 1 and 1800 <= int(round(nums[0])) <= 2099 and abs(nums[0] - round(nums[0])) < 1e-9:
+                if not any(marker in lowered for marker in ("year", "date", "fiscal year", "calendar year")):
+                    return False, "looks_like_year_not_requested"
+
+        if shape == "year":
+            if len(nums) != 1:
+                return False, "year_single_required"
+            year = int(round(nums[0]))
+            if not (1800 <= year <= 2099 and abs(nums[0] - year) < 1e-9):
+                return False, "year_range_invalid"
+
+        if shape == "count":
+            if len(nums) != 1:
+                return False, "count_single_required"
+            if abs(nums[0] - round(nums[0])) > 1e-6:
+                return False, "count_not_integer"
+            if abs(nums[0]) > 1000000 and not any(marker in lowered for marker in ("dollar", "amount", "receipts", "outlays")):
+                return False, "count_magnitude_invalid"
+
+        if shape == "ratio":
+            if len(nums) != 1:
+                return False, "ratio_single_required"
+            value = abs(nums[0])
+            # Correlations, ratios, z-scores, yields and rates should not look
+            # like raw Treasury table levels unless the prompt explicitly asks
+            # for basis points or a percent value.
+            if any(marker in lowered for marker in ("correlation", "pearson")) and value > 1.0001:
+                return False, "correlation_out_of_range"
+            if "z-score" in lowered or "z score" in lowered:
+                if value > 25:
+                    return False, "zscore_out_of_range"
+            if any(marker in lowered for marker in ("ratio", "mean of the ratios", "average ratio")) and value > 100:
+                return False, "ratio_magnitude_invalid"
+            if any(marker in lowered for marker in ("percent", "percentage", "rate", "yield", "spread", "cagr")) and value > 10000:
+                return False, "percent_magnitude_invalid"
+
+        return True, "ok"
+
+    def _officeqa_deterministic_candidate_allowed(
+        self,
+        question: str,
+        answer: Any,
+        reasoning: Any = "",
+        *,
+        solver_name: str = "",
+        confidence: float = 0.0,
+    ) -> tuple[bool, str]:
+        shape_ok, shape_reason = self._officeqa_candidate_shape_ok(question, answer)
+        strength = self._officeqa_retrieval_strength()
+        lowered = self._coerce_text(question).lower()
+        solver = self._coerce_text(solver_name).lower()
+        family = self._officeqa_calc_family(question)
+
+        if not shape_ok:
+            return False, shape_reason
+
+        explicit_year_or_count = (
+            self._officeqa_expected_answer_shape(question) in {"year", "count", "date"}
+            or any(marker in lowered for marker in ("what year", "which year", "how many", "count of", "number of", "issue date"))
+        )
+
+        broad_series_solver = any(marker in solver for marker in (
+            "series_period", "series_ols", "wide_ols", "_ols_answer",
+            "dense_", "weighted_average", "percent", "difference", "average", "range",
+            "geometric_mean", "total_for_year", "wide_year_lookup",
+        ))
+
+        if broad_series_solver and not strength["strong"] and not explicit_year_or_count:
+            return False, "weak_source_for_deterministic_solver"
+
+        if family in {"average", "stddev", "variance", "ols", "correlation", "percent_change", "cagr", "log_return"}:
+            if not strength["strong"] and not explicit_year_or_count:
+                return False, "weak_source_for_calc_family"
+
+        if confidence < 0.70 and not strength["strong"]:
+            return False, "low_confidence_weak_source"
+
+        return True, "ok"
+
+    def _officeqa_answer_fails_precision_guard(self, question: str, answer: Any, reasoning: Any = "", confidence: float = 0.0) -> bool:
+        """Reject generic numeric guesses that look format-valid but unsupported."""
         if not _env_flag("AEGISFORGE_OFFICEQA_PRECISION_GUARD", default=True):
             return False
+
         lowered = self._coerce_text(question).lower()
         cleaned = self._officeqa_clean_final_answer(answer)
         nums = self._officeqa_final_answer_number_list(cleaned)
-        expected_count = self._officeqa_question_expected_answer_count(question)
-        if expected_count is not None and len(nums) != expected_count:
+
+        shape_ok, _shape_reason = self._officeqa_candidate_shape_ok(question, cleaned)
+        if not shape_ok:
             return True
-        if "inside square brackets" in lowered or "enclosed brackets" in lowered or "square brackets" in lowered:
-            if not (cleaned.strip().startswith("[") and cleaned.strip().endswith("]")):
-                return True
+
         advanced_markers = (
             "theil", "kurtosis", "correlation", "pearson", "expected shortfall", "hazen",
             "percentile", "coefficient of variation", "log growth", "cagr", "arc elasticity",
@@ -6235,9 +6479,10 @@ class AegisForgeAgent:
         )
         generic_reasoning = self._coerce_text(reasoning).lower()
         if any(marker in lowered for marker in advanced_markers):
-            allowed_reason_markers = ("standard deviation", "correlation", "percentile", "cagr", "moving average", "specific solver")
+            allowed_reason_markers = ("standard deviation", "correlation", "percentile", "cagr", "moving average", "specific solver", "structured_table")
             if not any(marker in generic_reasoning for marker in allowed_reason_markers):
                 return True
+
         if nums:
             if "weighted average denomination" in lowered or "average denomination" in lowered:
                 if len(nums) != 1 or nums[0] < 5 or nums[0] > 200:
@@ -6255,9 +6500,7 @@ class AegisForgeAgent:
                     return True
             if "payroll employment" in lowered and len(nums) == 1 and abs(nums[0]) < 20:
                 return True
-        # Weak generic deterministic calculations are worse than an explicit
-        # insufficient-information answer in OfficeQA because the evaluator can
-        # mistake them for unsupported hedging/candidates.
+
         min_confidence = float(os.getenv("AEGISFORGE_OFFICEQA_DETERMINISTIC_MIN_CONFIDENCE", "0.72") or "0.72")
         if "structured_table" in generic_reasoning or "specific solver" in generic_reasoning:
             min_confidence = min(min_confidence, 0.68)
@@ -6339,11 +6582,18 @@ class AegisForgeAgent:
         if not self._officeqa_context_has_real_evidence(question, context):
             return None
 
+        initial_strength = self._officeqa_retrieval_strength()
         self._officeqa_last_calc_status = {
             "family": self._officeqa_calc_family(question),
             "attempted": True,
             "accepted": False,
             "solver": "",
+            "answer_shape": self._officeqa_expected_answer_shape(question),
+            "candidate_nums": 0,
+            "source_strength": int(initial_strength.get("strong", 0) or 0),
+            "shape_ok": False,
+            "deterministic_allowed": False,
+            "reject_reason": "not_attempted",
         }
         base_solvers = (
             self._officeqa_try_tbill_gap_date_answer,
@@ -6374,25 +6624,64 @@ class AegisForgeAgent:
         # default in official OfficeQA runs unless explicitly enabled.
         solvers = base_solvers + (dense_solvers if _env_flag("AEGISFORGE_OFFICEQA_ENABLE_DENSE_SOLVERS", default=False) else ())
         for solver in solvers:
+            solver_name = getattr(solver, "__name__", "solver")[:64]
             try:
                 result = solver(question, context)
             except Exception:
                 result = None
             if not result:
                 continue
+
             answer = self._officeqa_clean_final_answer(result.get("answer"))
             reasoning = result.get("reasoning") or "Deterministic OfficeQA calculation from provided evidence."
             confidence = float(result.get("confidence", 0.6) or 0.0)
-            if answer and answer != "INSUFFICIENT_INFORMATION" and self._officeqa_validate_final_answer_candidate(question, answer, context, confidence=confidence) and not self._officeqa_answer_fails_precision_guard(question, answer, reasoning, confidence):
+            nums = self._officeqa_final_answer_number_list(answer)
+            shape_ok, shape_reason = self._officeqa_candidate_shape_ok(question, answer)
+            allowed, allow_reason = self._officeqa_deterministic_candidate_allowed(
+                question,
+                answer,
+                reasoning,
+                solver_name=solver_name,
+                confidence=confidence,
+            )
+            basic_valid = bool(
+                answer
+                and answer != "INSUFFICIENT_INFORMATION"
+                and self._officeqa_validate_final_answer_candidate(question, answer, context, confidence=confidence)
+                and not self._officeqa_answer_fails_precision_guard(question, answer, reasoning, confidence)
+            )
+
+            reject_reason = "ok"
+            if not answer or answer == "INSUFFICIENT_INFORMATION":
+                reject_reason = "empty_or_insufficient"
+            elif not shape_ok:
+                reject_reason = shape_reason
+            elif not allowed:
+                reject_reason = allow_reason
+            elif not basic_valid:
+                reject_reason = "basic_validation_or_precision_guard"
+
+            strength = self._officeqa_retrieval_strength()
+            self._officeqa_last_calc_status.update({
+                "solver": solver_name,
+                "candidate_nums": len(nums),
+                "source_strength": int(strength.get("strong", 0) or 0),
+                "shape_ok": bool(shape_ok),
+                "deterministic_allowed": bool(allowed),
+                "reject_reason": re.sub(r"[^A-Za-z0-9_\-]+", "_", reject_reason)[:64],
+            })
+
+            if basic_valid and shape_ok and allowed:
                 self._officeqa_last_calc_status.update({
                     "accepted": True,
-                    "solver": getattr(solver, "__name__", "solver")[:64],
+                    "reject_reason": "accepted",
                 })
                 return {
                     "answer": answer,
                     "reasoning": reasoning,
                     "confidence": confidence,
                 }
+
         return None
 
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
@@ -7226,8 +7515,12 @@ class AegisForgeAgent:
         calc_family_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_family_token)[:48]
         calc_solver_token = self._coerce_text(calc_status.get("solver") or "none")
         calc_solver_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_solver_token)[:64]
+        calc_shape_token = self._coerce_text(calc_status.get("answer_shape") or self._officeqa_expected_answer_shape(question))
+        calc_shape_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_shape_token)[:48]
+        calc_reject_token = self._coerce_text(calc_status.get("reject_reason") or "none")
+        calc_reject_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_reject_token)[:64]
         return (
-            "OFFICEQA_DIAG_V1_5_1 "
+            "OFFICEQA_DIAG_V1_5_2 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -7248,6 +7541,12 @@ class AegisForgeAgent:
             f"calc_attempted={int(bool(calc_status.get('attempted')))} "
             f"calc_accepted={int(bool(calc_status.get('accepted')))} "
             f"calc_solver={calc_solver_token} "
+            f"answer_shape={calc_shape_token} "
+            f"candidate_nums={int(calc_status.get('candidate_nums', 0) or 0)} "
+            f"source_strength={int(calc_status.get('source_strength', 0) or 0)} "
+            f"shape_ok={int(bool(calc_status.get('shape_ok')))} "
+            f"deterministic_allowed={int(bool(calc_status.get('deterministic_allowed')))} "
+            f"reject_reason={calc_reject_token} "
             f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
             f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
             f"derived_source_pairs={int(retrieval.get('derived_source_pairs', 0) or 0)} "
