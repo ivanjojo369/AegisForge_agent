@@ -6094,7 +6094,7 @@ class AegisForgeAgent:
             f"llm_endpoint={int(bool(llm_diag.get('endpoint_configured')))} "
             f"llm_source={endpoint_source} "
             f"llm_api_key={int(bool(llm_diag.get('api_key_present')))} "
-            f"llm_key_source={re.sub(r'[^A-Za-z0-9_\-:.]+', '_', self._coerce_text((llm_diag.get('api_key_sources') or ['none'])[0]))[:64]} "
+            f"llm_key_source={self._coerce_text((llm_diag.get('api_key_sources') or ['none'])[0])[:64]} "
             f"llm_enabled={int(bool(llm_status.get('enabled', _env_flag('AEGISFORGE_OFFICEQA_LLM_ENABLED', default=True))))} "
             f"llm_called={int(bool(llm_status.get('called')))} "
             f"llm_responses={int(bool(llm_status.get('responses_called')))} "
