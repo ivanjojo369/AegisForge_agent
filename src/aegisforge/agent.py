@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_clean_rag_acceptance_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_1_clean_bm25_sourcefile_rag_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3143,6 +3143,126 @@ class AegisForgeAgent:
         # Preserve domain terms even if duplicated; scoring later dedupes.
         return self._dedupe(terms)[:48]
 
+    def _officeqa_normalize_source_hint(self, value: Any) -> str:
+        """Normalize source-file/document names for matching, never values."""
+        raw = self._coerce_text(value).strip().lower().replace("\\", "/")
+        if not raw:
+            return ""
+        raw = re.sub(r"https?://[^\s,;]+", " ", raw)
+        raw = re.sub(r"[^a-z0-9./_\-]+", "_", raw)
+        raw = re.sub(r"_+", "_", raw).strip("._-/")
+        return raw[:220]
+
+    def _officeqa_source_hints(self, question: str, metadata: Mapping[str, Any] | None = None) -> set[str]:
+        """Extract reusable source-file/document hints from the visible prompt/metadata.
+
+        OfficeQA prompts often include ``Relevant source documents`` or
+        ``Relevant source files``.  These are provenance hints, not answers.
+        v1.1 uses them to boost retrieval toward the correct Treasury bulletin
+        instead of relying only on broad semantic overlap.
+        """
+        pieces: list[str] = [self._coerce_text(question)]
+        if isinstance(metadata, Mapping):
+            pieces.append(_officeqa_stringify_for_signal(metadata, limit=16000))
+        raw = "\n".join(piece for piece in pieces if piece)
+        hints: set[str] = set()
+
+        for match in re.finditer(r"(?is)(?:relevant\s+source\s+(?:documents?|files?)|source_docs?|source_files?)\s*[:=]\s*(.+?)(?:\n\s*\n|\n[A-Z][A-Za-z _-]{2,40}\s*[:=]|$)", raw):
+            chunk = match.group(1)
+            for token in re.split(r"[,;\n\[\]\(\)]+", chunk):
+                norm = self._officeqa_normalize_source_hint(token)
+                if len(norm) >= 5:
+                    hints.add(norm)
+                    base = norm.split("/")[-1]
+                    if base:
+                        hints.add(base)
+                        hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
+
+        for token in re.findall(r"[A-Za-z0-9_./\-]*treasury[A-Za-z0-9_./\-]*(?:\.txt|\.csv|\.jsonl?|\.html?|\.zip)?", raw, flags=re.IGNORECASE):
+            norm = self._officeqa_normalize_source_hint(token)
+            if len(norm) >= 5:
+                hints.add(norm)
+                base = norm.split("/")[-1]
+                hints.add(base)
+                hints.add(re.sub(r"\.(?:txt|csv|jsonl?|html?|md|tsv|zip)$", "", base))
+
+        lowered = raw.lower()
+        month_map = {
+            "january": "01", "jan": "01", "february": "02", "feb": "02", "march": "03", "mar": "03",
+            "april": "04", "apr": "04", "may": "05", "june": "06", "jun": "06", "july": "07", "jul": "07",
+            "august": "08", "aug": "08", "september": "09", "sep": "09", "sept": "09", "october": "10", "oct": "10",
+            "november": "11", "nov": "11", "december": "12", "dec": "12",
+        }
+        years = sorted(self._officeqa_question_years(raw))[:16]
+        for m_name, m_num in month_map.items():
+            if re.search(rf"\b{re.escape(m_name)}\b", lowered):
+                for year in years:
+                    hints.add(f"{year}_{m_num}")
+                    hints.add(f"{year}-{m_num}")
+                    hints.add(f"{m_num}_{year}")
+        return {hint for hint in hints if hint and hint != "none"}
+
+    def _officeqa_bm25_terms(self, text: Any, *, limit: int = 1200) -> list[str]:
+        """Small dependency-free BM25-style tokenizer for v1.1 retrieval."""
+        raw = self._coerce_text(text).lower()
+        raw = raw.replace("u.s.", "us").replace("u.s", "us")
+        tokens = re.findall(r"[a-z0-9][a-z0-9_\-\.]{1,}", raw)
+        stop = {
+            "the", "and", "for", "with", "from", "that", "this", "what", "were", "was", "are", "using", "according",
+            "return", "answer", "rounded", "nearest", "place", "value", "values", "reported", "year", "years", "month", "months",
+            "fiscal", "calendar", "total", "sum", "all", "individual", "question", "subquestions", "order", "number", "numbers",
+            "million", "millions", "billion", "billions", "nominal", "dollars", "dollar", "only", "your", "final",
+        }
+        out: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            parts = re.split(r"[_\-.]+", token)
+            for part in [token, *parts]:
+                if len(part) < 2 or part in stop:
+                    continue
+                if part not in seen:
+                    seen.add(part)
+                    out.append(part)
+                    if len(out) >= limit:
+                        return out
+        return out
+
+    def _officeqa_record_matches_source_hints(self, question: str, record: Mapping[str, Any], metadata: Mapping[str, Any] | None = None) -> bool:
+        hints = self._officeqa_source_hints(question, metadata)
+        if not hints:
+            return False
+        source_key = self._coerce_text(record.get("source_key"))
+        if not source_key:
+            source_key = self._officeqa_normalize_source_hint(f"{record.get('path', '')}\n{record.get('name', '')}")
+        return any(len(hint) >= 5 and hint in source_key for hint in hints)
+
+    def _officeqa_full_text_for_record(self, record: Mapping[str, Any], *, max_chars: int = 1800000) -> str:
+        """Lazy-read the full source file for exact source-file matches only."""
+        raw_path = self._coerce_text(record.get("path"))
+        if not raw_path:
+            return ""
+        try:
+            if "::" in raw_path:
+                archive_raw, member = raw_path.split("::", 1)
+                archive = Path(archive_raw)
+                if not archive.exists() or not self._officeqa_archive_member_is_safe(member):
+                    return ""
+                with zipfile.ZipFile(archive) as zf:
+                    with zf.open(member) as handle:
+                        data = handle.read(max_chars * 2)
+                raw_text = data.decode("utf-8", errors="ignore")
+                return self._officeqa_corpus_text_from_file(Path(member), raw_text, max_chars=max_chars)
+            path = Path(raw_path)
+            if not path.exists() or not path.is_file() or not self._officeqa_path_is_safe_context(path):
+                return ""
+            suffix = path.suffix.lower()
+            if suffix not in {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".html", ".htm"}:
+                return ""
+            raw_text = path.read_text(encoding="utf-8", errors="ignore")
+            return self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_chars)
+        except Exception:
+            return ""
+
     def _officeqa_local_corpus_roots(self) -> list[Path]:
         roots: list[Path] = []
         for env_name in (
@@ -3514,6 +3634,13 @@ class AegisForgeAgent:
         enriched["years"] = years[:240]
         enriched["path_l"] = path.lower()[:2000]
         enriched["name_l"] = name.lower()[:500]
+        source_key = self._officeqa_normalize_source_hint(f"{path}\n{name}")
+        enriched["source_key"] = source_key
+        try:
+            bm25_blob = f"{name}\n{path}\n{summary}"
+            enriched["bm25_terms"] = self._officeqa_bm25_terms(bm25_blob, limit=1600)
+        except Exception:
+            enriched["bm25_terms"] = []
         try:
             table_rows: list[str] = []
             for line in text.splitlines():
@@ -3548,6 +3675,26 @@ class AegisForgeAgent:
         q_years = self._officeqa_question_years(question)
         record_years = set(record.get("years") or [])
         score = int(record.get("data_quality", 0) or 0)
+
+        # v1.1: dependency-free BM25-style overlap and explicit source-file
+        # boosts. Source-file lines are provenance hints from the evaluator, not
+        # answer labels; they are safe to use for retrieval.
+        source_hints = self._officeqa_source_hints(question)
+        source_key = self._coerce_text(record.get("source_key")) or self._officeqa_normalize_source_hint(f"{path_l}\n{name_l}")
+        source_hits = sum(1 for hint in source_hints if len(hint) >= 5 and hint in source_key)
+        if source_hits:
+            score += min(140, 70 * source_hits)
+        elif source_hints and ("relevant source" in q or "source file" in q or "source document" in q):
+            score -= 16
+
+        q_bm25 = set(self._officeqa_bm25_terms(question, limit=180))
+        r_bm25 = set(record.get("bm25_terms") or [])
+        if q_bm25 and r_bm25:
+            overlap = q_bm25 & r_bm25
+            score += min(90, 4 * len(overlap))
+            for token in ("public", "debt", "receipts", "outlays", "currency", "denomination", "cpi", "irs", "esf", "interest", "defense"):
+                if token in q_bm25 and token in r_bm25:
+                    score += 3
 
         if q_years:
             overlap = q_years & record_years
@@ -3653,9 +3800,9 @@ class AegisForgeAgent:
         # a compact fast index.  Env vars can raise the caps for local experiments.
         import time
         load_start = time.monotonic()
-        load_budget = max(4.0, min(180.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "72") or "72")))
+        load_budget = max(4.0, min(180.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "115") or "115")))
         max_files = max(0, min(16000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "7000") or "7000")))
-        max_bytes = max(20000, min(4000000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "850000") or "850000")))
+        max_bytes = max(20000, min(4000000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "420000") or "420000")))
         exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
         archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
@@ -3736,7 +3883,21 @@ class AegisForgeAgent:
 
                         if size > max(max_bytes * 5, 4000000):
                             continue
-                        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+                        if suffix in {".txt", ".md", ".csv", ".tsv"} and size > max_bytes:
+                            # v1.1: read bounded head+tail for fast full-corpus indexing;
+                            # exact source-file matches are lazy-read in full later.
+                            head_chars = max(120000, int(max_bytes * 0.70))
+                            tail_chars = max(60000, max_bytes - head_chars)
+                            try:
+                                with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                                    head_text = handle.read(head_chars)
+                                    handle.seek(max(0, size - tail_chars))
+                                    tail_text = handle.read(tail_chars)
+                                raw_text = head_text + "\n... [officeqa_v1_1_bounded_index_tail] ...\n" + tail_text
+                            except Exception:
+                                raw_text = path.read_text(encoding="utf-8", errors="ignore")[:max_bytes]
+                        else:
+                            raw_text = path.read_text(encoding="utf-8", errors="ignore")
                         text = self._officeqa_corpus_text_from_file(path, raw_text, max_chars=max_bytes)
                     except Exception:
                         continue
@@ -3962,8 +4123,8 @@ class AegisForgeAgent:
 
     def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 65000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
-        candidate_limit = max(20, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "750") or "750")))
-        block_limit = max(3, min(48, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "26") or "26")))
+        candidate_limit = max(20, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "1200") or "1200")))
+        block_limit = max(3, min(48, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "36") or "36")))
         self._officeqa_last_retrieval_status = {
             "records": len(cache),
             "scored_records": 0,
@@ -3999,6 +4160,13 @@ class AegisForgeAgent:
             text = self._coerce_text(record.get("text"))
             name = self._coerce_text(record.get("name")) or "local"
             path = self._coerce_text(record.get("path"))
+            if self._officeqa_record_matches_source_hints(question, record, metadata):
+                full_text = self._officeqa_full_text_for_record(
+                    record,
+                    max_chars=max(450000, min(2200000, int(os.getenv("AEGISFORGE_OFFICEQA_SOURCE_MATCH_MAX_CHARS", "1800000") or "1800000"))),
+                )
+                if full_text:
+                    text = full_text
             if not text:
                 continue
             row_context = self._officeqa_structured_rows_from_record(
@@ -5493,7 +5661,7 @@ class AegisForgeAgent:
     def _build_officeqa_llm_messages(self, *, question: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
         system = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. "
+            "Answer U.S. Treasury Bulletin / OfficeQA questions using only the user-visible question and provided source-document context. Prioritize excerpts whose filename/source matches the visible Relevant source files/documents lines. "
             "Return exactly two XML-like blocks: <REASONING>...</REASONING> and <FINAL_ANSWER>...</FINAL_ANSWER>. "
             "Never output [BUILD] or [ASK]. Never answer with block coordinates. "
             "Do not use or copy ground_truth, gold answers, answer keys, labels, scores, rationales, or evaluator-only fields if present. "
@@ -5522,7 +5690,7 @@ class AegisForgeAgent:
         """
         instructions = (
             "You are AegisForge OfficeQA AgentBeats mode. "
-            "Use only the provided OfficeQA/Treasury excerpts and the visible question. "
+            "Use only the provided OfficeQA/Treasury excerpts and the visible question. Prioritize excerpts whose filename/source matches the visible Relevant source files/documents lines. "
             "Ignore any ground_truth, answer key, score, rationale, label, predicted answer, or evaluator-only field if it appears. "
             "Never output [BUILD] or [ASK]. "
             "For every arithmetic/statistics/regression/rounding task, use the python tool/code interpreter when available, then return the final value only in <FINAL_ANSWER>. "
@@ -5685,6 +5853,7 @@ class AegisForgeAgent:
             return raw
 
         terms = self._officeqa_keyword_terms(question)
+        source_hints = self._officeqa_source_hints(question)
         blocks = [block.strip() for block in re.split(r"\n\s*\n", raw) if block.strip()]
         if not blocks:
             blocks = [line.strip() for line in raw.splitlines() if line.strip()]
@@ -5695,6 +5864,9 @@ class AegisForgeAgent:
             for term in terms:
                 if term and term in lower:
                     score += 4
+            for hint in source_hints:
+                if len(hint) >= 5 and hint in lower:
+                    score += 12
             for marker in (
                 "treasury",
                 "bulletin",
@@ -6316,13 +6488,13 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V1 "
+            "OFFICEQA_DIAG_V1_1 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"corpus_truncated={int(bool(getattr(self, '_officeqa_local_corpus_truncated', False)))} "
             f"fast_index=4 "
-            f"table_index=1 rag_bridge=1 "
+            f"table_index=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 "
             f"row_hits={int(retrieval.get('row_hits', 0) or 0)} "
             f"load_s={float(retrieval.get('load_seconds', getattr(self, '_officeqa_local_corpus_load_seconds', 0.0)) or 0.0):.3f} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
