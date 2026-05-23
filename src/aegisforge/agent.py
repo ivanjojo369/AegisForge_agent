@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_table_first_calculator_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_5_1_python311_lint_fix_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -7222,8 +7222,12 @@ class AegisForgeAgent:
         llm_block = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_block)[:48]
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
+        calc_family_token = self._coerce_text(calc_status.get("family") or self._officeqa_calc_family(question))
+        calc_family_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_family_token)[:48]
+        calc_solver_token = self._coerce_text(calc_status.get("solver") or "none")
+        calc_solver_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_solver_token)[:64]
         return (
-            "OFFICEQA_DIAG_V1_5 "
+            "OFFICEQA_DIAG_V1_5_1 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -7240,10 +7244,10 @@ class AegisForgeAgent:
             f"global_empty_cache_ignored={int((getattr(self, '_officeqa_forensic_counts', {}) or {}).get('global_empty_cache_ignored', 0) or 0)} "
             f"fast_index=5 "
             f"table_index=2 table_first_calc=1 rag_bridge=1 clean_bm25=1 sourcefile_boost=1 preindex=1 forensic_loader=1 "
-            f"calc_family={re.sub(r'[^A-Za-z0-9_\-]+', '_', self._coerce_text(calc_status.get('family') or self._officeqa_calc_family(question)))[:48]} "
+            f"calc_family={calc_family_token} "
             f"calc_attempted={int(bool(calc_status.get('attempted')))} "
             f"calc_accepted={int(bool(calc_status.get('accepted')))} "
-            f"calc_solver={re.sub(r'[^A-Za-z0-9_\-]+', '_', self._coerce_text(calc_status.get('solver') or 'none'))[:64]} "
+            f"calc_solver={calc_solver_token} "
             f"sourcefile_lock={int(retrieval.get('sourcefile_lock', 0) or 0)} "
             f"source_hints={int(retrieval.get('source_hints', 0) or 0)} "
             f"derived_source_pairs={int(retrieval.get('derived_source_pairs', 0) or 0)} "
