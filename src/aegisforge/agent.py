@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_4_full_index_precision_guard_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v0_6_5_structured_table_index_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -3186,23 +3186,50 @@ class AegisForgeAgent:
     def _officeqa_record_search_summary(self, text: Any, *, limit: int | None = None) -> str:
         """Compact text used only for fast OfficeQA candidate ranking.
 
-        Full transformed Treasury records can be hundreds of KB.  Ranking every
-        record by lowercasing/scanning the full body on each question is what can
-        make quick-submit look stuck while /gateway/results keeps polling.  This
-        summary keeps table headers, early rows, and trailing rows for routing;
-        exact evidence extraction still uses the full record text for the small
-        candidate set.
+        v0.6.5 keeps the cheap head/tail summary but also preserves table-like,
+        numeric-year, header, and topic-bearing rows from the middle of large
+        transformed Treasury files.  This raises recall without scanning every
+        byte of every record for every question.
         """
         raw = self._coerce_text(text)
         if not raw:
             return ""
         if limit is None:
-            limit = max(12000, min(90000, int(os.getenv("AEGISFORGE_OFFICEQA_FAST_SUMMARY_CHARS", "70000") or "70000")))
+            limit = max(18000, min(150000, int(os.getenv("AEGISFORGE_OFFICEQA_FAST_SUMMARY_CHARS", "110000") or "110000")))
         if len(raw) <= limit:
             return raw
-        head = max(6000, int(limit * 0.72))
-        tail = max(3000, limit - head)
-        return raw[:head] + "\n... [officeqa_fast_summary_middle_trimmed] ...\n" + raw[-tail:]
+
+        head = max(8000, int(limit * 0.40))
+        tail = max(5000, int(limit * 0.18))
+        middle_budget = max(4000, limit - head - tail - 200)
+        important: list[str] = []
+        important_chars = 0
+        for line in raw.splitlines():
+            clean = line.strip()
+            if not clean or len(clean) > 5000:
+                continue
+            lower = clean.lower()
+            numeric_year = bool(re.search(r"\b(?:18|19|20)\d{2}\b", clean) and re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", clean))
+            numeric_dense = len(re.findall(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", clean)) >= 3
+            table_like = "|" in clean or "\t" in clean or clean.count(",") >= 4 or clean.count("=") >= 2
+            treasuryish = any(marker in lower for marker in (
+                "treasury", "fiscal", "receipts", "outlays", "public debt", "marketable",
+                "exchange stabilization", "currency", "denomination", "cpi", "employment",
+                "corporate aa", "savings", "internal revenue", "liabilities", "securities",
+            ))
+            if table_like or numeric_year or (numeric_dense and treasuryish):
+                important.append(clean[:2200])
+                important_chars += min(len(clean), 2200) + 1
+                if important_chars >= middle_budget:
+                    break
+        middle = "\n".join(important)[:middle_budget]
+        return (
+            raw[:head]
+            + "\n... [officeqa_fast_summary_middle_table_index] ...\n"
+            + middle
+            + "\n... [officeqa_fast_summary_tail] ...\n"
+            + raw[-tail:]
+        )[:limit]
 
     def _officeqa_enrich_local_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         """Attach bounded fast-index fields to a source corpus record."""
@@ -3217,9 +3244,24 @@ class AegisForgeAgent:
             years = sorted({int(token) for token in re.findall(r"\b(?:18|19|20)\d{2}\b", enriched["search_text"])})
         except Exception:
             years = []
-        enriched["years"] = years[:160]
+        enriched["years"] = years[:240]
         enriched["path_l"] = path.lower()[:2000]
         enriched["name_l"] = name.lower()[:500]
+        try:
+            table_rows: list[str] = []
+            for line in text.splitlines():
+                clean = line.strip()
+                if not clean or len(clean) > 4000:
+                    continue
+                if ("|" in clean or "\t" in clean or clean.count(",") >= 4 or clean.count("=") >= 2) and re.search(r"\d", clean):
+                    table_rows.append(clean[:2000])
+                elif re.search(r"\b(?:18|19|20)\d{2}\b", clean) and len(re.findall(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", clean)) >= 2:
+                    table_rows.append(clean[:2000])
+                if len(table_rows) >= 360:
+                    break
+            enriched["table_rows"] = table_rows
+        except Exception:
+            enriched["table_rows"] = []
         return enriched
 
     def _officeqa_fast_record_score(self, question: str, record: Mapping[str, Any]) -> int:
@@ -3264,7 +3306,12 @@ class AegisForgeAgent:
             "currency": ("currency", "coin", "denomination", "seigniorage", "seignorage"),
             "budget": ("receipts", "outlays", "deficit", "surplus", "fiscal operations"),
             "savings_bonds": ("savings bonds", "series e", "series ee", "series i", "payroll savings"),
-            "capital": ("capital inflow", "capital outflow", "liabilities", "taiwan", "mainland china"),
+            "capital": ("capital inflow", "capital outflow", "liabilities", "taiwan", "mainland china", "united kingdom", "foreigners"),
+            "employment": ("payroll employment", "employment", "profile of the economy", "non-farm", "productivity"),
+            "rates": ("yield", "corporate aa", "treasury bonds", "market yields", "constant maturity", "rates"),
+            "defense": ("national defense", "department of defense", "associated activities"),
+            "agencies": ("federal home loan", "federal national mortgage", "government-sponsored", "rural electrification", "central bank for cooperatives"),
+            "imports": ("imports", "fish", "quotas", "tariff"),
         }
         for needles in clusters.values():
             q_hit = any(needle in q for needle in needles)
@@ -3339,9 +3386,9 @@ class AegisForgeAgent:
         # a compact fast index.  Env vars can raise the caps for local experiments.
         import time
         load_start = time.monotonic()
-        load_budget = max(4.0, min(120.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "48") or "48")))
-        max_files = max(0, min(12000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "4500") or "4500")))
-        max_bytes = max(20000, min(3000000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "520000") or "520000")))
+        load_budget = max(4.0, min(180.0, float(os.getenv("AEGISFORGE_OFFICEQA_LOAD_BUDGET_SECONDS", "72") or "72")))
+        max_files = max(0, min(16000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_FILES", "7000") or "7000")))
+        max_bytes = max(20000, min(4000000, int(os.getenv("AEGISFORGE_OFFICEQA_LOCAL_MAX_BYTES", "850000") or "850000")))
         exts = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".html", ".htm"}
         archive_exts = {".zip"}
         records: list[dict[str, Any]] = []
@@ -3628,15 +3675,16 @@ class AegisForgeAgent:
                 break
         return "\n\n".join(out)[:limit]
 
-    def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 42000) -> str:
+    def _officeqa_local_retrieval_context(self, question: str, metadata: Mapping[str, Any] | None, *, limit: int = 65000) -> str:
         cache = self._officeqa_load_local_corpus_cache()
-        candidate_limit = max(20, min(1200, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "420") or "420")))
-        block_limit = max(3, min(32, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "18") or "18")))
+        candidate_limit = max(20, min(1800, int(os.getenv("AEGISFORGE_OFFICEQA_CANDIDATE_LIMIT", "750") or "750")))
+        block_limit = max(3, min(48, int(os.getenv("AEGISFORGE_OFFICEQA_BLOCK_RECORD_LIMIT", "26") or "26")))
         self._officeqa_last_retrieval_status = {
             "records": len(cache),
             "scored_records": 0,
             "candidate_records": 0,
             "hits": 0,
+            "row_hits": 0,
             "chars": 0,
             "max_score": 0,
             "load_seconds": float(getattr(self, "_officeqa_local_corpus_load_seconds", 0.0) or 0.0),
@@ -3661,27 +3709,36 @@ class AegisForgeAgent:
         })
 
         pieces: list[str] = []
+        row_hits = 0
         for score, record in candidates[:block_limit]:
             text = self._coerce_text(record.get("text"))
             name = self._coerce_text(record.get("name")) or "local"
             path = self._coerce_text(record.get("path"))
             if not text:
                 continue
+            row_context = self._officeqa_structured_rows_from_record(
+                question,
+                record,
+                limit=max(5000, min(15000, limit // 4)),
+            )
+            if row_context:
+                pieces.append(row_context)
+                row_hits += 1
             block_context = self._officeqa_relevant_blocks_from_text(
                 question,
                 text,
                 name=name,
                 path=path,
-                limit=max(6500, min(18000, limit // 2)),
+                limit=max(6500, min(18000, limit // 3)),
             )
-            if not block_context:
-                continue
-            pieces.append(block_context)
+            if block_context:
+                pieces.append(block_context)
             if sum(len(piece) for piece in pieces) > limit:
                 break
         output = "\n\n".join(pieces)[:limit]
         self._officeqa_last_retrieval_status.update({
             "hits": len(pieces),
+            "row_hits": row_hits,
             "chars": len(output),
         })
         return output
@@ -4236,9 +4293,212 @@ class AegisForgeAgent:
 
         return values
 
+
+    def _officeqa_split_table_cells(self, line: str) -> list[str]:
+        raw = self._coerce_text(line).strip()
+        raw = re.sub(r"^\[[^\]\n]{1,120}\]\s*", "", raw)
+        if not raw:
+            return []
+        if "|" in raw:
+            cells = [cell.strip() for cell in raw.strip("|").split("|")]
+        elif "\t" in raw:
+            cells = [cell.strip() for cell in raw.split("\t")]
+        elif raw.count(",") >= 3:
+            # Avoid splitting thousands-only lines too eagerly; this is only a
+            # fallback for CSV-like parsed tables.
+            try:
+                import csv
+                cells = [cell.strip() for cell in next(csv.reader([raw]))]
+            except Exception:
+                cells = [cell.strip() for cell in raw.split(",")]
+        else:
+            return []
+        return [cell for cell in cells if cell != ""]
+
+    def _officeqa_cell_label_score(self, question: str, label: str, row_text: str = "") -> int:
+        q_terms = self._officeqa_topic_terms_for_matching(question)
+        hay = f"{label} {row_text}".lower()
+        score = 0
+        for term in q_terms:
+            if term in hay:
+                score += 3 if " " in term else 2
+        phrase_pairs = (
+            ("national defense", ("national defense", "defense")),
+            ("gross interest", ("gross interest", "interest")),
+            ("individual income", ("individual income", "income tax", "tax")),
+            ("public debt", ("public debt", "debt")),
+            ("marketable", ("marketable", "treasury")),
+            ("currency", ("currency", "circulation", "denomination")),
+            ("exchange stabilization", ("exchange stabilization", "esf", "assets")),
+            ("payroll employment", ("payroll", "employment")),
+            ("corporate aa", ("corporate aa", "aa bonds", "bonds")),
+            ("internal revenue", ("internal revenue", "irs", "receipts")),
+        )
+        q = self._coerce_text(question).lower()
+        for q_phrase, labels in phrase_pairs:
+            if q_phrase in q and any(lbl in hay for lbl in labels):
+                score += 8
+        return score
+
+    def _officeqa_table_matrix_year_values(self, question: str, context: str) -> list[tuple[int, float, str, int]]:
+        """Extract year/value pairs from pipe/CSV/key-value table rows.
+
+        This is a generic table-orientation parser, not an answer table.  It
+        supports two common Treasury layouts: years as row cells and years as
+        column headers.  Values are scored by overlap between question terms,
+        row labels, column labels, and neighboring headers.
+        """
+        out: list[tuple[int, float, str, int]] = []
+        q_years = self._officeqa_question_years(question)
+        current_header: list[str] | None = None
+        previous_lines: list[str] = []
+        lines = self._coerce_text(context).splitlines()
+        for idx, line in enumerate(lines):
+            raw = line.strip()
+            if not raw or len(raw) > 5000 or self._officeqa_line_is_question_echo(question, raw):
+                continue
+            low = raw.lower()
+            if any(blocked in low for blocked in ("ground_truth", "correct_answer", "expected_answer", "answer_key", "solution")):
+                continue
+            cells = self._officeqa_split_table_cells(raw)
+            if not cells:
+                previous_lines = (previous_lines + [raw])[-3:]
+                continue
+
+            # key=value flattened JSON row.
+            kv: dict[str, str] = {}
+            for cell in cells:
+                if "=" in cell:
+                    key, val = cell.split("=", 1)
+                    key = key.strip()
+                    val = val.strip()
+                    if key and val:
+                        kv[key] = val
+            if len(kv) >= 2:
+                years: set[int] = set()
+                for key, val in kv.items():
+                    key_l = key.lower()
+                    for token in re.findall(r"\b((?:18|19|20)\d{2})\b", f"{key} {val}"):
+                        if "year" in key_l or int(token) in q_years or q_years:
+                            years.add(int(token))
+                if years:
+                    row_text = " | ".join(f"{k}={v}" for k, v in kv.items())
+                    base = self._officeqa_line_score(question, row_text)
+                    for key, val in kv.items():
+                        parsed = self._officeqa_parse_number(val)
+                        if parsed is None:
+                            continue
+                        iv = int(round(abs(parsed))) if abs(parsed - round(parsed)) < 1e-9 else None
+                        if iv is not None and 1800 <= iv <= 2099 and "$" not in val:
+                            continue
+                        label_score = self._officeqa_cell_label_score(question, key, row_text)
+                        score = base + label_score + (4 if q_years & years else 0)
+                        if score >= 5:
+                            for year in years:
+                                out.append((year, parsed, f"structured_table_kv:{key}: {row_text[:450]}", score))
+
+            # Header detection.  A header may contain text labels or year columns.
+            alpha_cells = sum(1 for cell in cells if re.search(r"[A-Za-z]", cell))
+            num_cells = sum(1 for cell in cells if self._officeqa_parse_number(cell) is not None)
+            header_years = [int(y) for y in re.findall(r"\b((?:18|19|20)\d{2})\b", " | ".join(cells))]
+            if alpha_cells >= 2 and (num_cells == 0 or header_years):
+                current_header = cells[:80]
+
+            header = current_header if current_header and len(current_header) >= 2 else None
+            row_text = " | ".join(cells)
+            base_score = self._officeqa_line_score(question, raw)
+            context_header_text = " | ".join(header or [])
+
+            # Orientation A: header columns are years, row label is metric.
+            if header and len(header) == len(cells):
+                h_years: list[tuple[int, int]] = []
+                for col, label in enumerate(header):
+                    m = re.search(r"\b((?:18|19|20)\d{2})\b", label)
+                    if m:
+                        h_years.append((col, int(m.group(1))))
+                if h_years:
+                    row_label = " ".join(cells[:2])
+                    label_score = self._officeqa_cell_label_score(question, row_label + " " + context_header_text, row_text)
+                    if label_score >= 2 or base_score >= 5:
+                        for col, year in h_years:
+                            if q_years and year not in q_years:
+                                continue
+                            if col >= len(cells):
+                                continue
+                            value = self._officeqa_parse_number(cells[col])
+                            if value is None:
+                                continue
+                            score = base_score + label_score + 8
+                            out.append((year, value, f"structured_table_year_columns:{row_label[:120]}: {row_text[:450]}", score))
+
+                # Orientation B: one cell is the row year; choose the best value
+                # column according to header/question overlap.
+                row_years = [int(y) for y in re.findall(r"\b((?:18|19|20)\d{2})\b", row_text)]
+                row_years = [y for y in row_years if not q_years or y in q_years]
+                if row_years:
+                    value_candidates: list[tuple[int, int, float, str]] = []
+                    for col, cell in enumerate(cells):
+                        parsed = self._officeqa_parse_number(cell)
+                        if parsed is None:
+                            continue
+                        iv = int(round(abs(parsed))) if abs(parsed - round(parsed)) < 1e-9 else None
+                        if iv is not None and 1800 <= iv <= 2099 and "$" not in cell:
+                            continue
+                        label = header[col] if col < len(header) else f"col_{col}"
+                        s = base_score + self._officeqa_cell_label_score(question, label, row_text)
+                        if s >= 5:
+                            value_candidates.append((s, col, parsed, label))
+                    if value_candidates:
+                        value_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                        s, col, parsed, label = value_candidates[0]
+                        for year in row_years:
+                            out.append((year, parsed, f"structured_table_row_year:{label}: {row_text[:450]}", s + 4))
+            previous_lines = (previous_lines + [raw])[-3:]
+
+        dedup: dict[tuple[int, float, str], tuple[int, float, str, int]] = {}
+        for year, value, source, score in out:
+            key = (year, round(value, 8), source[:80])
+            prior = dedup.get(key)
+            if prior is None or score > prior[3]:
+                dedup[key] = (year, value, source, score)
+        return sorted(dedup.values(), key=lambda item: (item[0], -item[3], item[1]))[:1200]
+
+    def _officeqa_structured_rows_from_record(self, question: str, record: Mapping[str, Any], *, limit: int = 9000) -> str:
+        """Return the best pre-indexed table rows from a corpus record."""
+        rows = record.get("table_rows") or []
+        if not isinstance(rows, list):
+            return ""
+        path = self._coerce_text(record.get("path"))
+        name = self._coerce_text(record.get("name")) or "local"
+        scored: list[tuple[int, int, str]] = []
+        for idx, row in enumerate(rows[:600]):
+            line = self._coerce_text(row)
+            if not line:
+                continue
+            score = self._officeqa_line_score(question, line, path=path)
+            score += self._officeqa_cell_label_score(question, line)
+            q_years = self._officeqa_question_years(question)
+            if q_years and any(str(year) in line for year in q_years):
+                score += 4
+            if score > 0:
+                scored.append((score, idx, line[:2200]))
+        if not scored:
+            return ""
+        scored.sort(key=lambda item: item[0], reverse=True)
+        out: list[str] = []
+        for rank, (score, idx, line) in enumerate(scored[:18], 1):
+            out.append(f"[officeqa_local_table:{name} row={idx} rank={rank} score={score}]\n{line}")
+            if sum(len(piece) for piece in out) > limit:
+                break
+        return "\n\n".join(out)[:limit]
+
     def _officeqa_wide_year_values(self, question: str, context: str) -> list[tuple[int, float, str, int]]:
         records = self._officeqa_structured_records_from_context(context)
         rows: list[tuple[int, float, str, int]] = []
+        try:
+            rows.extend(self._officeqa_table_matrix_year_values(question, context))
+        except Exception:
+            pass
         for record in records:
             record_text = self._officeqa_record_text(record)
             score = self._officeqa_record_topic_score(question, record_text)
@@ -4413,10 +4673,11 @@ class AegisForgeAgent:
                 decimals = 0 if abs(value - round(value)) < 1e-9 else 3
             use_commas = abs(value) >= 1000 and "without commas" not in lowered and "no commas" not in lowered
             answer = self._officeqa_format_number(value, decimals=decimals, use_commas=use_commas)
+        source_join = " ".join([best[y1][1], best[y2][1]]).lower()
         return {
             "answer": answer,
-            "reasoning": f"Deterministic OfficeQA difference between extracted values for {y1} and {y2}.",
-            "confidence": 0.69,
+            "reasoning": f"Deterministic OfficeQA difference between extracted values for {y1} and {y2}." + (" structured_table" if "structured_table" in source_join else ""),
+            "confidence": 0.73 if "structured_table" in source_join else 0.69,
         }
 
     def _officeqa_try_average_answer(self, question: str, context: str) -> dict[str, Any] | None:
@@ -4440,10 +4701,11 @@ class AegisForgeAgent:
         if decimals is None:
             decimals = 1 if "one decimal" in lowered else 3
         answer = self._officeqa_format_number(value, decimals=decimals, use_commas=abs(value) >= 1000 and "no comma" not in lowered)
+        structured = any("structured_table" in (best.get(year, (None, "", 0))[1].lower()) for year in years) if years else False
         return {
             "answer": answer,
-            "reasoning": f"Deterministic OfficeQA arithmetic mean over {len(values)} extracted values.",
-            "confidence": 0.69,
+            "reasoning": f"Deterministic OfficeQA arithmetic mean over {len(values)} extracted values." + (" structured_table" if structured else ""),
+            "confidence": 0.72 if structured else 0.69,
         }
 
     def _officeqa_try_range_answer(self, question: str, context: str) -> dict[str, Any] | None:
@@ -4516,10 +4778,11 @@ class AegisForgeAgent:
                 # when the prompt explicitly expects a worded amount.
                 if re.search(r"\b\d[\d,]* million\b", self._coerce_text(source), flags=re.IGNORECASE):
                     answer = f"{answer} million"
+        structured = "structured_table" in self._coerce_text(source).lower()
         return {
             "answer": answer,
-            "reasoning": f"Deterministic OfficeQA year lookup for {target_year} from high-overlap table evidence.",
-            "confidence": 0.70,
+            "reasoning": f"Deterministic OfficeQA year lookup for {target_year} from high-overlap table evidence." + (" structured_table" if structured else ""),
+            "confidence": 0.73 if structured else 0.70,
         }
 
 
@@ -4817,7 +5080,10 @@ class AegisForgeAgent:
         # Weak generic deterministic calculations are worse than an explicit
         # insufficient-information answer in OfficeQA because the evaluator can
         # mistake them for unsupported hedging/candidates.
-        if confidence < float(os.getenv("AEGISFORGE_OFFICEQA_DETERMINISTIC_MIN_CONFIDENCE", "0.72") or "0.72"):
+        min_confidence = float(os.getenv("AEGISFORGE_OFFICEQA_DETERMINISTIC_MIN_CONFIDENCE", "0.72") or "0.72")
+        if "structured_table" in generic_reasoning or "specific solver" in generic_reasoning:
+            min_confidence = min(min_confidence, 0.68)
+        if confidence < min_confidence:
             return True
         return False
 
@@ -4841,36 +5107,55 @@ class AegisForgeAgent:
         rev_month = {v: k for k, v in month_names.items()}
         month_re = rev_month[q_month]
         candidates: list[tuple[float, int, str]] = []
+        recent_header = ""
         for line in self._coerce_text(context).splitlines():
             raw = line.strip()
-            if not raw or len(raw) > 2000 or self._officeqa_line_is_question_echo(question, raw):
+            if not raw or len(raw) > 2500 or self._officeqa_line_is_question_echo(question, raw):
                 continue
             low = raw.lower()
+            if "13-week" in low or "26-week" in low:
+                recent_header = raw[:800]
             if month_re[:3] not in low or str(q_year) not in low:
                 continue
             date_match = re.search(rf"\b{month_re[:3]}[a-z]*\.?\s+(\d{{1,2}}),?\s+{q_year}\b", raw, flags=re.IGNORECASE)
             if not date_match:
                 continue
             day = int(date_match.group(1))
-            nums = []
-            for token, value, _pos in self._officeqa_numeric_tokens(raw):
+            # Prefer explicit 13-week / 26-week labels when present in row+header.
+            combined = (recent_header + " | " + raw).lower()
+            values_by_label: dict[str, float] = {}
+            for label in ("13-week", "26-week"):
+                m = re.search(rf"{re.escape(label)}[^\d\-+]{{0,80}}([-+]?\d+(?:\.\d+)?)", combined)
+                if m:
+                    try:
+                        values_by_label[label] = float(m.group(1))
+                    except Exception:
+                        pass
+            if "13-week" in values_by_label and "26-week" in values_by_label:
+                candidates.append((abs(values_by_label["13-week"] - values_by_label["26-week"]), day, raw[:500]))
+                continue
+            rate_vals: list[tuple[int, float]] = []
+            for token, value, pos in self._officeqa_numeric_tokens(raw):
                 iv = int(round(abs(value))) if abs(value - round(value)) < 1e-9 else None
                 if iv in {q_year, day, 13, 26} and "$" not in token:
                     continue
-                if -5 <= value <= 25:
-                    nums.append(value)
-            if len(nums) < 2:
+                if 0 <= value <= 25:
+                    rate_vals.append((pos, value))
+            rate_vals.sort(key=lambda item: item[0])
+            if len(rate_vals) < 2:
                 continue
-            # Prefer the two rate-like values that are closest together; rates
-            # are typically adjacent 13-week/26-week percentages in these rows.
-            best_gap = min(abs(a - b) for i, a in enumerate(nums) for b in nums[i + 1:])
-            candidates.append((best_gap, day, raw[:500]))
+            # In Treasury bill auction rows the first two rate-like cells after
+            # the issue date are normally the 13-week and 26-week rates.  The old
+            # v0.6.4 picked the closest pair anywhere in the row and could choose
+            # unrelated maturity columns.
+            a, b = rate_vals[0][1], rate_vals[1][1]
+            candidates.append((abs(a - b), day, raw[:500]))
         if not candidates:
             return None
         candidates.sort(key=lambda item: (item[0], item[1]))
         _gap, day, _source = candidates[0]
         answer = f"{rev_month[q_month].capitalize()} {day}, {q_year}"
-        return {"answer": answer, "reasoning": "OfficeQA specific solver computed the smallest 13-week versus 26-week Treasury-bill rate gap by issue date.", "confidence": 0.82}
+        return {"answer": answer, "reasoning": "OfficeQA specific solver computed the smallest 13-week versus 26-week Treasury-bill rate gap by issue date. specific solver", "confidence": 0.82}
 
     def _officeqa_try_deterministic_answer(self, question: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if not self._officeqa_context_has_real_evidence(question, context):
@@ -5532,12 +5817,14 @@ class AegisForgeAgent:
         llm_error = self._coerce_text(llm_status.get("error") or self._last_llm_error or "")
         llm_error = re.sub(r"[^A-Za-z0-9_\-:.]+", "_", llm_error)[:48]
         return (
-            "OFFICEQA_DIAG_V064 "
+            "OFFICEQA_DIAG_V065 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
             f"corpus_truncated={int(bool(getattr(self, '_officeqa_local_corpus_truncated', False)))} "
-            f"fast_index=2 "
+            f"fast_index=3 "
+            f"table_index=1 "
+            f"row_hits={int(retrieval.get('row_hits', 0) or 0)} "
             f"load_s={float(retrieval.get('load_seconds', getattr(self, '_officeqa_local_corpus_load_seconds', 0.0)) or 0.0):.3f} "
             f"retrieval_scored={int(retrieval.get('scored_records', 0) or 0)} "
             f"retrieval_candidates={int(retrieval.get('candidate_records', 0) or 0)} "
@@ -5651,7 +5938,7 @@ class AegisForgeAgent:
             f"llm_base_env_ignored={llm.get('base_env_ignored')}",
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
-        return "OfficeQA v0.6.4 full-index precision-guard corpus/RAG diagnostics: " + "; ".join(signals)
+        return "OfficeQA v0.6.5 structured-table-index corpus/RAG diagnostics: " + "; ".join(signals)
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
