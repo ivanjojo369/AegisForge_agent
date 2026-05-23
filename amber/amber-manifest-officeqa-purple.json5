@@ -2,14 +2,14 @@
   manifest_version: "0.1.0",
 
   metadata: {
-    name: "AegisForge Build-it Purple",
-    display_name: "AegisForge Build-it Purple",
-    description: "AegisForge NCP Purple adapter for AgentBeats build_what_i_mean evaluation with exact [BUILD];Color,x,y,z output protocol.",
+    name: "AegisForge OfficeQA Purple",
+    display_name: "AegisForge OfficeQA Purple",
+    description: "AegisForge NCP Purple adapter for AgentBeats OfficeQA with RAG, OpenAI, and Code Interpreter support.",
     agent: "AegisForge NCP Purple",
     mode: "purple_benchmark",
     benchmark: "AgentX-AgentBeats Phase 2 Sprint 4",
-    scenario_family: "build_what_i_mean",
-    track: "build_what_i_mean",
+    scenario_family: "officeqa",
+    track: "officeqa",
     repository: "https://github.com/ivanjojo369/AegisForge_agent"
   },
 
@@ -19,19 +19,29 @@
     env: {
       PYTHONUNBUFFERED: "1",
 
-      // Critical: this must be set on the PURPLE agent container, not only on the green agent.
-      AGENT_QA_MODE: "build_it",
-      AEGISFORGE_OUTPUT_PROTOCOL: "build_it",
-      AGENT_OUTPUT_PROTOCOL: "build_it",
-      BUILD_PROTOCOL: "build_it",
-      BUILDER_AGENT_MODE: "build_it",
+      AEGISFORGE_TRACK: "officeqa",
+      AEGISFORGE_BENCHMARK: "officeqa",
+      AEGISFORGE_ADAPTER: "officeqa",
+      AEGISFORGE_OFFICEQA_MODE: "1",
+      OFFICEQA_AGENT_MODE: "1",
+      OFFICEQA_RESPONSE_PROTOCOL: "final_answer",
 
-      // Track metadata used by AegisForge internals and traces.
-      AEGISFORGE_TRACK: "build_what_i_mean",
-      AEGISFORGE_BENCHMARK: "build_what_i_mean",
-      AEGISFORGE_ADAPTER: "build_it",
+      AEGISFORGE_OUTPUT_PROTOCOL: "officeqa",
+      AGENT_OUTPUT_PROTOCOL: "officeqa",
 
-      // Keep extra visible output disabled for strict AgentBeats transcript validation.
+      OPENAI_API_KEY: "${config.openai_api_key}",
+      OPENAI_BASE_URL: {
+        when: "config.openai_base_url",
+        value: "${config.openai_base_url}"
+      },
+      OPENAI_MODEL: {
+        when: "config.openai_model",
+        value: "${config.openai_model}"
+      },
+
+      AEGISFORGE_OFFICEQA_USE_RESPONSES_API: "1",
+      AEGISFORGE_OFFICEQA_CODE_INTERPRETER: "1",
+
       AEGISFORGE_DEBUG_ARTIFACTS: "0",
       AEGISFORGE_TRACE_ARTIFACTS: "0"
     },
@@ -44,8 +54,12 @@
 
   config_schema: {
     type: "object",
-    properties: {},
-    required: [],
+    properties: {
+      openai_api_key: { type: "string", secret: true },
+      openai_base_url: { type: "string" },
+      openai_model: { type: "string" }
+    },
+    required: ["openai_api_key"],
     additionalProperties: false
   },
 
