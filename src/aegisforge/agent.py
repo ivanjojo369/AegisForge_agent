@@ -75,7 +75,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
-CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_5_intent_guarded_candidates_2026_05_24"
+CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_6_candidate_quality_filter_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -8422,7 +8422,7 @@ class AegisForgeAgent:
             token = self._coerce_text(value)
             token = re.sub(r"[^A-Za-z0-9_:\-./]+", "_", token)[:160]
             safe[str(key)] = token
-        line = "CRMARENA_DIAG_V0_5 " + " ".join(f"{key}={value}" for key, value in safe.items())
+        line = "CRMARENA_DIAG_V0_6 " + " ".join(f"{key}={value}" for key, value in safe.items())
         try:
             print(line, file=sys.stderr, flush=True)
         except Exception:
@@ -8569,10 +8569,15 @@ class AegisForgeAgent:
             "July", "August", "September", "October", "November", "December",
         )
 
-        if shape == "company" and any(re.fullmatch(rf"{month}", raw, flags=re.IGNORECASE) for month in months):
-            # Never accept a month as a competitor/account answer.  This keeps
-            # the state fallback intact while blocking the v1.6.5 "May" leak.
-            return "INSUFFICIENT_INFORMATION"
+        if shape == "company":
+            if any(re.fullmatch(rf"{month}", raw, flags=re.IGNORECASE) for month in months):
+                # Never accept a month as a competitor/account answer.  This keeps
+                # the state fallback intact while blocking the v1.6.5 "May" leak.
+                return "INSUFFICIENT_INFORMATION"
+            # Reject task labels/categories as company answers so the fallback can
+            # choose a real organization-shaped candidate when one is available.
+            if raw and not self._crmarena_company_candidate_ok(raw):
+                return "INSUFFICIENT_INFORMATION"
 
         if shape == "month" or "return only the month name" in lowered_query or "month name" in lowered_query:
             for month in months:
@@ -8714,6 +8719,28 @@ class AegisForgeAgent:
                         weight += 10
                     add_month(month, weight)
 
+            # Distribution/list patterns often appear in public metadata as
+            # "month": "September", "case_count": 14 or "September cases: 14".
+            # These should dominate generic month mentions when a trend task asks
+            # for the unusually high month.
+            for month in months:
+                for match in re.finditer(
+                    rf"(?is)\b{re.escape(month)}\b[^\n\r]{{0,80}}\b(?:cases?|count|total|volume|tickets?)\b[^0-9]{{0,20}}(\d{{1,5}})",
+                    blob,
+                ):
+                    try:
+                        add_month(month, 25 + min(160, int(match.group(1))))
+                    except Exception:
+                        add_month(month, 25)
+                for match in re.finditer(
+                    rf"(?is)\b(?:cases?|count|total|volume|tickets?)\b[^\n\r]{{0,80}}\b{re.escape(month)}\b[^0-9]{{0,20}}(\d{{1,5}})",
+                    blob,
+                ):
+                    try:
+                        add_month(month, 25 + min(160, int(match.group(1))))
+                    except Exception:
+                        add_month(month, 25)
+
         state_codes = (
             "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI",
             "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI",
@@ -8775,6 +8802,18 @@ class AegisForgeAgent:
                         if self._crmarena_company_candidate_ok(candidate):
                             company_counts[candidate] = company_counts.get(candidate, 0) + 3
 
+        # Final quality filter for company/entity candidates.  This keeps task
+        # labels such as "Sales Insight Mining" out of both the LLM candidate
+        # block and deterministic fallback, while retaining organization-shaped
+        # candidates such as "... Solutions", "... Systems", "... Group", etc.
+        filtered_company_counts: dict[str, int] = {}
+        for candidate, score in company_counts.items():
+            quality = self._crmarena_company_quality_score(candidate)
+            if quality <= 0:
+                continue
+            filtered_company_counts[candidate] = int(score) + quality
+        company_counts = filtered_company_counts
+
         def ranked(counts: dict[str, int], *, limit: int = 12) -> list[str]:
             month_order = {m: i for i, m in enumerate(months)}
             return [
@@ -8792,26 +8831,111 @@ class AegisForgeAgent:
 
     def _crmarena_company_candidate_ok(self, candidate: str) -> bool:
         text = self._coerce_text(candidate).strip()
+        text = re.sub(r"[_-]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip(" ,;:-")
         if len(text) < 3 or len(text) > 100:
             return False
         lowered = text.lower()
-        blocked = (
-            "insufficient_information", "crmarena", "salesforce", "metadata",
-            "query", "task", "answer", "ground truth", "none", "null", "unknown",
-            "b2b", "b2c", "interactive", "record", "records", "opportunity",
-            "opportunities", "account", "accounts", "case", "cases",
+        normalized = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+
+        # v0.6 candidate-quality guard:
+        # Preserve the state fallback that produced CA, but prevent CRM task
+        # labels/categories from being treated as company answers.  These are
+        # reusable label filters, not answer lookup tables.
+        blocked_exact = {
+            "insufficient information", "insufficient_information", "crmarena", "crm arena",
+            "crmarenapro", "crm arena pro", "salesforce", "metadata", "query", "task",
+            "answer", "ground truth", "none", "null", "unknown", "b2b", "b2c",
+            "interactive", "record", "records", "opportunity", "opportunities",
+            "account", "accounts", "case", "cases", "product", "products",
             "which competitors", "sales discussions", "return only", "available crm",
             "public cmarena metadata context no answer keys",
-        )
-        if lowered in blocked:
+            "public crmarena metadata context no answer keys",
+            "local cmarena metadata context no answer keys",
+            "local crmarena metadata context no answer keys",
+            "sales insight mining", "monthly trend analysis", "best region identification",
+            "lead qualification", "case routing", "case prioritization",
+            "customer service", "customer support", "task category", "dataset reference",
+            "source salesforce crmarenapro", "original crm arena pro mode",
+            "entropic mode", "adaptive mode", "functionality", "drift adaptation",
+        }
+        if normalized in blocked_exact:
             return False
-        if any(token in lowered for token in ("http://", "https://", "{", "}", "[", "]")):
+
+        blocked_fragments = (
+            "sales insight mining", "monthly trend analysis", "best region identification",
+            "lead qualification", "case routing", "case prioritization",
+            "return only the", "which competitors", "associated product id",
+            "public cmarena metadata", "public crmarena metadata",
+            "local cmarena metadata", "local crmarena metadata",
+            "dataset reference", "reward metric", "task query", "task category",
+            "openai", "nebius", "github", "agentbeats", "quick submit",
+        )
+        if any(fragment in normalized for fragment in blocked_fragments):
+            return False
+
+        if any(token in lowered for token in ("http://", "https://", "{", "}", "[", "]", "<", ">")):
             return False
         if re.fullmatch(r"[A-Z0-9]{12,20}", text):
             return False
         if re.fullmatch(r"\d+(?:\.\d+)?", text):
             return False
+        # Product ids and Salesforce ids are not company names.
+        if re.fullmatch(r"(?:001|003|006|00q|500|01t)[A-Za-z0-9]{8,18}", text):
+            return False
         return True
+
+    def _crmarena_company_quality_score(self, candidate: str) -> int:
+        """Reusable quality score for company/entity candidates.
+
+        Positive scores are shape-based company signals; negative/zero means
+        the string is more likely to be a task label, product id, or prompt
+        fragment.  This is deliberately not a task-answer table.
+        """
+        text = re.sub(r"\s+", " ", self._coerce_text(candidate)).strip(" ,;:-")
+        if not self._crmarena_company_candidate_ok(text):
+            return -1000
+
+        lowered = text.lower()
+        words = [w for w in re.split(r"\s+", text) if w]
+        score = 0
+
+        suffixes = (
+            "solutions", "systems", "technologies", "technology", "industries",
+            "design", "designs", "group", "corp", "corporation", "inc", "llc",
+            "ltd", "labs", "partners", "enterprises", "networks", "analytics",
+            "software", "services", "consulting", "dynamics", "logistics",
+            "medical", "health", "retail", "finance", "foods", "works",
+        )
+        if any(lowered.endswith(" " + suffix) or lowered == suffix for suffix in suffixes):
+            score += 40
+
+        if len(words) >= 2:
+            score += 8
+        if len(words) >= 3:
+            score += 6
+        if all(word[:1].isupper() for word in words if word[:1].isalpha()):
+            score += 6
+        if any(ch in text for ch in ("&", ".", "'")):
+            score += 2
+
+        # Penalize generic CRM/business words unless accompanied by a strong
+        # company suffix.  This blocks "Sales Insight Mining" while preserving
+        # things like "Adaptive Design Solutions".
+        generic_words = {
+            "sales", "insight", "mining", "monthly", "trend", "analysis",
+            "best", "region", "identification", "task", "category", "query",
+            "competitor", "competitors", "opportunity", "account", "case",
+            "cases", "product", "customer", "crm", "salesforce",
+        }
+        generic_hits = sum(1 for word in words if re.sub(r"[^a-z0-9]+", "", word.lower()) in generic_words)
+        if generic_hits:
+            score -= 12 * generic_hits
+
+        # Short/no-suffix title fragments are unreliable as company candidates.
+        if score < 10 and not any(lowered.endswith(" " + suffix) for suffix in suffixes):
+            score -= 20
+        return score
 
     def _crmarena_candidate_context_block(self, query: str, context: str, metadata: Mapping[str, Any] | None) -> str:
         candidates = self._crmarena_candidate_strings(query, context, metadata)
@@ -8821,6 +8945,9 @@ class AegisForgeAgent:
         status["candidate_months"] = len(candidates.get("months", []))
         status["candidate_states"] = len(candidates.get("states", []))
         status["candidate_companies"] = len(candidates.get("companies", []))
+        status["candidate_top_month"] = (candidates.get("months") or [""])[0][:24]
+        status["candidate_top_state"] = (candidates.get("states") or [""])[0][:8]
+        status["candidate_top_company"] = re.sub(r"[^A-Za-z0-9_.&' -]+", "_", (candidates.get("companies") or [""])[0])[:80]
         self._crmarena_last_status = status
 
         pieces: list[str] = []
@@ -8989,6 +9116,9 @@ class AegisForgeAgent:
             cand_c=status.get("candidate_companies", 0),
             model=status.get("model", ""),
             answer_shape=status.get("answer_shape", ""),
+            top_m=status.get("candidate_top_month", ""),
+            top_s=status.get("candidate_top_state", ""),
+            top_c=status.get("candidate_top_company", ""),
         )
         self._crmarena_debug_log(phase="data_paths", paths=self._crmarena_data_path_probe())
 
