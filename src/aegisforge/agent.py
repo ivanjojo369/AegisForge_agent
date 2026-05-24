@@ -1136,7 +1136,7 @@ class AegisForgeAgent:
         if updater is None or not hasattr(updater, "add_artifact"):
             return False
         try:
-            await updater.add_artifact(parts=[Part(root=TextPart(kind="text", text=text))], name="result")
+            await updater.add_artifact(parts=[Part(root=TextPart(kind="text", text=text))], name="AegisForgeResponse")
             return True
         except TypeError:
             try:
