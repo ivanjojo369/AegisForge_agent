@@ -56,9 +56,15 @@ except Exception:  # pragma: no cover - keeps local smoke/py_compile simple.
             self.kind = kind
             self.text = text
 
+        def __repr__(self) -> str:
+            return f"TextPart(kind={self.kind!r}, text={self.text!r})"
+
     class Part:  # type: ignore
         def __init__(self, root: Any = None) -> None:
             self.root = root
+
+        def __repr__(self) -> str:
+            return f"Part(root={self.root!r})"
 
 # Optional CRMArena database helper.
 #
@@ -73,8 +79,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_1_runtime_probe_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_1_RUNTIME_PROBE"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_2_artifact_single_emit_2026_05_24"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_2_ARTIFACT_SINGLE_EMIT"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -1148,13 +1154,17 @@ class AegisForgeAgent:
         metadata = _message_metadata(message, base_text)
         final_text = self._handle_crmarena_turn(base_text, metadata)
 
-        # Some AgentBeats/AegisForge tests and runners read the answer from the
-        # task artifact list rather than from the final status message.  Always
-        # publish the final answer as an artifact, even when update_status()
-        # succeeds, while still keeping the completed status for A2A runtimes.
+        # Some AgentBeats/AegisForge tests read the answer from the task
+        # artifact list. AgentBeats CRMArena, however, may also read terminal
+        # status text; sending the same final_text through both channels can
+        # concatenate answers (for example "CA" -> "CACA"). Therefore the
+        # answer is emitted exactly once, as the AegisForgeResponse artifact.
         await self._safe_add_artifact(updater, final_text)
-        await self._safe_update_status(updater, TaskState.completed, final_text)
-        await self._safe_complete(updater)
+        completed = await self._safe_complete(updater)
+        if not completed:
+            # Fallback for runtimes that do not expose complete(). Keep the
+            # terminal status text empty so it cannot duplicate the artifact.
+            await self._safe_update_status(updater, TaskState.completed, "")
 
     async def _safe_add_artifact(self, updater: Any, text: str) -> bool:
         if updater is None or not hasattr(updater, "add_artifact"):
