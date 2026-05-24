@@ -75,7 +75,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
-CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_6_candidate_quality_filter_2026_05_24"
+CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_7_noise_filter_and_month_evidence_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -8422,7 +8422,7 @@ class AegisForgeAgent:
             token = self._coerce_text(value)
             token = re.sub(r"[^A-Za-z0-9_:\-./]+", "_", token)[:160]
             safe[str(key)] = token
-        line = "CRMARENA_DIAG_V0_6 " + " ".join(f"{key}={value}" for key, value in safe.items())
+        line = "CRMARENA_DIAG_V0_7 " + " ".join(f"{key}={value}" for key, value in safe.items())
         try:
             print(line, file=sys.stderr, flush=True)
         except Exception:
@@ -8679,6 +8679,30 @@ class AegisForgeAgent:
             if month in months and weight > 0:
                 month_counts[month] = month_counts.get(month, 0) + int(weight)
 
+        def identity_windows(radius: int = 1100) -> list[str]:
+            """Return compact context windows around product/account identifiers.
+
+            This is evidence selection, not answer lookup: identifiers come from
+            the current query, and windows come from visible CRM context/metadata.
+            It prevents global month frequency from beating product-specific
+            case-count evidence in monthly trend tasks.
+            """
+            windows: list[str] = []
+            seen: set[str] = set()
+            for identifier in query_ids:
+                token = self._coerce_text(identifier).strip()
+                if len(token) < 4:
+                    continue
+                for hit in re.finditer(re.escape(token), blob, flags=re.IGNORECASE):
+                    window = blob[max(0, hit.start() - radius): min(len(blob), hit.end() + radius)]
+                    key = hashlib.sha1(window.encode("utf-8", errors="ignore")).hexdigest()[:12]
+                    if key not in seen:
+                        seen.add(key)
+                        windows.append(window)
+                    if len(windows) >= 24:
+                        return windows
+            return windows
+
         # Month candidates are useful only for trend/month tasks.  The previous
         # v0.4 extractor counted every case-insensitive "may", which caused the
         # generic modal word "may" to dominate and leak into non-month tasks.
@@ -8740,6 +8764,65 @@ class AegisForgeAgent:
                         add_month(month, 25 + min(160, int(match.group(1))))
                     except Exception:
                         add_month(month, 25)
+
+            # Product/account-specific month evidence.  In monthly trend tasks,
+            # the visible context can contain all months globally; selecting by
+            # global frequency produced June.  When the query names a product ID
+            # or product/account name, month evidence inside those identifier
+            # windows should dominate generic mentions.
+            local_month_counts: dict[str, int] = {}
+
+            def add_local_month(month: str, weight: int) -> None:
+                if month in months and weight > 0:
+                    local_month_counts[month] = local_month_counts.get(month, 0) + int(weight)
+
+            for window in identity_windows(radius=1300):
+                low_window = window.lower()
+                # Count explicit month/count pairs within the identifier window.
+                for month in months:
+                    for match in re.finditer(
+                        rf"(?is)\b{re.escape(month)}\b[^\n\r]{{0,120}}\b(?:cases?|case_count|count|total|volume|tickets?)\b[^0-9]{{0,30}}(\d{{1,5}})",
+                        window,
+                    ):
+                        try:
+                            add_local_month(month, 220 + min(300, int(match.group(1))))
+                        except Exception:
+                            add_local_month(month, 220)
+                    for match in re.finditer(
+                        rf"(?is)\b(?:cases?|case_count|count|total|volume|tickets?)\b[^\n\r]{{0,120}}\b{re.escape(month)}\b[^0-9]{{0,30}}(\d{{1,5}})",
+                        window,
+                    ):
+                        try:
+                            add_local_month(month, 220 + min(300, int(match.group(1))))
+                        except Exception:
+                            add_local_month(month, 220)
+                    for _match in re.finditer(
+                        rf'(?i)\b(?:month|case_month|closed_month|created_month)\b["\']?\s*[:=]\s*["\']?{re.escape(month)}\b',
+                        window,
+                    ):
+                        add_local_month(month, 90)
+                # Date fields inside the product/account window act like case
+                # observations.  Weight them more if the surrounding text looks
+                # like a case/closure record.
+                for pattern in date_patterns:
+                    for match in re.finditer(pattern, window):
+                        month = self._crmarena_month_from_date_token(match.group(1))
+                        if not month:
+                            continue
+                        small = window[max(0, match.start() - 180):match.end() + 180].lower()
+                        weight = 35
+                        if any(marker in small for marker in ("case", "closed", "closure", "created", "resolved", "ticket", "support")):
+                            weight += 45
+                        if any(marker in low_window for marker in ("highest", "most", "maximum", "peak", "trend")):
+                            weight += 10
+                        add_local_month(month, weight)
+
+            if local_month_counts:
+                # Keep diagnostics simple by letting top_m expose the product-
+                # specific winner.  The +700 offset ensures local evidence beats
+                # generic month mentions without hardcoding any answer.
+                for month, score in local_month_counts.items():
+                    month_counts[month] = 700 + score
 
         state_codes = (
             "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI",
@@ -8856,6 +8939,9 @@ class AegisForgeAgent:
             "sales insight mining", "monthly trend analysis", "best region identification",
             "lead qualification", "case routing", "case prioritization",
             "customer service", "customer support", "task category", "dataset reference",
+            "system notice", "system", "notice", "system message", "system prompt",
+            "user", "assistant", "instruction", "instructions", "context", "metadata",
+            "metadata bridge", "available context", "available crm context",
             "source salesforce crmarenapro", "original crm arena pro mode",
             "entropic mode", "adaptive mode", "functionality", "drift adaptation",
         }
@@ -8869,6 +8955,9 @@ class AegisForgeAgent:
             "public cmarena metadata", "public crmarena metadata",
             "local cmarena metadata", "local crmarena metadata",
             "dataset reference", "reward metric", "task query", "task category",
+            "system notice", "system message", "system prompt", "system instructions",
+            "user message", "assistant message", "available context", "available crm context",
+            "instruction", "metadata bridge", "source context", "no answer keys",
             "openai", "nebius", "github", "agentbeats", "quick submit",
         )
         if any(fragment in normalized for fragment in blocked_fragments):
@@ -8926,8 +9015,12 @@ class AegisForgeAgent:
             "sales", "insight", "mining", "monthly", "trend", "analysis",
             "best", "region", "identification", "task", "category", "query",
             "competitor", "competitors", "opportunity", "account", "case",
-            "cases", "product", "customer", "crm", "salesforce",
+            "cases", "product", "customer", "crm", "salesforce", "system",
+            "notice", "user", "assistant", "instruction", "instructions",
+            "context", "metadata", "dataset", "source", "bridge",
         }
+        if any(word in {"system", "notice", "instruction", "instructions", "context", "metadata", "dataset", "source", "bridge"} for word in (re.sub(r"[^a-z0-9]+", "", w.lower()) for w in words)):
+            return -1000
         generic_hits = sum(1 for word in words if re.sub(r"[^a-z0-9]+", "", word.lower()) in generic_words)
         if generic_hits:
             score -= 12 * generic_hits
