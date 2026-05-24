@@ -73,7 +73,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
-OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_competition_style_evidence_packer_2026_05_23"
+OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -1891,6 +1891,7 @@ class AegisForgeAgent:
         self._officeqa_last_retrieval_status: dict[str, Any] = {}
         self._officeqa_last_llm_status: dict[str, Any] = {}
         self._officeqa_last_calc_status: dict[str, Any] = {}
+        self._officeqa_last_evidence_pack_status: dict[str, Any] = {}
         self._last_llm_error = ""
         self._last_llm_response_chars = 0
 
@@ -6976,24 +6977,39 @@ class AegisForgeAgent:
         metadata: Mapping[str, Any] | None,
         fallback_context: str,
         *,
-        limit: int = 42000,
+        limit: int = 16000,
     ) -> str:
-        """Build a compact BM25/source-table evidence pack for LLM+Code Interpreter.
+        """Timeout-guarded BM25/source-table evidence pack for OfficeQA.
 
-        v1.5.2 correctly stopped accepting weak deterministic calculations, but
-        many questions still reached the LLM with broad mixed context.  This
-        packer re-ranks source records directly and sends a smaller set of
-        high-signal table windows to the LLM/code-interpreter path.
+        v1.6 proved the idea was directionally useful but too expensive for the
+        quick-submit per-request budget.  v1.6.1 keeps the packer available for
+        controlled experiments, but disables the expensive second-pass corpus
+        scan by default and falls back to the proven compact local context path.
         """
+        enabled = _env_flag("AEGISFORGE_OFFICEQA_ENABLE_EVIDENCE_PACKER", default=False)
+        limit = max(4000, min(22000, int(limit or 16000)))
         self._officeqa_last_evidence_pack_status = {
-            "enabled": 1,
+            "enabled": int(bool(enabled)),
+            "skipped": int(not bool(enabled)),
             "records_scored": 0,
             "records_selected": 0,
             "blocks": 0,
             "chars": 0,
             "max_score": 0,
             "fallback_used": 0,
+            "timeout_guard": 1,
         }
+
+        # Default official-run path: avoid rescoring all 1396 corpus records for
+        # every question.  This restores v1.5.2-style stability while preserving
+        # the safer answer-shape/source-strength guards.
+        if not enabled:
+            fallback = self._officeqa_context_for_llm(question, fallback_context, limit=limit)
+            self._officeqa_last_evidence_pack_status.update({
+                "fallback_used": 1,
+                "chars": len(fallback),
+            })
+            return fallback
 
         cache = self._officeqa_load_local_corpus_cache()
         focus_terms = self._officeqa_competition_focus_terms(question)
@@ -7005,14 +7021,22 @@ class AegisForgeAgent:
             })
             return fallback
 
+        # Experimental packer path: keep it tight.  v1.6 used large limits and
+        # produced 504s; v1.6.1 caps both records and emitted blocks.
+        max_records_to_score = max(80, min(600, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_SCORE_CAP", "240") or "240")))
+        max_selected = max(6, min(30, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_RECORDS", "18") or "18")))
+        block_budget = max(4, min(18, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_BLOCKS", "10") or "10")))
+
+        # Use the existing retrieval signal as a cheap prefilter when possible.
+        # Otherwise score the first slice of the cache deterministically.
         scored: list[tuple[int, int, Mapping[str, Any]]] = []
-        for idx, record in enumerate(cache):
+        for idx, record in enumerate(cache[:max_records_to_score]):
             score = self._officeqa_competition_record_score(question, record, focus_terms)
             if score > 0:
                 scored.append((score, idx, record))
         scored.sort(key=lambda item: item[0], reverse=True)
 
-        top_records = scored[: max(12, min(90, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_RECORDS", "48") or "48")))]
+        top_records = scored[:max_selected]
         max_score = int(top_records[0][0]) if top_records else 0
         self._officeqa_last_evidence_pack_status.update({
             "records_scored": len(scored),
@@ -7022,8 +7046,7 @@ class AegisForgeAgent:
 
         pieces: list[str] = []
         seen_blocks: set[str] = set()
-        block_budget = max(8, min(80, int(os.getenv("AEGISFORGE_OFFICEQA_EVIDENCE_BLOCKS", "36") or "36")))
-        per_record_limit = max(2500, min(18000, limit // max(3, min(18, len(top_records) or 1))))
+        per_record_limit = max(1200, min(6000, limit // max(3, min(10, len(top_records) or 1))))
 
         for rank, (score, _idx, record) in enumerate(top_records[:block_budget], 1):
             text = self._coerce_text(record.get("text"))
@@ -7032,17 +7055,18 @@ class AegisForgeAgent:
             name = self._coerce_text(record.get("name")) or "local"
             path = self._coerce_text(record.get("path"))
 
+            # Build at most one rows block and one local-text block per selected record.
             row_context = self._officeqa_structured_rows_from_record(
                 question,
                 record,
-                limit=max(2500, min(10000, per_record_limit)),
+                limit=max(1200, min(5000, per_record_limit)),
             )
             block_context = self._officeqa_relevant_blocks_from_text(
                 question,
                 text,
                 name=name,
                 path=path,
-                limit=max(2500, min(12000, per_record_limit)),
+                limit=max(1200, min(5000, per_record_limit)),
             )
 
             for label, payload in (("rows", row_context), ("blocks", block_context)):
@@ -7065,12 +7089,8 @@ class AegisForgeAgent:
                 break
 
         packed = "\n\n".join(pieces).strip()
-
-        # Add a short fallback tail from the already-built retrieval context if
-        # direct corpus packing was too thin.  Keep the tail small so it cannot
-        # swamp the high-rank evidence blocks.
-        if len(packed) < min(9000, limit // 3):
-            tail = self._officeqa_context_for_llm(question, fallback_context, limit=max(4000, min(12000, limit // 3)))
+        if len(packed) < min(4000, limit // 3):
+            tail = self._officeqa_context_for_llm(question, fallback_context, limit=max(2500, min(7000, limit // 2)))
             if tail and tail not in packed:
                 packed = (packed + "\n\n[officeqa_evidence_pack fallback_tail]\n" + tail).strip() if packed else tail
                 self._officeqa_last_evidence_pack_status["fallback_used"] = 1
@@ -7085,7 +7105,6 @@ class AegisForgeAgent:
             "chars": len(packed),
         })
         return packed
-
 
     def _officeqa_context_for_llm(self, question: str, context: str, *, limit: int = 16000) -> str:
         """Pack OfficeQA evidence into a smaller LLM context window."""
@@ -7191,7 +7210,8 @@ class AegisForgeAgent:
             self._officeqa_last_llm_status["error"] = "no_api_key"
             return None
 
-        context_limit = max(8000, min(48000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "36000") or "36000")))
+        # v1.6.1: keep the LLM package small enough to avoid Amber 504s.
+        context_limit = max(4000, min(22000, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_CONTEXT_CHARS", "16000") or "16000")))
         packed_context = self._officeqa_competition_evidence_pack(
             question,
             metadata,
@@ -7199,35 +7219,44 @@ class AegisForgeAgent:
             limit=context_limit,
         )
         self._officeqa_last_llm_status["packed_chars"] = len(packed_context)
-        max_tokens = max(700, min(3000, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "1800") or "1800")))
+        max_tokens = max(300, min(1600, int(os.getenv("AEGISFORGE_OFFICEQA_MAX_TOKENS", "900") or "900")))
 
         llm_text = ""
         use_responses = _env_flag("AEGISFORGE_OFFICEQA_USE_RESPONSES_API", default=True)
-        if use_responses and responses_endpoint:
-            instructions, input_text = self._build_officeqa_responses_prompt(question=question, context=packed_context)
-            self._officeqa_last_llm_status["called"] = True
-            self._officeqa_last_llm_status["responses_called"] = True
-            llm_text = self._call_openai_responses(
-                instructions=instructions,
-                input_text=input_text,
-                max_output_tokens=max_tokens,
-            )
-            self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
-            if not llm_text and self._last_llm_error:
-                self._officeqa_last_llm_status["block"] = self._last_llm_error[:80]
+        old_timeout = self.llm_timeout_seconds
+        self.llm_timeout_seconds = max(8, min(old_timeout, int(os.getenv("AEGISFORGE_OFFICEQA_LLM_TIMEOUT_SECONDS", "24") or "24")))
+        self._officeqa_last_llm_status["timeout_s"] = self.llm_timeout_seconds
+        try:
+            if use_responses and responses_endpoint:
+                instructions, input_text = self._build_officeqa_responses_prompt(question=question, context=packed_context)
+                self._officeqa_last_llm_status["called"] = True
+                self._officeqa_last_llm_status["responses_called"] = True
+                llm_text = self._call_openai_responses(
+                    instructions=instructions,
+                    input_text=input_text,
+                    max_output_tokens=max_tokens,
+                )
+                self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
+                if not llm_text and self._last_llm_error:
+                    self._officeqa_last_llm_status["block"] = self._last_llm_error[:80]
 
-        # Fallback for OpenAI-compatible gateways or if Responses/Code
-        # Interpreter is unavailable for the chosen model.
-        if not llm_text and endpoint and _env_flag("AEGISFORGE_OFFICEQA_CHAT_FALLBACK", default=True):
-            messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
-            self._officeqa_last_llm_status["called"] = True
-            self._officeqa_last_llm_status["chat_called"] = True
-            llm_text = self._call_llm(
-                messages=messages,
-                temperature=0.0,
-                max_tokens=max_tokens,
-            )
-            self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
+            # Fallback for OpenAI-compatible gateways or if Responses/Code
+            # Interpreter is unavailable for the chosen model.  Do not double-call
+            # by default after a Responses timeout; that pattern caused request
+            # latency spikes in v1.6.
+            chat_fallback_default = bool(not (use_responses and responses_endpoint))
+            if not llm_text and endpoint and _env_flag("AEGISFORGE_OFFICEQA_CHAT_FALLBACK", default=chat_fallback_default):
+                messages = self._build_officeqa_llm_messages(question=question, context=packed_context, metadata=metadata)
+                self._officeqa_last_llm_status["called"] = True
+                self._officeqa_last_llm_status["chat_called"] = True
+                llm_text = self._call_llm(
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                )
+                self._officeqa_last_llm_status["error"] = self._last_llm_error[:100]
+        finally:
+            self.llm_timeout_seconds = old_timeout
 
         self._officeqa_last_llm_status["text_chars"] = len(llm_text or "")
         if not llm_text:
@@ -7747,7 +7776,7 @@ class AegisForgeAgent:
         calc_reject_token = self._coerce_text(calc_status.get("reject_reason") or "none")
         calc_reject_token = re.sub(r"[^A-Za-z0-9_\-]+", "_", calc_reject_token)[:64]
         return (
-            "OFFICEQA_DIAG_V1_6 "
+            "OFFICEQA_DIAG_V1_6_1 "
             f"corpus_loaded={int(cache is not None)} "
             f"corpus_records={len(cache) if cache is not None else 'NA'} "f"zip_reader=1 "
             f"corpus_error={int(bool(self._officeqa_local_corpus_error))} "
@@ -7812,6 +7841,8 @@ class AegisForgeAgent:
             f"llm_chat={int(bool(llm_status.get('chat_called')))} "
             f"code_interpreter={int(bool(llm_status.get('code_interpreter')))} "
             f"evidence_pack={int(evidence_pack.get('enabled', 0) or 0)} "
+            f"evidence_skipped={int(evidence_pack.get('skipped', 0) or 0)} "
+            f"evidence_timeout_guard={int(evidence_pack.get('timeout_guard', 0) or 0)} "
             f"evidence_records={int(evidence_pack.get('records_selected', 0) or 0)} "
             f"evidence_blocks={int(evidence_pack.get('blocks', 0) or 0)} "
             f"evidence_chars={int(evidence_pack.get('chars', 0) or 0)} "
@@ -7820,6 +7851,7 @@ class AegisForgeAgent:
             f"llm_packed={int(llm_status.get('packed_chars', 0) or 0)} "
             f"llm_text={int(llm_status.get('text_chars', 0) or 0)} "
             f"llm_valid={int(bool(llm_status.get('valid')))} "
+            f"llm_timeout_s={int(llm_status.get('timeout_s', 0) or 0)} "
             f"llm_block={llm_block or 'NA'} "
             f"llm_error={llm_error or 'NA'}"
         )
