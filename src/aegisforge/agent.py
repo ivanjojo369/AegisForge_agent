@@ -26,6 +26,7 @@ import logging
 import math
 import os
 import re
+import sys
 import zipfile
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
@@ -74,7 +75,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
-CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_2_public_metadata_bridge_2026_05_24"
+CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_3_active_llm_debug_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -94,6 +95,8 @@ _OFFICEQA_GLOBAL_CORPUS_FORENSICS: dict[str, Any] = {}
 # metadata.  It must never be used as an answer lookup table.
 _CRMARENA_GLOBAL_TASK_CACHE: dict[str, list[dict[str, Any]]] | None = None
 _CRMARENA_GLOBAL_TASK_CACHE_ERROR: str = ""
+_CRMARENA_LOCAL_TASK_CACHE: dict[str, list[dict[str, Any]]] | None = None
+_CRMARENA_LOCAL_TASK_CACHE_ERROR: str = ""
 
 
 
@@ -8248,6 +8251,183 @@ class AegisForgeAgent:
             _CRMARENA_GLOBAL_TASK_CACHE_ERROR = "empty"
         return _CRMARENA_GLOBAL_TASK_CACHE
 
+    def _crmarena_records_from_loaded_json(self, parsed: Any) -> list[Any]:
+        """Return row-like records from CRMArena JSON without assuming one schema."""
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, Mapping):
+            for key in ("rows", "data", "tasks", "records", "examples"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    if key == "rows":
+                        return [row.get("row", row) if isinstance(row, Mapping) else row for row in value]
+                    return value
+            return [parsed]
+        return []
+
+    def _crmarena_local_task_cache(self) -> dict[str, list[dict[str, Any]]]:
+        """Load CRMArena task metadata cached inside the scenario container.
+
+        The green runner logs show CRMArenaPro tasks cached under /home/agent/data.
+        The purple agent may or may not share that path depending on the Amber
+        topology, so this loader is best-effort and never fatal.  Answer-like
+        fields are stripped before records are cached.
+        """
+        global _CRMARENA_LOCAL_TASK_CACHE, _CRMARENA_LOCAL_TASK_CACHE_ERROR
+
+        if _CRMARENA_LOCAL_TASK_CACHE is not None:
+            return _CRMARENA_LOCAL_TASK_CACHE
+
+        _CRMARENA_LOCAL_TASK_CACHE = {}
+        _CRMARENA_LOCAL_TASK_CACHE_ERROR = ""
+
+        candidate_paths: list[Path] = []
+        raw_extra = os.getenv("AEGISFORGE_CRM_LOCAL_TASK_FILES", "")
+        for item in re.split(r"[;,\n]+", raw_extra):
+            item = item.strip()
+            if item:
+                candidate_paths.append(Path(item))
+
+        for base in (
+            Path("/home/agent/data"),
+            Path("/app/data"),
+            Path("/workspace/data"),
+            Path.cwd() / "data",
+            Path.cwd(),
+        ):
+            for name in (
+                "crmarena_b2b_tasks.json",
+                "crmarena_b2c_tasks.json",
+                "tasks_b2b.json",
+                "tasks_b2c.json",
+                "tasks_b2b_interactive.json",
+                "tasks_b2c_interactive.json",
+            ):
+                candidate_paths.append(base / name)
+
+        seen: set[str] = set()
+        for path in candidate_paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if not path.exists() or not path.is_file():
+                    continue
+                raw = path.read_text(encoding="utf-8", errors="replace")
+                parsed = json.loads(raw)
+            except Exception as exc:
+                _CRMARENA_LOCAL_TASK_CACHE_ERROR = exc.__class__.__name__[:80]
+                continue
+
+            split = "unknown"
+            lower_name = path.name.lower()
+            if "b2b" in lower_name:
+                split = "b2b_interactive" if "interactive" in lower_name else "b2b"
+            elif "b2c" in lower_name:
+                split = "b2c_interactive" if "interactive" in lower_name else "b2c"
+
+            records: list[dict[str, Any]] = []
+            for item in self._crmarena_records_from_loaded_json(parsed):
+                if not isinstance(item, Mapping):
+                    continue
+                cleaned = self._crmarena_strip_answer_fields(item)
+                if isinstance(cleaned, Mapping):
+                    row = dict(cleaned)
+                    row["_crmarena_local_split"] = split
+                    row["_crmarena_local_path"] = str(path)[:160]
+                    records.append(row)
+
+            if records:
+                _CRMARENA_LOCAL_TASK_CACHE.setdefault(split, []).extend(records)
+
+        if not _CRMARENA_LOCAL_TASK_CACHE and not _CRMARENA_LOCAL_TASK_CACHE_ERROR:
+            _CRMARENA_LOCAL_TASK_CACHE_ERROR = "no_local_cache"
+        return _CRMARENA_LOCAL_TASK_CACHE
+
+    def _crmarena_match_record_in_cache(
+        self,
+        cache: Mapping[str, list[dict[str, Any]]],
+        query: str,
+        metadata: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        q_norm = self._crmarena_normalize_query_key(query)
+        if not q_norm:
+            return None
+
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        blob = _officeqa_stringify_for_signal(safe_metadata, limit=12000).lower()
+        preferred_splits: list[str] = []
+        if "b2c" in blob:
+            preferred_splits.append("b2c")
+        if "b2b" in blob:
+            preferred_splits.append("b2b")
+        preferred_splits.extend(["b2b", "b2c", "b2b_interactive", "b2c_interactive", "unknown"])
+
+        seen_splits: set[str] = set()
+        split_order: list[str] = []
+        for split in preferred_splits:
+            if split not in seen_splits:
+                seen_splits.add(split)
+                split_order.append(split)
+        for split in cache.keys():
+            if split not in seen_splits:
+                split_order.append(split)
+                seen_splits.add(split)
+
+        best: tuple[int, dict[str, Any] | None] = (0, None)
+        for split in split_order:
+            for row in cache.get(split, []):
+                row_query = (
+                    row.get("query")
+                    or row.get("task_query")
+                    or row.get("question")
+                    or row.get("prompt")
+                    or row.get("instruction")
+                    or ""
+                )
+                row_norm = self._crmarena_normalize_query_key(row_query)
+                if not row_norm:
+                    continue
+                score = 0
+                if row_norm == q_norm:
+                    score = 1000
+                elif q_norm in row_norm or row_norm in q_norm:
+                    score = 700
+                else:
+                    q_words = set(q_norm.split())
+                    r_words = set(row_norm.split())
+                    if q_words:
+                        overlap = len(q_words & r_words)
+                        score = int(100 * overlap / max(1, len(q_words)))
+                if score > best[0]:
+                    best = (score, row)
+                if score >= 1000:
+                    return row
+
+        if best[0] >= 72:
+            return best[1]
+        return None
+
+    def _crmarena_local_record_for_query(self, query: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        cache = self._crmarena_local_task_cache()
+        if not cache:
+            return None
+        return self._crmarena_match_record_in_cache(cache, query, metadata)
+
+    def _crmarena_debug_log(self, **fields: Any) -> None:
+        """Emit sanitized CRMArena diagnostics to runner logs, never to the answer."""
+        safe: dict[str, str] = {}
+        for key, value in fields.items():
+            token = self._coerce_text(value)
+            token = re.sub(r"[^A-Za-z0-9_:\-./]+", "_", token)[:160]
+            safe[str(key)] = token
+        line = "CRMARENA_DIAG_V0_3 " + " ".join(f"{key}={value}" for key, value in safe.items())
+        try:
+            print(line, file=sys.stderr, flush=True)
+        except Exception:
+            LOGGER.info(line)
+
     def _crmarena_public_record_for_query(self, query: str, metadata: Mapping[str, Any] | None) -> dict[str, Any] | None:
         cache = self._crmarena_public_task_cache()
         if not cache:
@@ -8309,25 +8489,36 @@ class AegisForgeAgent:
         return None
 
     def _crmarena_public_metadata_context(self, query: str, metadata: Mapping[str, Any] | None, *, limit: int = 12000) -> str:
-        record = self._crmarena_public_record_for_query(query, metadata)
         status = getattr(self, "_crmarena_last_status", {}) or {}
         status["public_metadata_enabled"] = int(_env_flag("AEGISFORGE_CRM_ENABLE_PUBLIC_METADATA", default=True))
         status["public_cache_error"] = _CRMARENA_GLOBAL_TASK_CACHE_ERROR[:80]
-        if not record:
-            status["public_metadata_match"] = 0
-            self._crmarena_last_status = status
-            return ""
+        status["local_cache_error"] = _CRMARENA_LOCAL_TASK_CACHE_ERROR[:80]
+        status["local_metadata_match"] = 0
+        status["public_metadata_match"] = 0
 
-        status["public_metadata_match"] = 1
-        status["public_split"] = self._coerce_text(record.get("_crmarena_public_split") or "unknown")[:32]
+        record = self._crmarena_local_record_for_query(query, metadata)
+        source_label = "LOCAL_CMARENA_METADATA_CONTEXT_NO_ANSWER_KEYS"
+        if record:
+            status["local_metadata_match"] = 1
+            status["local_split"] = self._coerce_text(record.get("_crmarena_local_split") or "unknown")[:32]
+        else:
+            record = self._crmarena_public_record_for_query(query, metadata)
+            source_label = "PUBLIC_CMARENA_METADATA_CONTEXT_NO_ANSWER_KEYS"
+            status["public_cache_error"] = _CRMARENA_GLOBAL_TASK_CACHE_ERROR[:80]
+            if record:
+                status["public_metadata_match"] = 1
+                status["public_split"] = self._coerce_text(record.get("_crmarena_public_split") or "unknown")[:32]
+
         self._crmarena_last_status = status
+        if not record:
+            return ""
 
         try:
             rendered = json.dumps(self._normalize_for_json(record), ensure_ascii=False, indent=2)
         except Exception:
             rendered = str(record)
         return (
-            "PUBLIC_CMARENA_METADATA_CONTEXT_NO_ANSWER_KEYS:\n"
+            f"{source_label}:\n"
             "The following record has had answer/ground-truth/label fields removed. "
             "Use it as task metadata/context only.\n"
             f"{rendered[:limit]}"
@@ -8443,9 +8634,12 @@ class AegisForgeAgent:
             "version": CRMARENA_AGENT_VERSION,
             "query_chars": len(query or ""),
             "public_metadata_match": 0,
+            "local_metadata_match": 0,
             "llm_called": 0,
             "llm_error": "",
             "llm_response_chars": 0,
+            "api_key_present": int(bool(self._openai_api_key())),
+            "endpoint_present": int(bool(self._llm_base_url())),
         }
         context = self._crmarena_collect_context(task_text, safe_metadata)
 
@@ -8454,6 +8648,7 @@ class AegisForgeAgent:
         messages = self._build_crmarena_llm_messages(query=query, context=context, metadata=safe_metadata)
         old_timeout = self.llm_timeout_seconds
         old_model = self.llm_model
+        old_budget = self.max_llm_calls_per_response
         crm_model = (
             _env_get("AEGISFORGE_CRM_OPENAI_MODEL")
             or _env_get("LLM_PRIMARY_MODEL")
@@ -8466,15 +8661,51 @@ class AegisForgeAgent:
         if crm_model:
             self.llm_model = crm_model
         self.llm_timeout_seconds = max(6, min(old_timeout, int(os.getenv("AEGISFORGE_CRM_LLM_TIMEOUT_SECONDS", "18") or "18")))
+        self.max_llm_calls_per_response = max(self.max_llm_calls_per_response, self._current_llm_calls + 1)
+
+        status = getattr(self, "_crmarena_last_status", {}) or {}
+        status["context_chars"] = len(context or "")
+        status["model"] = re.sub(r"[^A-Za-z0-9_.:-]+", "_", self.llm_model)[:80]
+        status["max_calls"] = self.max_llm_calls_per_response
+        self._crmarena_last_status = status
+        self._crmarena_debug_log(
+            phase="before_llm",
+            route=1,
+            query_chars=len(query or ""),
+            context_chars=len(context or ""),
+            api_key=status.get("api_key_present", 0),
+            endpoint=status.get("endpoint_present", 0),
+            local_match=status.get("local_metadata_match", 0),
+            public_match=status.get("public_metadata_match", 0),
+            model=status.get("model", ""),
+        )
+
+        llm_text = ""
         try:
             llm_text = self._call_llm(
                 messages=messages,
                 temperature=0.0,
                 max_tokens=max(32, min(260, int(os.getenv("AEGISFORGE_CRM_MAX_TOKENS", "120") or "120"))),
             )
+            first_error = self._coerce_text(getattr(self, "_last_llm_error", ""))[:120]
+
+            # If an injected/custom model is invalid, retry once with a stable
+            # OpenAI model while keeping the same prompt and no extra reasoning.
+            if not llm_text and first_error and re.search(r"HTTPError:(?:400|404)", first_error):
+                fallback_model = (_env_get("AEGISFORGE_CRM_FALLBACK_MODEL") or "gpt-4.1-mini").strip()
+                if fallback_model and fallback_model != self.llm_model:
+                    self._crmarena_debug_log(phase="retry_model", error=first_error, fallback_model=fallback_model)
+                    self.llm_model = fallback_model
+                    self.max_llm_calls_per_response = max(self.max_llm_calls_per_response, self._current_llm_calls + 1)
+                    llm_text = self._call_llm(
+                        messages=messages,
+                        temperature=0.0,
+                        max_tokens=max(32, min(220, int(os.getenv("AEGISFORGE_CRM_MAX_TOKENS", "120") or "120"))),
+                    )
         finally:
             self.llm_timeout_seconds = old_timeout
             self.llm_model = old_model
+            self.max_llm_calls_per_response = old_budget
 
         status = getattr(self, "_crmarena_last_status", {}) or {}
         status["llm_called"] = int(self._current_llm_calls > 0)
@@ -8482,10 +8713,20 @@ class AegisForgeAgent:
         status["llm_response_chars"] = len(llm_text or "")
         status["context_chars"] = len(context or "")
         self._crmarena_last_status = status
+        self._crmarena_debug_log(
+            phase="after_llm",
+            calls=self._current_llm_calls,
+            error=status.get("llm_error", ""),
+            response_chars=status.get("llm_response_chars", 0),
+            context_chars=status.get("context_chars", 0),
+            local_match=status.get("local_metadata_match", 0),
+            public_match=status.get("public_metadata_match", 0),
+        )
 
         answer = self._crmarena_clean_answer(llm_text, query=query)
         if not answer or re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", answer, flags=re.IGNORECASE):
             answer = "INSUFFICIENT_INFORMATION"
+        self._crmarena_debug_log(phase="final", answer_chars=len(answer), insufficient=int(answer == "INSUFFICIENT_INFORMATION"))
         return answer
 
 
