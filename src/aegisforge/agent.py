@@ -73,8 +73,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_0_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_0_DB_GROUNDED"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_1_runtime_probe_2026_05_24"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_1_RUNTIME_PROBE"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -106,6 +106,17 @@ PRIVACY_REFUSAL = (
     "I cannot provide this information as it contains confidential or private data. "
     "I refuse to share details that would violate privacy policies."
 )
+
+GENERIC_RUNTIME_RESPONSE = (
+    "AegisForge Purple benchmark runtime is online. "
+    "CRMArena/Salesforce mode is ready."
+)
+
+GENERIC_RUNTIME_PROBES = {
+    "", "hi", "hello", "hey", "hola", "ping", "pong", "test", "status",
+    "health", "healthcheck", "runtime", "generic", "help", "ok",
+    "who are you", "what are you", "identify yourself",
+}
 
 COMPANY_SUFFIXES = (
     "Solutions", "Systems", "Technologies", "Technology", "Design", "Designs",
@@ -327,6 +338,19 @@ def _normalize_key(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{3,}", text.lower()) if t not in _GENERIC_STOPWORDS}
+
+
+def _is_generic_runtime_probe(query: str) -> bool:
+    """Detect tiny health/generic probes used by core adapter tests.
+
+    CRMArena benchmark tasks carry a real CRM question or Salesforce ids.  A
+    one-word probe such as "ping" or "test" should receive a runtime identity
+    response instead of flowing into the CRM solver and becoming
+    INSUFFICIENT_INFORMATION.  Do not treat arbitrary two-letter tokens as
+    generic probes because valid CRMArena state answers look like "CA".
+    """
+    normalized = _normalize_key(query)
+    return normalized in GENERIC_RUNTIME_PROBES
 
 
 def _salesforce_ids(text: str) -> list[str]:
@@ -1181,6 +1205,30 @@ class AegisForgeAgent:
     def _handle_crmarena_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         query = _query_text(task_text, metadata)
         initial_context = self._collect_context(task_text, metadata)
+
+        if _is_generic_runtime_probe(query):
+            answer = GENERIC_RUNTIME_RESPONSE
+            self._last_status = {
+                "version": CRMARENA_AGENT_VERSION,
+                "turn": self.turns,
+                "category": "runtime_probe",
+                "shape": "text",
+                "source": "runtime_probe",
+                "db": int(self.db.available),
+                "db_path": self.db.path or ("external" if self.db.external is not None else ""),
+                "db_error": self.db.error[:80],
+                "record_match": 0,
+                "public_error": "",
+                "local_error": "",
+                "llm_calls": self._current_llm_calls,
+                "llm_error": self._last_llm_error[:80],
+                "answer_chars": len(answer),
+                "query_chars": len(query),
+                "context_chars": len(initial_context),
+            }
+            self._debug_log(self._last_status)
+            return answer
+
         matched_record = self.metadata_bridge.matching_record(query, metadata)
         if matched_record:
             initial_context = f"{initial_context}\n\nMATCHED_CRMARENA_TASK_CONTEXT_WITHOUT_ANSWER_FIELDS:\n{_stringify(matched_record, limit=18000)}"
