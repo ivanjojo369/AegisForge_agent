@@ -75,7 +75,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
-CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_4_task_dataset_resolver_2026_05_24"
+CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_5_intent_guarded_candidates_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -8422,7 +8422,7 @@ class AegisForgeAgent:
             token = self._coerce_text(value)
             token = re.sub(r"[^A-Za-z0-9_:\-./]+", "_", token)[:160]
             safe[str(key)] = token
-        line = "CRMARENA_DIAG_V0_4 " + " ".join(f"{key}={value}" for key, value in safe.items())
+        line = "CRMARENA_DIAG_V0_5 " + " ".join(f"{key}={value}" for key, value in safe.items())
         try:
             print(line, file=sys.stderr, flush=True)
         except Exception:
@@ -8563,12 +8563,18 @@ class AegisForgeAgent:
         raw = raw.strip().strip('"').strip("'").strip()
 
         lowered_query = self._coerce_text(query).lower()
+        shape = self._crmarena_answer_format_hint(query)
+        months = (
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        )
 
-        if "return only the month name" in lowered_query or "month name" in lowered_query:
-            months = (
-                "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December",
-            )
+        if shape == "company" and any(re.fullmatch(rf"{month}", raw, flags=re.IGNORECASE) for month in months):
+            # Never accept a month as a competitor/account answer.  This keeps
+            # the state fallback intact while blocking the v1.6.5 "May" leak.
+            return "INSUFFICIENT_INFORMATION"
+
+        if shape == "month" or "return only the month name" in lowered_query or "month name" in lowered_query:
             for month in months:
                 if re.search(rf"\b{month}\b", raw, flags=re.IGNORECASE):
                     return month
@@ -8596,13 +8602,51 @@ class AegisForgeAgent:
 
     def _crmarena_answer_format_hint(self, query: str) -> str:
         lowered = self._coerce_text(query).lower()
-        if "month name" in lowered or "monthly trend" in lowered or "which month" in lowered:
-            return "month"
-        if "two-letter abbreviation" in lowered or ("state" in lowered and "abbreviation" in lowered) or "best_region_identification" in lowered:
-            return "state"
-        if "competitor" in lowered or "sales discussion" in lowered or "sales_insight_mining" in lowered:
+        # Category-specific hints are stronger than generic tokens.  This keeps
+        # the v1.6.5 state fallback that produced CA, while preventing month
+        # candidates from leaking into competitor/company questions.
+        if "sales_insight_mining" in lowered or "competitor" in lowered or "sales discussion" in lowered:
             return "company"
+        if "best_region_identification" in lowered or "two-letter abbreviation" in lowered or ("state" in lowered and "abbreviation" in lowered):
+            return "state"
+        if "monthly_trend_analysis" in lowered or "month name" in lowered or "monthly trend" in lowered or "which month" in lowered:
+            return "month"
         return "short"
+
+    def _crmarena_query_identifiers(self, query: str) -> list[str]:
+        """Extract product/account identifiers that help score local CRM context.
+
+        These identifiers are not answers.  They are used only to weight visible
+        case/date/entity evidence near the item named in the prompt.
+        """
+        text = self._coerce_text(query)
+        ids: list[str] = []
+        for match in re.finditer(r"\b(?:001|003|006|00q|500|01t)[A-Za-z0-9]{8,18}\b", text):
+            token = match.group(0)
+            if token not in ids:
+                ids.append(token)
+        # Product/account-like names from prompts, e.g. "OptiPower Max".
+        for match in re.finditer(r"\b([A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){1,4})\b", text):
+            token = re.sub(r"\s+", " ", match.group(1)).strip()
+            lowered = token.lower()
+            if lowered in {"return only", "which competitors", "sales discussions"}:
+                continue
+            if token not in ids:
+                ids.append(token)
+        return ids[:8]
+
+    def _crmarena_month_from_date_token(self, token: str) -> str:
+        try:
+            month = int(token)
+        except Exception:
+            return ""
+        months = [
+            "", "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ]
+        if 1 <= month <= 12:
+            return months[month]
+        return ""
 
     def _crmarena_candidate_strings(self, query: str, context: str, metadata: Mapping[str, Any] | None) -> dict[str, list[str]]:
         """Extract reusable candidate answers from visible CRM/task context.
@@ -8617,16 +8661,58 @@ class AegisForgeAgent:
             blob_parts.append(_officeqa_stringify_for_signal(metadata, limit=14000))
         blob = "\n".join(part for part in blob_parts if part)
         lowered = blob.lower()
+        shape = self._crmarena_answer_format_hint(query)
+        query_ids = self._crmarena_query_identifiers(query)
 
         months = [
             "January", "February", "March", "April", "May", "June",
             "July", "August", "September", "October", "November", "December",
         ]
         month_counts: dict[str, int] = {}
-        for month in months:
-            count = len(re.findall(rf"\b{month}\b", blob, flags=re.IGNORECASE))
-            if count:
-                month_counts[month] = count
+
+        def add_month(month: str, weight: int) -> None:
+            if month in months and weight > 0:
+                month_counts[month] = month_counts.get(month, 0) + int(weight)
+
+        # Month candidates are useful only for trend/month tasks.  The previous
+        # v0.4 extractor counted every case-insensitive "may", which caused the
+        # generic modal word "may" to dominate and leak into non-month tasks.
+        if shape in {"month", "short"}:
+            # Strong signal: explicit count/distribution fields such as
+            # "September": 12, "month": "September", or "case_month=September".
+            for month in months:
+                for match in re.finditer(rf'(?i)(?:["\']?{re.escape(month)}["\']?\s*[:=]\s*)(\d{{1,5}})', blob):
+                    try:
+                        add_month(month, 12 + min(80, int(match.group(1))))
+                    except Exception:
+                        add_month(month, 12)
+                for _match in re.finditer(rf'(?i)\b(?:month|case_month|closed_month|created_month)\b["\']?\s*[:=]\s*["\']?{re.escape(month)}\b', blob):
+                    add_month(month, 18)
+                # Exact capitalization is a weaker signal.  It avoids treating
+                # lowercase "may" as the month May in ordinary prose.
+                exact_count = len(re.findall(rf"\b{re.escape(month)}\b", blob))
+                if exact_count:
+                    add_month(month, exact_count)
+
+            # Date fields: derive month from ISO/US dates, with extra weight when
+            # a product/account identifier from the prompt is nearby.
+            date_patterns = [
+                r"\b(?:20\d{2}|19\d{2})[-/](\d{1,2})[-/]\d{1,2}\b",
+                r"\b\d{1,2}[-/](\d{1,2})[-/](?:20\d{2}|19\d{2})\b",
+            ]
+            for pattern in date_patterns:
+                for match in re.finditer(pattern, blob):
+                    month = self._crmarena_month_from_date_token(match.group(1))
+                    if not month:
+                        continue
+                    window = blob[max(0, match.start() - 420):match.end() + 420]
+                    weight = 2
+                    low_window = window.lower()
+                    if any(marker in low_window for marker in ("case", "closed", "created", "product", "status", "subject")):
+                        weight += 3
+                    if any(identifier and identifier in window for identifier in query_ids):
+                        weight += 10
+                    add_month(month, weight)
 
         state_codes = (
             "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI",
@@ -8636,7 +8722,7 @@ class AegisForgeAgent:
             "VA", "VT", "WA", "WI", "WV", "WY", "DC",
         )
         state_counts: dict[str, int] = {}
-        # JSON fields such as "state": "CA" are the strongest signal.
+        # Preserve v1.6.5 behavior: this is what produced the correct CA answer.
         for match in re.finditer(r'(?i)\b(?:state|region|billingstate|shippingstate|province|location)\b["\']?\s*[:=]\s*["\']?([A-Z]{2})\b', blob):
             code = match.group(1).upper()
             if code in state_codes:
@@ -8657,9 +8743,9 @@ class AegisForgeAgent:
             candidate = re.sub(r"\s+", " ", match.group(1)).strip(" ,;:-")
             if self._crmarena_company_candidate_ok(candidate):
                 weight = 8
-                left = blob[max(0, match.start() - 120):match.end() + 120].lower()
+                left = blob[max(0, match.start() - 160):match.end() + 160].lower()
                 if "competitor" in left or "sales discussion" in left or "opportunity" in left:
-                    weight += 5
+                    weight += 7
                 company_counts[candidate] = company_counts.get(candidate, 0) + weight
 
         # Capitalized organization-like phrases.  This catches candidates inside
@@ -8668,19 +8754,33 @@ class AegisForgeAgent:
         for match in re.finditer(rf"\b([A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){{0,5}}\s+{suffixes})\b", blob):
             candidate = re.sub(r"\s+", " ", match.group(1)).strip(" ,;:-")
             if self._crmarena_company_candidate_ok(candidate):
-                left = blob[max(0, match.start() - 160):match.end() + 160].lower()
+                left = blob[max(0, match.start() - 220):match.end() + 220].lower()
                 weight = 2
                 if "competitor" in left:
-                    weight += 6
+                    weight += 8
                 if "sales discussion" in left or "opportunity" in left or "account" in left:
-                    weight += 3
+                    weight += 4
                 company_counts[candidate] = company_counts.get(candidate, 0) + weight
 
+        # In competitor/sales-insight tasks, also consider title-case entities in
+        # competitor/opportunity windows even when they do not have a corporate
+        # suffix.  These are candidates only; final selection still goes through
+        # LLM/format guards.
+        if shape == "company":
+            for marker in ("competitor", "competitors", "disadvantage", "sales discussion", "opportunity"):
+                for hit in re.finditer(re.escape(marker), lowered):
+                    window = blob[max(0, hit.start() - 500):hit.end() + 500]
+                    for match in re.finditer(r"\b([A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){1,5})\b", window):
+                        candidate = re.sub(r"\s+", " ", match.group(1)).strip(" ,;:-")
+                        if self._crmarena_company_candidate_ok(candidate):
+                            company_counts[candidate] = company_counts.get(candidate, 0) + 3
+
         def ranked(counts: dict[str, int], *, limit: int = 12) -> list[str]:
+            month_order = {m: i for i, m in enumerate(months)}
             return [
                 item for item, _score in sorted(
                     counts.items(),
-                    key=lambda kv: (-kv[1], len(kv[0]), kv[0].lower()),
+                    key=lambda kv: (-kv[1], month_order.get(kv[0], 99), len(kv[0]), kv[0].lower()),
                 )[:limit]
             ]
 
@@ -8700,6 +8800,8 @@ class AegisForgeAgent:
             "query", "task", "answer", "ground truth", "none", "null", "unknown",
             "b2b", "b2c", "interactive", "record", "records", "opportunity",
             "opportunities", "account", "accounts", "case", "cases",
+            "which competitors", "sales discussions", "return only", "available crm",
+            "public cmarena metadata context no answer keys",
         )
         if lowered in blocked:
             return False
@@ -8713,18 +8815,23 @@ class AegisForgeAgent:
 
     def _crmarena_candidate_context_block(self, query: str, context: str, metadata: Mapping[str, Any] | None) -> str:
         candidates = self._crmarena_candidate_strings(query, context, metadata)
+        shape = self._crmarena_answer_format_hint(query)
         status = getattr(self, "_crmarena_last_status", {}) or {}
+        status["answer_shape"] = shape
         status["candidate_months"] = len(candidates.get("months", []))
         status["candidate_states"] = len(candidates.get("states", []))
         status["candidate_companies"] = len(candidates.get("companies", []))
         self._crmarena_last_status = status
 
         pieces: list[str] = []
-        if candidates.get("months"):
+        # Intent-gated candidate lists: do not show month candidates to a company
+        # task.  v1.6.5 got CA right via state candidates, but it also let a month
+        # candidate leak into sales_insight_mining and return "May".
+        if shape in {"month", "short"} and candidates.get("months"):
             pieces.append("month_candidates=" + ", ".join(candidates["months"][:12]))
-        if candidates.get("states"):
+        if shape in {"state", "short"} and candidates.get("states"):
             pieces.append("state_candidates=" + ", ".join(candidates["states"][:12]))
-        if candidates.get("companies"):
+        if shape in {"company", "short"} and candidates.get("companies"):
             pieces.append("company_candidates=" + ", ".join(candidates["companies"][:12]))
         return "\n".join(pieces)
 
@@ -8732,12 +8839,21 @@ class AegisForgeAgent:
         """Return a concise candidate from current CRM context when LLM is over-conservative."""
         shape = self._crmarena_answer_format_hint(query)
         candidates = self._crmarena_candidate_strings(query, context, metadata)
-        if shape == "month" and candidates.get("months"):
-            return candidates["months"][0], "candidate_month"
-        if shape == "state" and candidates.get("states"):
-            return candidates["states"][0], "candidate_state"
-        if shape == "company" and candidates.get("companies"):
-            return candidates["companies"][0], "candidate_company"
+        if shape == "month":
+            if candidates.get("months"):
+                return candidates["months"][0], "candidate_month"
+            return "", "none"
+        if shape == "state":
+            # Preserve the v1.6.5 behavior that produced the correct CA answer.
+            if candidates.get("states"):
+                return candidates["states"][0], "candidate_state"
+            return "", "none"
+        if shape == "company":
+            # Never fall back from a company/competitor question to a month or
+            # state.  That was the v1.6.5 regression for sales_insight_mining.
+            if candidates.get("companies"):
+                return candidates["companies"][0], "candidate_company"
+            return "", "none"
 
         # Generic fallback: prefer company, then state/month, because CRMArena
         # tasks usually expect a concise entity or categorical value.
@@ -8872,6 +8988,7 @@ class AegisForgeAgent:
             cand_s=status.get("candidate_states", 0),
             cand_c=status.get("candidate_companies", 0),
             model=status.get("model", ""),
+            answer_shape=status.get("answer_shape", ""),
         )
         self._crmarena_debug_log(phase="data_paths", paths=self._crmarena_data_path_probe())
 
