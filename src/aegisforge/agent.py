@@ -75,7 +75,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
-CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_7_noise_filter_and_month_evidence_2026_05_24"
+CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -8422,7 +8422,7 @@ class AegisForgeAgent:
             token = self._coerce_text(value)
             token = re.sub(r"[^A-Za-z0-9_:\-./]+", "_", token)[:160]
             safe[str(key)] = token
-        line = "CRMARENA_DIAG_V0_7 " + " ".join(f"{key}={value}" for key, value in safe.items())
+        line = "CRMARENA_DIAG_V0_8 " + " ".join(f"{key}={value}" for key, value in safe.items())
         try:
             print(line, file=sys.stderr, flush=True)
         except Exception:
@@ -8574,9 +8574,12 @@ class AegisForgeAgent:
                 # Never accept a month as a competitor/account answer.  This keeps
                 # the state fallback intact while blocking the v1.6.5 "May" leak.
                 return "INSUFFICIENT_INFORMATION"
-            # Reject task labels/categories as company answers so the fallback can
-            # choose a real organization-shaped candidate when one is available.
-            if raw and not self._crmarena_company_candidate_ok(raw):
+            # Reject task labels/categories/metadata headings as company answers so
+            # the fallback can choose a real organization-shaped candidate when
+            # one is available.  v0.8 makes this stricter than candidate_ok():
+            # a company answer must have positive organization-quality, not just
+            # title-case words like "Domain Details".
+            if raw and self._crmarena_company_quality_score(raw) <= 0:
                 return "INSUFFICIENT_INFORMATION"
 
         if shape == "month" or "return only the month name" in lowered_query or "month name" in lowered_query:
@@ -8709,6 +8712,11 @@ class AegisForgeAgent:
         if shape in {"month", "short"}:
             # Strong signal: explicit count/distribution fields such as
             # "September": 12, "month": "September", or "case_month=September".
+            # v0.8 separates strong evidence from weak calendar-name presence.
+            # In public metadata, all 12 month names can appear as generic domain
+            # options; that should never force an arbitrary answer like June.
+            capitalized_month_presence = {month: len(re.findall(rf"\b{re.escape(month)}\b", blob)) for month in months}
+            generic_calendar_listing = sum(1 for count in capitalized_month_presence.values() if count > 0) >= 10
             for month in months:
                 for match in re.finditer(rf'(?i)(?:["\']?{re.escape(month)}["\']?\s*[:=]\s*)(\d{{1,5}})', blob):
                     try:
@@ -8719,8 +8727,8 @@ class AegisForgeAgent:
                     add_month(month, 18)
                 # Exact capitalization is a weaker signal.  It avoids treating
                 # lowercase "may" as the month May in ordinary prose.
-                exact_count = len(re.findall(rf"\b{re.escape(month)}\b", blob))
-                if exact_count:
+                exact_count = capitalized_month_presence.get(month, 0)
+                if exact_count and not generic_calendar_listing:
                     add_month(month, exact_count)
 
             # Date fields: derive month from ISO/US dates, with extra weight when
@@ -8816,6 +8824,11 @@ class AegisForgeAgent:
                         if any(marker in low_window for marker in ("highest", "most", "maximum", "peak", "trend")):
                             weight += 10
                         add_local_month(month, weight)
+
+            status = getattr(self, "_crmarena_last_status", {}) or {}
+            status["month_generic_calendar"] = int(bool(generic_calendar_listing))
+            status["month_local_evidence"] = int(bool(local_month_counts))
+            self._crmarena_last_status = status
 
             if local_month_counts:
                 # Keep diagnostics simple by letting top_m expose the product-
@@ -8944,6 +8957,13 @@ class AegisForgeAgent:
             "metadata bridge", "available context", "available crm context",
             "source salesforce crmarenapro", "original crm arena pro mode",
             "entropic mode", "adaptive mode", "functionality", "drift adaptation",
+            "domain", "details", "domain details", "status", "category", "field", "fields",
+            "issue", "issues", "issue significantly more than other months",
+            "significantly more than other months", "significantly higher",
+            "higher compared to other months", "other months", "reward metric",
+            "functional", "token efficiency", "query efficiency", "error recovery",
+            "trajectory efficiency", "hallucination rate", "dimension averages",
+            "assessment complete", "timing", "purple agent", "green agent",
         }
         if normalized in blocked_exact:
             return False
@@ -8959,6 +8979,11 @@ class AegisForgeAgent:
             "user message", "assistant message", "available context", "available crm context",
             "instruction", "metadata bridge", "source context", "no answer keys",
             "openai", "nebius", "github", "agentbeats", "quick submit",
+            "domain details", "issue significantly", "significantly more",
+            "other months", "reward metric", "dimension averages",
+            "original crmarena pro mode", "entropic mode", "drift adaptation",
+            "token efficiency", "query efficiency", "error recovery",
+            "trajectory efficiency", "hallucination rate", "assessment complete",
         )
         if any(fragment in normalized for fragment in blocked_fragments):
             return False
@@ -9018,6 +9043,12 @@ class AegisForgeAgent:
             "cases", "product", "customer", "crm", "salesforce", "system",
             "notice", "user", "assistant", "instruction", "instructions",
             "context", "metadata", "dataset", "source", "bridge",
+            "domain", "details", "status", "category", "field", "fields",
+            "issue", "issues", "significantly", "higher", "lower", "other",
+            "month", "months", "compared", "mode", "score", "scoring",
+            "metric", "functional", "drift", "adaptation", "rate", "token",
+            "efficiency", "error", "recovery", "trajectory", "dimension",
+            "average", "averages", "timing", "purple", "green",
         }
         if any(word in {"system", "notice", "instruction", "instructions", "context", "metadata", "dataset", "source", "bridge"} for word in (re.sub(r"[^a-z0-9]+", "", w.lower()) for w in words)):
             return -1000
@@ -9139,6 +9170,8 @@ class AegisForgeAgent:
                     "If the task asks for a month, return exactly one month name. "
                     "If the task asks for a state/region abbreviation, return exactly one two-letter code. "
                     "If the task asks for a competitor/account/company, return only the company name. "
+                    "Never answer company questions with metadata labels such as Domain Details, System Notice, Issue Significantly More Than Other Months, task category, field name, metric, or context heading. "
+                    "For month questions, do not choose from a generic calendar list; use case/date/count evidence for the named product/account, otherwise return INSUFFICIENT_INFORMATION. "
                     f"{guard_line}"
                 ),
             },
@@ -9212,6 +9245,8 @@ class AegisForgeAgent:
             top_m=status.get("candidate_top_month", ""),
             top_s=status.get("candidate_top_state", ""),
             top_c=status.get("candidate_top_company", ""),
+            month_generic=status.get("month_generic_calendar", 0),
+            month_local=status.get("month_local_evidence", 0),
         )
         self._crmarena_debug_log(phase="data_paths", paths=self._crmarena_data_path_probe())
 
@@ -9261,6 +9296,22 @@ class AegisForgeAgent:
         answer = self._crmarena_clean_answer(llm_text, query=query)
         if not answer or re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", answer, flags=re.IGNORECASE):
             answer = "INSUFFICIENT_INFORMATION"
+
+        # v0.8 strict output guard: do not accept metadata headings as final
+        # company answers, and do not accept a month guessed from a generic list
+        # of calendar names without local/product-specific evidence.  This keeps
+        # the working state fallback intact while avoiding high-confidence noise.
+        shape = self._crmarena_answer_format_hint(query)
+        status = getattr(self, "_crmarena_last_status", {}) or {}
+        if answer != "INSUFFICIENT_INFORMATION" and shape == "company":
+            if self._crmarena_company_quality_score(answer) <= 0:
+                answer = "INSUFFICIENT_INFORMATION"
+        if answer != "INSUFFICIENT_INFORMATION" and shape == "month":
+            allowed_months = set(self._crmarena_candidate_strings(query, context, safe_metadata).get("months", []))
+            generic_calendar = bool(int(status.get("month_generic_calendar", 0) or 0))
+            local_month_evidence = bool(int(status.get("month_local_evidence", 0) or 0))
+            if generic_calendar and not local_month_evidence and answer not in allowed_months:
+                answer = "INSUFFICIENT_INFORMATION"
 
         fallback_answer = ""
         fallback_source = "none"
