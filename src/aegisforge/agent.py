@@ -74,6 +74,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "0.5.0-sprint4-agent-integrated"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
+CRMARENA_AGENT_VERSION = "crmarena_route_guard_v0_1_2026_05_24"
 
 # Shared across cached AegisForgeAgent instances.  OfficeQA quick-submit may
 # create more than one agent object per shard/context; re-reading hundreds of
@@ -168,6 +169,120 @@ def _officeqa_env_repo_workflow_signal() -> bool:
     return any(marker in normalized for marker in explicit)
 
 
+
+def _crmarena_strong_question_signal(*values: Any, metadata: Mapping[str, Any] | None = None) -> bool:
+    """Detect CRMArena/CRM tasks so OfficeQA's broad firewall cannot capture them.
+
+    This detector is routing-only. It does not store answer keys or task outputs;
+    it only recognizes Salesforce/CRMArenaPro metadata and CRM vocabulary that
+    appears in the current task.
+    """
+    chunks: list[str] = []
+    if metadata is not None:
+        chunks.append(_officeqa_stringify_for_signal(metadata, limit=50000))
+    for value in values:
+        chunks.append(_officeqa_stringify_for_signal(value, limit=50000))
+    try:
+        chunks.extend([
+            os.getenv("AGENTBEATS_TRACK", ""),
+            os.getenv("AGENTBEATS_BENCHMARK", ""),
+            os.getenv("GITHUB_REPOSITORY", ""),
+            os.getenv("GITHUB_WORKFLOW", ""),
+            os.getenv("AMBER_COMPOSE_PROJECT", ""),
+            str(Path.cwd()),
+            str(Path(__file__).resolve()),
+        ])
+    except Exception:
+        pass
+
+    blob = "\n".join(chunk for chunk in chunks if chunk)
+    if not blob.strip():
+        return False
+
+    lowered = blob.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", lowered)
+    compact = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+
+    explicit = (
+        "crmarena",
+        "crmarenapro",
+        "crm_arena",
+        "crm_arena_pro",
+        "salesforce_crmarenapro",
+        "salesforce_crmarena",
+        "salesforce/crmarenapro",
+        "deogaze_agentbeats",
+        "deogaze_agentbeats_leaderboard",
+    )
+    if any(marker in lowered or marker in compact for marker in explicit):
+        return True
+
+    categories = (
+        "sales_insight_mining",
+        "monthly_trend_analysis",
+        "best_region_identification",
+        "lead_qualification",
+        "case_routing",
+        "case_prioritization",
+        "customer_service",
+        "customer_support",
+        "opportunity",
+        "competitor",
+        "competitors",
+        "sales discussion",
+        "sales discussions",
+        "product id",
+        "productid",
+        "associated product",
+        "case closure",
+        "closure time",
+        "last 6 quarters",
+        "past six weeks",
+        "two-letter abbreviation",
+        "return only the month name",
+        "return only the two-letter",
+    )
+    category_hits = sum(1 for marker in categories if marker in lowered or marker in compact)
+
+    salesforce_ids = bool(re.search(r"\b(?:001|003|006|00q|500|01t)[A-Za-z0-9]{8,18}\b", blob))
+    crm_words = (
+        "salesforce",
+        "crm",
+        "account",
+        "accounts",
+        "opportunity",
+        "opportunities",
+        "case",
+        "cases",
+        "lead",
+        "leads",
+        "contact",
+        "contacts",
+        "product",
+        "products",
+        "competitor",
+        "competitors",
+        "region",
+        "state",
+        "customer",
+        "customers",
+    )
+    crm_hits = sum(1 for marker in crm_words if marker in normalized)
+
+    # Avoid false positives from OfficeQA "sales/redemptions" tables; require a
+    # CRM object, Salesforce-style id, CRMArena category, or explicit competitor/
+    # opportunity/case language.
+    if salesforce_ids and crm_hits >= 1:
+        return True
+    if category_hits >= 1 and crm_hits >= 1:
+        return True
+    if ("opportunity" in normalized and "competitor" in normalized) or ("case" in normalized and "closure" in normalized):
+        return True
+    if "sales discussions" in lowered and "competitor" in normalized:
+        return True
+    return False
+
+
 def _officeqa_forced_runner_context_signal(*values: Any, metadata: Mapping[str, Any] | None = None) -> bool:
     """Force OfficeQA mode from global runner/repo/workflow/metadata context.
 
@@ -177,6 +292,8 @@ def _officeqa_forced_runner_context_signal(*values: Any, metadata: Mapping[str, 
     Build-it/BWIM branch.  This function only decides routing/protocol and never
     reads credentials or answer keys.
     """
+    if _crmarena_strong_question_signal(*values, metadata=metadata):
+        return False
     if _officeqa_env_repo_workflow_signal():
         return True
 
@@ -247,6 +364,8 @@ def _officeqa_strong_question_signal(*values: Any, metadata: Mapping[str, Any] |
     pure block-building prompts: Build-it-only language does not trigger unless
     OfficeQA/finance/document-QA evidence is present too.
     """
+    if _crmarena_strong_question_signal(*values, metadata=metadata):
+        return False
     chunks: list[str] = []
     if metadata is not None:
         chunks.append(_officeqa_stringify_for_signal(metadata))
@@ -1906,7 +2025,7 @@ class AegisForgeAgent:
         self.debug_artifacts_enabled = _env_flag("AEGISFORGE_DEBUG_ARTIFACTS", default=False)
         self.trace_artifacts_enabled = _env_flag("AEGISFORGE_TRACE_ARTIFACTS", default=False)
 
-        self.llm_model = (_env_get("OPENAI_MODEL") or _env_get("MODEL_NAME") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+        self.llm_model = (_env_get("OPENAI_MODEL") or _env_get("AMBER_CONFIG_AGENT_OPENAI_MODEL") or _env_get("MODEL_NAME") or "gpt-4o-mini").strip() or "gpt-4o-mini"
         self.llm_timeout_seconds = max(5, int(os.getenv("AEGISFORGE_LLM_TIMEOUT_SECONDS", "75") or "75"))
         self.max_llm_calls_per_response = max(
             1,
@@ -2445,6 +2564,10 @@ class AegisForgeAgent:
         runner may reuse an agent image that previously served BWIM.
         """
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+
+        # CRMArena/DeoGaze tasks must not be wrapped in OfficeQA XML protocol.
+        if _crmarena_strong_question_signal(task_text, metadata=safe_metadata):
+            return False
 
         # v0.4.3 forced runner/context gate: in the OfficeQA quick-submit
         # runner, every non-smoke request belongs to OfficeQA.  This check comes
@@ -7412,6 +7535,8 @@ class AegisForgeAgent:
             "OLLAMA_OPENAI_BASE_URL",
             "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_BASE_URL",
             "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_BASE",
+            "AMBER_CONFIG_AGENT_OPENAI_BASE_URL",
+            "AMBER_CONFIG_AGENT_OPENAI_API_BASE",
             "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
             "AMBER_CONFIG_GREEN_OPENAI_API_BASE",
             "AMBER_CONFIG_OPENAI_BASE_URL",
@@ -7946,6 +8071,159 @@ class AegisForgeAgent:
             f"llm_api_key_present={llm.get('api_key_present')}",
         ]
         return "OfficeQA v1 clean-RAG diagnostics: " + "; ".join(signals)
+
+
+    def _crmarena_extract_query(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        candidates: list[Any] = []
+
+        payload = self._extract_payload(safe_metadata) or {}
+        for source in (safe_metadata, payload):
+            if not isinstance(source, Mapping):
+                continue
+            for key in (
+                "task_query",
+                "query",
+                "question",
+                "prompt",
+                "task",
+                "instruction",
+                "user_request",
+                "objective",
+                "text",
+            ):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value)
+
+        base = self._coerce_text(task_text).strip()
+        parsed = self._maybe_parse_json_mapping(base)
+        if isinstance(parsed, Mapping):
+            for key in ("task_query", "query", "question", "prompt", "task", "instruction", "text"):
+                value = parsed.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.insert(0, value)
+        elif base:
+            candidates.append(base)
+
+        for candidate in candidates:
+            text = self._sanitize_text(candidate)
+            if text:
+                return text
+        return base
+
+    def _crmarena_collect_context(self, task_text: str, metadata: Mapping[str, Any] | None, *, limit: int = 14000) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        pieces: list[str] = []
+        base = self._coerce_text(task_text).strip()
+        if base:
+            pieces.append(f"TASK_TEXT:\n{base}")
+
+        payload = self._extract_payload(safe_metadata) or {}
+        for label, source in (("METADATA", safe_metadata), ("PAYLOAD", payload)):
+            if not isinstance(source, Mapping):
+                continue
+            try:
+                rendered = json.dumps(self._normalize_for_json(dict(source)), ensure_ascii=False, indent=2)
+            except Exception:
+                rendered = str(dict(source))
+            if rendered and rendered not in pieces:
+                pieces.append(f"{label}:\n{rendered[:limit]}")
+
+        context = "\n\n".join(piece for piece in pieces if piece).strip()
+        return context[:limit]
+
+    def _crmarena_clean_answer(self, text: Any, query: str = "") -> str:
+        raw = self._coerce_text(text).strip()
+        raw = re.sub(r"^```(?:json|text)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+        # If a model accidentally uses OfficeQA tags, keep only the final body.
+        match = re.search(r"<\s*FINAL_ANSWER\s*>(.*?)<\s*/\s*FINAL_ANSWER\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+        raw = re.sub(r"(?is)<\s*REASONING\s*>.*?<\s*/\s*REASONING\s*>", "", raw).strip()
+        raw = re.sub(r"(?i)^(final answer|answer)\s*[:\-]\s*", "", raw).strip()
+        raw = raw.strip().strip('"').strip("'").strip()
+
+        lowered_query = self._coerce_text(query).lower()
+
+        if "return only the month name" in lowered_query or "month name" in lowered_query:
+            months = (
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December",
+            )
+            for month in months:
+                if re.search(rf"\b{month}\b", raw, flags=re.IGNORECASE):
+                    return month
+
+        if "two-letter abbreviation" in lowered_query or "state" in lowered_query and "abbreviation" in lowered_query:
+            match = re.search(r"\b(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY|DC)\b", raw.upper())
+            if match:
+                return match.group(0)
+
+        # Prefer the first concise line. CRMArena evaluators parse the visible
+        # answer; extra reasoning tends to hurt exact/fuzzy matching.
+        lines = [line.strip(" -*\t") for line in raw.splitlines() if line.strip()]
+        if lines:
+            raw = lines[0]
+
+        raw = re.sub(r"\s+", " ", raw).strip()
+        # Remove leading list marker but preserve comma-separated answer content.
+        raw = re.sub(r"^\[\s*", "", raw).strip()
+        raw = re.sub(r"\s*\]$", "", raw).strip()
+        raw = raw.strip('"').strip("'").strip()
+        if len(raw) > 180:
+            raw = raw[:180].rsplit(" ", 1)[0].strip() or raw[:180]
+        return raw or "INSUFFICIENT_INFORMATION"
+
+    def _build_crmarena_llm_messages(self, *, query: str, context: str, metadata: Mapping[str, Any] | None) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are AegisForge in CRMArenaPro / Salesforce CRM benchmark mode. "
+                    "Answer only from the provided CRM task/context. Do not use OfficeQA XML tags. "
+                    "Do not explain. Return the minimal final answer only. "
+                    "For month-name tasks return only a month name. "
+                    "For state abbreviation tasks return only the two-letter code. "
+                    "For competitor/name/list tasks return only the matching name(s), comma-separated if needed. "
+                    "If the provided context truly lacks the needed CRM data, return INSUFFICIENT_INFORMATION."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"CRMArenaPro task:\n{query}\n\n"
+                    f"Available CRM context/metadata:\n{context[:14000]}\n\n"
+                    "Return only the final answer."
+                ),
+            },
+        ]
+
+    def _handle_crmarena_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        query = self._crmarena_extract_query(task_text, safe_metadata)
+        context = self._crmarena_collect_context(task_text, safe_metadata)
+
+        # A direct final-answer mode is required for CRMArena. The scorer expects
+        # the answer itself, not OfficeQA XML or AegisForge trace prose.
+        messages = self._build_crmarena_llm_messages(query=query, context=context, metadata=safe_metadata)
+        old_timeout = self.llm_timeout_seconds
+        self.llm_timeout_seconds = max(6, min(old_timeout, int(os.getenv("AEGISFORGE_CRM_LLM_TIMEOUT_SECONDS", "18") or "18")))
+        try:
+            llm_text = self._call_llm(
+                messages=messages,
+                temperature=0.0,
+                max_tokens=max(32, min(220, int(os.getenv("AEGISFORGE_CRM_MAX_TOKENS", "96") or "96"))),
+            )
+        finally:
+            self.llm_timeout_seconds = old_timeout
+
+        answer = self._crmarena_clean_answer(llm_text, query=query)
+        if not answer or re.search(r"<\s*/?\s*(?:REASONING|FINAL_ANSWER)\s*>", answer, flags=re.IGNORECASE):
+            answer = "INSUFFICIENT_INFORMATION"
+        return answer
+
 
     def _handle_officeqa_turn(self, task_text: str, metadata: Mapping[str, Any] | None) -> str:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
@@ -12149,21 +12427,31 @@ class AegisForgeAgent:
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
         generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
-        officeqa_forced_context = False if generic_smoke_request else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
-        officeqa_protocol = False if generic_smoke_request else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
-        build_it_protocol = False if (generic_smoke_request or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
-        strict_protocol = "" if (generic_smoke_request or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
+        crmarena_protocol = False if generic_smoke_request else _crmarena_strong_question_signal(base_text, metadata=metadata)
+        officeqa_forced_context = False if (generic_smoke_request or crmarena_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if (generic_smoke_request or crmarena_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
+        build_it_protocol = False if (generic_smoke_request or crmarena_protocol or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if (generic_smoke_request or crmarena_protocol or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
 
         # In strict symbolic modes, do not emit the normal progress/status text.
         # Some green agents validate the visible transcript and reject any text
         # other than the final literal token.
-        if not strict_protocol and not build_it_protocol and not officeqa_protocol:
+        if not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
             )
 
-        if officeqa_protocol:
+        if crmarena_protocol:
+            final_text = self._handle_crmarena_turn(base_text, metadata)
+            trace = {
+                "mode": "crmarena_protocol",
+                "protocol": "direct_crm_answer",
+                "version": CRMARENA_AGENT_VERSION,
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+            }
+        elif officeqa_protocol:
             final_text = self._handle_officeqa_turn(base_text, metadata)
             trace = {
                 "mode": "officeqa_protocol",
@@ -12207,8 +12495,11 @@ class AegisForgeAgent:
             final_text = self._apply_self_check(execution["task_text"], final_text, execution)
             execution_track = self._normalize_track(execution["metadata"].get("track_hint"))
             execution_seems_officeqa = (
-                execution_track == "officeqa"
-                or _officeqa_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
+                not _crmarena_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
+                and (
+                    execution_track == "officeqa"
+                    or _officeqa_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
+                )
             )
             if execution_seems_officeqa:
                 officeqa_protocol = True
@@ -12237,6 +12528,8 @@ class AegisForgeAgent:
         stale_bwim_visible_output = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE))
         final_seems_officeqa = (
             not generic_smoke_request
+            and not crmarena_protocol
+            and not _crmarena_strong_question_signal(emission_task_text, final_text, metadata=emission_metadata)
             and (
                 officeqa_protocol
                 or officeqa_forced_context
@@ -12272,7 +12565,7 @@ class AegisForgeAgent:
         # transcript. Emitting the same payload as both an artifact and a status
         # message makes the gateway concatenate duplicate directives such as
         # "[BUILD];... [BUILD];...", which corrupts BWIM exact-structure parsing.
-        should_emit_primary_artifact = generic_smoke_request or not (strict_protocol or build_it_protocol or officeqa_protocol)
+        should_emit_primary_artifact = generic_smoke_request or not (strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol)
         if should_emit_primary_artifact:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
@@ -12287,13 +12580,13 @@ class AegisForgeAgent:
 
         # Strict output mode must expose only the literal final token.  Trace and
         # debug artifacts remain available in normal AegisForge modes.
-        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol:
+        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
 
-        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol:
+        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
@@ -13651,6 +13944,7 @@ class AegisForgeAgent:
             "OFFICEQA_OPENAI_API_KEY",
             "AMBER_CONFIG_OFFICEQA_AGENT_OPENAI_API_KEY",
             "AMBER_CONFIG_PURPLE_OPENAI_API_KEY",
+            "AMBER_CONFIG_AGENT_OPENAI_API_KEY",
             "AMBER_CONFIG_GREEN_OPENAI_API_KEY",
             "AMBER_CONFIG_OPENAI_API_KEY",
         ):
@@ -13683,6 +13977,8 @@ class AegisForgeAgent:
             "LLM_BASE_URL",
             "VLLM_OPENAI_BASE_URL",
             "OLLAMA_OPENAI_BASE_URL",
+            "AMBER_CONFIG_AGENT_OPENAI_BASE_URL",
+            "AMBER_CONFIG_AGENT_OPENAI_API_BASE",
             "AMBER_CONFIG_GREEN_OPENAI_BASE_URL",
             "AMBER_CONFIG_GREEN_OPENAI_API_BASE",
             "AMBER_CONFIG_OPENAI_BASE_URL",
