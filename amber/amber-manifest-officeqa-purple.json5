@@ -4,7 +4,7 @@
   metadata: {
     name: "AegisForge OfficeQA Purple",
     display_name: "AegisForge OfficeQA Purple",
-    description: "AegisForge NCP Purple adapter for AgentBeats OfficeQA with RAG, OpenAI, and Code Interpreter support.",
+    description: "AegisForge NCP Purple adapter for AgentBeats OfficeQA with guarded RAG, OpenAI, and Code Interpreter support.",
     agent: "AegisForge NCP Purple",
     mode: "purple_benchmark",
     benchmark: "AgentX-AgentBeats Phase 2 Sprint 4",
@@ -29,18 +29,22 @@
       AEGISFORGE_OUTPUT_PROTOCOL: "officeqa",
       AGENT_OUTPUT_PROTOCOL: "officeqa",
 
+      // Amber requires every program.env value to be a string. Do not use
+      // conditional objects such as { when: ..., value: ... } here.
       OPENAI_API_KEY: "${config.openai_api_key}",
-      OPENAI_BASE_URL: {
-        when: "config.openai_base_url",
-        value: "${config.openai_base_url}"
-      },
-      OPENAI_MODEL: {
-        when: "config.openai_model",
-        value: "${config.openai_model}"
-      },
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_MODEL: "gpt-4.1",
 
       AEGISFORGE_OFFICEQA_USE_RESPONSES_API: "1",
       AEGISFORGE_OFFICEQA_CODE_INTERPRETER: "1",
+
+      // Stability/cost guardrails for v1.6.1. The heavy experimental evidence
+      // packer stays off unless explicitly re-enabled in agent code or manifest.
+      AEGISFORGE_OFFICEQA_ENABLE_EVIDENCE_PACKER: "0",
+      AEGISFORGE_OFFICEQA_LLM_TIMEOUT_SECONDS: "24",
+      AEGISFORGE_OFFICEQA_ENABLE_CHAT_FALLBACK: "0",
+      AEGISFORGE_OFFICEQA_MAX_CONTEXT_CHARS: "16000",
+      AEGISFORGE_OFFICEQA_MAX_OUTPUT_TOKENS: "900",
 
       AEGISFORGE_DEBUG_ARTIFACTS: "0",
       AEGISFORGE_TRACE_ARTIFACTS: "0"
@@ -55,9 +59,11 @@
   config_schema: {
     type: "object",
     properties: {
-      openai_api_key: { type: "string", secret: true },
-      openai_base_url: { type: "string" },
-      openai_model: { type: "string" }
+      openai_api_key: {
+        type: "string",
+        secret: true,
+        description: "OpenAI API key injected by AgentBeats/Amber at runtime."
+      }
     },
     required: ["openai_api_key"],
     additionalProperties: false
