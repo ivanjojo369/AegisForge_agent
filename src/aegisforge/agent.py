@@ -1124,15 +1124,43 @@ class AegisForgeAgent:
         metadata = _message_metadata(message, base_text)
         final_text = self._handle_crmarena_turn(base_text, metadata)
 
-        sent = await self._safe_update_status(updater, TaskState.completed, final_text)
-        if not sent:
+        # Some AgentBeats/AegisForge tests and runners read the answer from the
+        # task artifact list rather than from the final status message.  Always
+        # publish the final answer as an artifact, even when update_status()
+        # succeeds, while still keeping the completed status for A2A runtimes.
+        await self._safe_add_artifact(updater, final_text)
+        await self._safe_update_status(updater, TaskState.completed, final_text)
+        await self._safe_complete(updater)
+
+    async def _safe_add_artifact(self, updater: Any, text: str) -> bool:
+        if updater is None or not hasattr(updater, "add_artifact"):
+            return False
+        try:
+            await updater.add_artifact(parts=[Part(root=TextPart(kind="text", text=text))], name="result")
+            return True
+        except TypeError:
             try:
-                if updater is not None and hasattr(updater, "add_artifact"):
-                    await updater.add_artifact(parts=[Part(root=TextPart(kind="text", text=final_text))], name="result")
-                if updater is not None and hasattr(updater, "complete"):
-                    await updater.complete()
+                await updater.add_artifact([Part(root=TextPart(kind="text", text=text))])
+                return True
             except Exception:
-                pass
+                return False
+        except Exception:
+            return False
+
+    async def _safe_complete(self, updater: Any) -> bool:
+        if updater is None or not hasattr(updater, "complete"):
+            return False
+        try:
+            await updater.complete()
+            return True
+        except TypeError:
+            try:
+                await updater.complete(message=new_agent_text_message("completed"))
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
 
     async def _safe_update_status(self, updater: Any, state: Any, text: str) -> bool:
         if updater is None or not hasattr(updater, "update_status"):
