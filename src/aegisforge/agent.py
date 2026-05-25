@@ -6,12 +6,14 @@ This agent.py is a clean CRMArena-only rebuild.  It intentionally does not
 include OfficeQA, Build-What-I-Mean, browser helpers, Sprint4/NCP routing, or
 answer-key tables.
 
-v1.5 shifts the runtime to the actual Entropic CRMArena Green protocol: the
-purple agent receives a JSON task_context message containing prompt,
+v1.6 keeps the actual Entropic CRMArena Green protocol as the primary runtime:
+the purple agent receives a JSON task_context message containing prompt,
 required_context, persona, config, and entropy metadata.  SQLite is still
 supported when a valid CRM DB exists, but the primary path is now
-`task_context` parsing, cleaning, deterministic context evidence, and compact
-plain-answer emission.
+task_context parsing, evidence auditing, conservative deterministic solving,
+and compact plain-answer emission.  When the green payload lacks real CRM
+records, the agent marks the task as insufficient evidence instead of
+hallucinating answers from dates/domain notes.
 
 Merged design:
 - from agent_crmarena_clean_base_v2: small A2A entrypoint, direct plain answers,
@@ -86,8 +88,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_task_context_first_v1_5_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_5_TASK_CONTEXT_FIRST"
+CRMARENA_AGENT_VERSION = "crmarena_evidence_first_v1_6_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_6_EVIDENCE_FIRST"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -885,6 +887,110 @@ def _month_candidates_from_context(text: str, query: str) -> tuple[list[str], di
     }
 
 
+
+def _crm_evidence_profile(text: str, query: str, category: str, shape: str) -> dict[str, Any]:
+    """Classify whether context contains real CRM evidence for the answer.
+
+    The Entropic Green runtime currently sends prompt + required_context.  For
+    monthly trends and sales insight mining, a date/domain note is not enough:
+    we need case distributions, dated case rows, transcripts, emails, or
+    competitor/company evidence.  This profile is diagnostic and conservative.
+    """
+    blob = _coerce_text(text)
+    lowered = blob.lower()
+    sfids = _salesforce_ids(blob + "\n" + query)
+    date_count = len(re.findall(r"\b(?:20\d{2}|19\d{2})[-/]\d{1,2}[-/]\d{1,2}\b", blob))
+    count_evidence = len(re.findall(
+        r"(?is)\b(?:case_count|cases?|count|total|volume|tickets?)\b[^0-9\n\r]{0,40}\d{1,6}",
+        blob,
+    ))
+    recordish_lines = 0
+    for line in blob.splitlines():
+        low = line.lower()
+        if any(marker in low for marker in (
+            "accountid", "account id", "opportunityid", "opportunity id",
+            "product2id", "product id", "case number", "casenumber",
+            "createddate", "created date", "closeddate", "voice_transcript",
+            "email ", "emailmessage", "body__c", "textbody",
+        )):
+            recordish_lines += 1
+
+    months, month_diag = _month_candidates_from_context(blob, query)
+    companies = _extract_company_candidates(blob, query=query)
+    states = _state_candidates(blob)
+
+    competitor_markers = sum(lowered.count(marker) for marker in (
+        "competitor", "competitors", "rival", "alternative", "provider",
+        "market challenge", "other solution",
+    ))
+    transcript_markers = sum(lowered.count(marker) for marker in (
+        "voice_transcript", "transcript", "emailmessage", "textbody",
+        "sales call", "call transcript", "discussion",
+    ))
+
+    strong = False
+    weak = False
+
+    if shape == "state":
+        strong = bool(states)
+        weak = strong or bool(sfids)
+    elif shape == "month":
+        strong = month_diag.get("month_source") == "strong"
+        weak = strong or (
+            date_count >= 3 and any(marker in lowered for marker in ("case", "cases", "ticket", "product"))
+        ) or count_evidence > 0 or recordish_lines >= 2
+    elif shape == "company":
+        strong = bool(companies) and (competitor_markers > 0 or transcript_markers > 0)
+        weak = strong or bool(companies) or transcript_markers > 0
+    else:
+        strong = recordish_lines > 0 or bool(sfids)
+        weak = strong or date_count > 0
+
+    level = "strong" if strong else ("weak" if weak else "missing")
+    return {
+        "evidence_level": level,
+        "required_has_records": int(strong),
+        "sfid_count": len(sfids),
+        "date_count": date_count,
+        "count_evidence": count_evidence,
+        "recordish_lines": recordish_lines,
+        "company_candidates": len(companies),
+        "state_candidates": len(states),
+        "month_source": str(month_diag.get("month_source") or "none"),
+        "month_candidates": int(month_diag.get("month_candidates") or 0),
+        "competitor_markers": competitor_markers,
+        "transcript_markers": transcript_markers,
+    }
+
+
+def _profile_indicates_missing_evidence(profile: Mapping[str, Any], shape: str, category: str, *, db_available: bool) -> bool:
+    """Return True when the task needs records but no strong evidence exists."""
+    if db_available:
+        return False
+    if shape in {"month", "company"} or category in {"monthly_trend_analysis", "sales_insight_mining"}:
+        return str(profile.get("evidence_level") or "") != "strong"
+    return False
+
+
+def _should_call_llm_for_profile(profile: Mapping[str, Any], shape: str, category: str, *, db_available: bool, task_context_present: bool) -> bool:
+    """Avoid LLM hallucination on underdetermined CRMArena tasks.
+
+    A model cannot infer a hidden case distribution or a hidden competitor from
+    a prompt-only green payload.  Allow LLM only when there is some record-like
+    evidence, a DB is available, or the task is not one of the known
+    evidence-heavy shapes.
+    """
+    if not _env_flag("AEGISFORGE_CRM_ENABLE_LLM_FALLBACK", default=True):
+        return False
+    if db_available:
+        return True
+    if shape in {"month", "company"} or category in {"monthly_trend_analysis", "sales_insight_mining"}:
+        return str(profile.get("evidence_level") or "") == "strong"
+    if task_context_present and str(profile.get("evidence_level") or "") == "missing":
+        return False
+    return True
+
+
 def _answer_is_valid(answer: str, shape: str) -> bool:
     answer = _clean_answer_token(answer)
     if not answer:
@@ -1329,7 +1435,7 @@ class _TaskMetadataBridge:
 
 
 class AegisForgeAgent:
-    """CRMArena-first A2A agent with deterministic DB grounding."""
+    """CRMArena-first A2A agent with task-context evidence auditing."""
 
     def __init__(self) -> None:
         self.turns = 0
@@ -1450,6 +1556,9 @@ class AegisForgeAgent:
                 "db_path": self.db.path or ("external" if self.db.external is not None else ""),
                 "db_error": self.db.error[:80],
                 "record_match": 0,
+                "evidence_level": "n/a",
+                "evidence_missing": 0,
+                "required_has_records": 0,
                 "public_error": "",
                 "local_error": "",
                 "llm_calls": self._current_llm_calls,
@@ -1481,6 +1590,14 @@ class AegisForgeAgent:
         category = category or _extract_category(query, metadata, initial_context)
         shape = _answer_shape(query, metadata, category)
         context = self._augment_context_with_db_evidence(query, initial_context, category, matched_record)
+        evidence_profile = _crm_evidence_profile(context, query, category, shape)
+        evidence_missing = _profile_indicates_missing_evidence(
+            evidence_profile,
+            shape,
+            category,
+            db_available=self.db.available,
+        )
+        llm_skipped = 0
 
         if category in PRIVACY_CATEGORIES:
             answer = PRIVACY_REFUSAL
@@ -1491,15 +1608,24 @@ class AegisForgeAgent:
         if not answer:
             answer, source = self._candidate_fallback(query, context, metadata, shape)
 
-        if not answer and _env_flag("AEGISFORGE_CRM_ENABLE_LLM_FALLBACK", default=True):
-            llm_answer = self._llm_answer(query=query, context=context, shape=shape)
-            if _answer_is_valid(llm_answer, shape):
-                answer = _format_for_shape(llm_answer, shape)
-                source = "llm_fallback"
+        if not answer:
+            if _should_call_llm_for_profile(
+                evidence_profile,
+                shape,
+                category,
+                db_available=self.db.available,
+                task_context_present=task_context_present,
+            ):
+                llm_answer = self._llm_answer(query=query, context=context, shape=shape)
+                if _answer_is_valid(llm_answer, shape):
+                    answer = _format_for_shape(llm_answer, shape)
+                    source = "llm_fallback"
+            else:
+                llm_skipped = 1
 
         if not answer:
             answer = "INSUFFICIENT_INFORMATION"
-            source = "insufficient"
+            source = "insufficient_evidence" if evidence_missing else "insufficient"
 
         answer = _format_for_shape(answer, shape) if answer != PRIVACY_REFUSAL else answer
         if answer != PRIVACY_REFUSAL and not _answer_is_valid(answer, shape):
@@ -1518,9 +1644,20 @@ class AegisForgeAgent:
             "db_path": self.db.path or ("external" if self.db.external is not None else ""),
             "db_error": self.db.error[:80],
             "record_match": int(bool(matched_record)),
+            "evidence_level": evidence_profile.get("evidence_level", ""),
+            "evidence_missing": int(bool(evidence_missing)),
+            "required_has_records": int(evidence_profile.get("required_has_records") or 0),
+            "sfids": int(evidence_profile.get("sfid_count") or 0),
+            "dates": int(evidence_profile.get("date_count") or 0),
+            "counts": int(evidence_profile.get("count_evidence") or 0),
+            "recordish": int(evidence_profile.get("recordish_lines") or 0),
+            "company_candidates": int(evidence_profile.get("company_candidates") or 0),
+            "month_source": evidence_profile.get("month_source", ""),
+            "month_candidates": int(evidence_profile.get("month_candidates") or 0),
             "public_error": self.metadata_bridge.public_error[:40],
             "local_error": self.metadata_bridge.local_error[:40],
             "llm_calls": self._current_llm_calls,
+            "llm_skipped": llm_skipped,
             "llm_error": self._last_llm_error[:80],
             "answer_chars": len(answer),
             "query_chars": len(query),
