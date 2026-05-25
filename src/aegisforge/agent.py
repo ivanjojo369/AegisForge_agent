@@ -98,9 +98,8 @@ try:
 except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
-
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_9_product_aware_competitor_rank_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_9_PRODUCT_AWARE_COMPETITOR_RANK"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_10_disadvantage_relation_rank_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_10_DISADVANTAGE_RELATION_RANK"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -2673,18 +2672,25 @@ class AegisForgeAgent:
     def _rank_sales_competitors(self, raw_text: str, *, query: str, account_names: Iterable[str]) -> list[dict[str, Any]]:
         """Rank competitor company names from sales communications.
 
-        v1.9 adds product-aware filtering on top of v1.8's opportunity-bound
-        ranking.  It filters CRM Product2/solution names before ranking so a
-        module such as "DesignWave Automation" cannot outrank an actual rival
-        such as a company ending in "Solutions", "Inc", or "Technologies".
+        v1.10 keeps v1.9's Product2 filtering, but for questions like
+        "Which competitors are we at a disadvantage against..." it requires a
+        local disadvantage/against relationship before allowing a generic
+        competitor mention to dominate.  This prevents unrelated/global
+        competitors from outranking the company named in the opportunity-bound
+        disadvantage sentence.
         """
         product_names = self._known_product_names()
         names = _extract_company_candidates(raw_text, query=query, account_names=account_names)
-        if not names:
-            return []
 
         q_lower = query.lower()
-        wants_disadvantage = any(w in q_lower for w in ("disadvantage", "challenge", "threat", "risk", "against", "weaker"))
+        wants_disadvantage = any(
+            w in q_lower
+            for w in (
+                "disadvantage", "at a disadvantage", "against", "behind",
+                "weaker", "less competitive", "harder to compete",
+                "difficult to compete", "threat", "risk",
+            )
+        )
         wants_positive = "positive sentiment" in q_lower or "positive" in q_lower
         wants_most_often = "most often" in q_lower or "came up most" in q_lower or "mentioned most" in q_lower
 
@@ -2695,12 +2701,41 @@ class AegisForgeAgent:
         high_trust_prefixes = ("VOICE_OPPORTUNITY", "EMAIL_OPPORTUNITY", "VOICE_LEAD", "EMAIL_LEAD", "LIVECHAT_ACCOUNT")
         has_high_trust = any(block.startswith(high_trust_prefixes) for block in blocks)
 
+        # First pass: pull extra candidate names from the exact local windows
+        # where disadvantage/against language appears.  This is still DB/text
+        # evidence, not an answer-key lookup.
+        relation_markers = (
+            "disadvantage", "at a disadvantage", "against", "behind",
+            "weaker", "less competitive", "harder to compete",
+            "difficult to compete", "compete against", "compared to us",
+            "over techpulse", "than techpulse",
+        )
+        seen_names = {_entity_key(name) for name in names}
+        for block in blocks:
+            low_block = block.lower()
+            for marker in relation_markers:
+                start_at = 0
+                while True:
+                    idx = low_block.find(marker, start_at)
+                    if idx < 0:
+                        break
+                    relation_window = block[max(0, idx - 520):idx + 980]
+                    for candidate in _extract_company_candidates(relation_window, query=query, account_names=account_names):
+                        ckey = _entity_key(candidate)
+                        if ckey and ckey not in seen_names:
+                            seen_names.add(ckey)
+                            names.append(candidate)
+                    start_at = idx + max(1, len(marker))
+
+        if not names:
+            return []
+
         def block_trust(block: str) -> float:
             head = block[:260]
             if head.startswith("VOICE_OPPORTUNITY"):
-                return 100.0
+                return 110.0
             if head.startswith("EMAIL_OPPORTUNITY"):
-                return 90.0
+                return 100.0
             if head.startswith("VOICE_LEAD"):
                 return 62.0
             if head.startswith("EMAIL_LEAD"):
@@ -2708,58 +2743,79 @@ class AegisForgeAgent:
             if head.startswith("LIVECHAT_ACCOUNT"):
                 return 38.0
             if head.startswith("VOICE_TEXT_SEARCH") or head.startswith("EMAIL_TEXT_SEARCH"):
-                return -45.0 if has_high_trust else 20.0
+                return -60.0 if has_high_trust else 20.0
             return 5.0
 
-        def direct_disadvantage_signal(name: str, window: str) -> float:
-            """Score when local wording says TechPulse is disadvantaged."""
+        def direct_relation_signal(name: str, window: str) -> tuple[float, bool]:
+            """Return (score, direct_relation_seen) for this candidate/window."""
             escaped = re.escape(name)
             low = window.lower()
             score = 0.0
+            direct = False
 
-            direct_patterns = [
-                rf"(?:disadvantage|behind|losing|weaker|hard(?:er)? to compete|difficult to compete|compete against|against)\W{{0,140}}{escaped}",
-                rf"{escaped}\W{{0,160}}(?:advantage|strong|robust|better|more attractive|more appealing|preferred|shortlist|radar|compelling|promising)",
-                rf"{escaped}\W{{0,160}}(?:pricing|roadmap|customization|integration|scalability|security|compliance|automation|workflow|flexibility|flexible)",
-                rf"(?:advantage|strong|robust|better|attractive|appealing|preferred|shortlist|radar|compelling|promising|flexible|customization)\W{{0,160}}{escaped}",
-                rf"(?:competitor|competitors|rival|alternative|vendor|provider)\W{{0,160}}{escaped}",
-                rf"{escaped}\W{{0,160}}(?:competitor|competitors|rival|alternative|vendor|provider)",
+            # Strong relation: the wording directly connects our disadvantage,
+            # competitor comparison, or "against" phrasing to this exact company.
+            strong_patterns = [
+                rf"(?:disadvantage|at a disadvantage|behind|weaker|less competitive|hard(?:er)? to compete|difficult to compete|compete against|against)\W{{0,260}}{escaped}",
+                rf"{escaped}\W{{0,260}}(?:puts us at a disadvantage|put us at a disadvantage|makes us less competitive|has an advantage|has the advantage|is stronger|is better|is more attractive|is more appealing|is preferred)",
+                rf"{escaped}\W{{0,260}}(?:over techpulse|than techpulse|compared to techpulse|compared to us)",
+                rf"(?:over techpulse|than techpulse|compared to techpulse|compared to us)\W{{0,260}}{escaped}",
+                rf"(?:competitor|competitors|rival|alternative|vendor|provider)\W{{0,220}}{escaped}\W{{0,260}}(?:advantage|strong|better|attractive|appealing|preferred|pricing|roadmap|customization|integration|scalability|security|compliance)",
+                rf"{escaped}\W{{0,220}}(?:competitor|competitors|rival|alternative|vendor|provider)\W{{0,260}}(?:advantage|strong|better|attractive|appealing|preferred|pricing|roadmap|customization|integration|scalability|security|compliance)",
             ]
-            for pattern in direct_patterns:
+            for pattern in strong_patterns:
                 if re.search(pattern, window, flags=re.I | re.S):
-                    score += 85.0
+                    score += 260.0
+                    direct = True
 
-            if any(k in low for k in COMPETITOR_SIGNAL_KEYWORDS):
-                score += 34.0
+            # Medium relation: same local window contains disadvantage language,
+            # competitor language, and the candidate name.
+            has_disadvantage_language = any(
+                phrase in low
+                for phrase in (
+                    "disadvantage", "at a disadvantage", "behind",
+                    "less competitive", "harder to compete", "difficult to compete",
+                    "compared to us", "over techpulse", "than techpulse",
+                )
+            )
+            has_competitor_language = any(k in low for k in COMPETITOR_SIGNAL_KEYWORDS)
+            has_positive_competitor_language = any(k in low for k in POSITIVE_COMPETITOR_KEYWORDS)
+
+            if has_disadvantage_language and (has_competitor_language or "against" in low):
+                score += 140.0
+                direct = True
+
+            if has_disadvantage_language and has_positive_competitor_language:
+                score += 90.0
+                direct = True
+
+            if has_competitor_language:
+                score += 30.0
 
             positive_hits = sum(1 for k in POSITIVE_COMPETITOR_KEYWORDS if k in low)
             negative_hits = sum(1 for k in NEGATIVE_COMPETITOR_KEYWORDS if k in low)
+
             if wants_disadvantage:
-                score += positive_hits * 24.0
-                score += min(negative_hits, 2) * 4.0
-                if positive_hits == 0 and negative_hits >= 2:
-                    score -= 20.0
+                # Positive attributes of the rival matter only when the window is
+                # actually a comparison/disadvantage window.  Otherwise generic
+                # "strong/robust/pricing" language causes false positives.
+                if direct:
+                    score += positive_hits * 30.0
+                    score += min(negative_hits, 2) * 6.0
+                else:
+                    score += positive_hits * 3.0
             elif wants_positive:
                 score += positive_hits * 22.0
             else:
                 score += positive_hits * 10.0
                 score += negative_hits * 8.0
 
-            if any(k in low for k in (
-                "we are at a disadvantage", "we're at a disadvantage",
-                "puts us at a disadvantage", "put us at a disadvantage",
-                "hard for us", "harder for us", "difficult for us",
-                "we may lose", "we could lose", "compared to us",
-                "over techpulse", "than techpulse", "techpulse is weaker",
-                "our disadvantage", "less competitive", "not as competitive",
-            )):
-                score += 65.0
-
-            return score
+            return score, direct
 
         scores: dict[str, float] = defaultdict(float)
         evidence: dict[str, list[str]] = defaultdict(list)
         filtered_products: set[str] = set()
+        direct_relation_seen: dict[str, bool] = defaultdict(bool)
 
         for name in names:
             if any(tp.lower().strip("'") in name.lower() for tp in TECHPULSE_NAMES):
@@ -2780,16 +2836,16 @@ class AegisForgeAgent:
                 trust = block_trust(block)
                 text_search_penalty = 0.0
                 if has_high_trust and (block.startswith("VOICE_TEXT_SEARCH") or block.startswith("EMAIL_TEXT_SEARCH")):
-                    text_search_penalty = 55.0
+                    text_search_penalty = 80.0
 
                 total_matches += len(matches)
                 if wants_most_often:
                     scores[name] += len(matches) * max(5.0, 18.0 + trust / 10.0)
                 else:
-                    scores[name] += len(matches) * max(1.0, 7.0 + trust / 20.0)
+                    scores[name] += len(matches) * max(1.0, 5.0 + trust / 25.0)
 
-                for match in matches[:12]:
-                    window = block[max(0, match.start() - 560):match.end() + 560]
+                for match in matches[:14]:
+                    window = block[max(0, match.start() - 760):match.end() + 760]
                     low = window.lower()
 
                     is_product_like = self._is_product_like_competitor_candidate(
@@ -2798,29 +2854,33 @@ class AegisForgeAgent:
                         product_names=product_names,
                     )
                     if is_product_like:
-                        # Products can remain as context evidence, but they
-                        # should not be answer candidates for competitor-company
-                        # questions.  Penalize strongly instead of immediately
-                        # deleting in case a future DB has a company/product name
-                        # collision and explicit competitor wording.
                         filtered_products.add(name)
-                        product_penalty = 180.0 if wants_disadvantage else 120.0
+                        product_penalty = 230.0 if wants_disadvantage else 140.0
                     else:
                         saw_non_product_context = True
                         product_penalty = 0.0
 
-                    local_score = trust + direct_disadvantage_signal(name, window)
+                    relation_score, direct = direct_relation_signal(name, window)
+                    if direct:
+                        direct_relation_seen[name] = True
+
+                    local_score = trust + relation_score
+
+                    # Generic competitor language helps, but not enough to beat
+                    # a direct disadvantage relation.
                     if any(k in low for k in ("competitor", "competitors", "rival", "provider", "alternative", "market challenge", "vendor", "vendors")):
-                        local_score += 38.0
-                    if any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "budget", "pricing", "proposal", "roadmap")):
-                        local_score += 20.0
+                        local_score += 32.0
+                    if direct and any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "budget", "pricing", "proposal", "roadmap")):
+                        local_score += 26.0
+                    elif not wants_disadvantage and any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "budget", "pricing", "proposal", "roadmap")):
+                        local_score += 14.0
 
                     local_score += _company_quality_score(name, context=window) / 7.0
                     local_score -= text_search_penalty
                     local_score -= product_penalty
 
-                    if has_high_trust and text_search_penalty and local_score < 100.0:
-                        local_score *= 0.12
+                    if has_high_trust and text_search_penalty and local_score < 140.0:
+                        local_score *= 0.08
 
                     scores[name] += local_score
                     best_local = max(best_local, local_score)
@@ -2828,13 +2888,18 @@ class AegisForgeAgent:
                         evidence[name].append(re.sub(r"\s+", " ", window).strip()[:700])
 
             if total_matches:
-                if wants_disadvantage and best_local < 35.0:
-                    scores[name] *= 0.22
+                if wants_disadvantage:
+                    if direct_relation_seen.get(name):
+                        scores[name] += 420.0
+                    else:
+                        # Key v1.10 behavior: for "disadvantage against" tasks,
+                        # a company mentioned generally as a competitor should not
+                        # outrank the company tied to the disadvantage relation.
+                        scores[name] *= 0.06
+                        if best_local < 35.0:
+                            scores[name] *= 0.22
                 scores[name] += min(total_matches, 8) * 2.0
 
-            # If every mention looked product-like, remove the candidate.  This
-            # is the important v1.9 guardrail that separates product/solution
-            # names from external competitors.
             if total_matches and not saw_non_product_context and name in filtered_products:
                 scores[name] = -9999.0
 
@@ -2844,7 +2909,6 @@ class AegisForgeAgent:
             for name, score in ranked
             if score > 0
         ]
-
 
     def _solve_sales_insight(self, query: str, context: str) -> str:
         evidence = self._sales_insight_evidence(query, context)
