@@ -79,8 +79,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_2_artifact_single_emit_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_2_ARTIFACT_SINGLE_EMIT"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_3_unified_purple_db_probe_2026_05_24"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_3_UNIFIED_PURPLE_DB_PROBE"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -867,19 +867,79 @@ class _CRMDatabase:
         return next(iter(rows[0].values()))
 
     def _find_sqlite_path(self) -> Path | None:
+        """Find the Unified Purple/CRMArena SQLite DB inside local or Docker paths.
+
+        Preferred deployment path:
+            /app/data/unified_purple_agent/aegisforge_unified_purple_agent.db
+
+        The Dockerfile sets AEGISFORGE_CRM_DB_PATH directly, but this probe also
+        supports the manifest file and legacy CRMArena filenames so local smoke
+        tests remain easy.
+        """
         explicit = _env_get("AEGISFORGE_CRM_DB_PATH", "CRM_DB_PATH", "DATABASE_PATH", "SQLITE_DB_PATH")
         candidates: list[Path] = []
         if explicit:
             candidates.append(Path(explicit))
 
+        manifest_candidates: list[Path] = []
+        manifest_env = _env_get("AEGISFORGE_UNIFIED_PURPLE_DATA_MANIFEST", "AEGISFORGE_DATA_MANIFEST")
+        if manifest_env:
+            manifest_candidates.append(Path(manifest_env))
+        manifest_candidates.extend(
+            [
+                Path("/app/data/unified_purple_agent/manifest.json"),
+                Path("/home/agent/data/unified_purple_agent/manifest.json"),
+                Path("/workspace/data/unified_purple_agent/manifest.json"),
+                Path.cwd() / "data" / "unified_purple_agent" / "manifest.json",
+                Path("/mnt/data/unified_purple_agent/manifest.json"),
+            ]
+        )
+        for manifest_path in manifest_candidates:
+            try:
+                if not manifest_path.exists() or not manifest_path.is_file():
+                    continue
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace"))
+                profiles = manifest.get("profiles", {}) if isinstance(manifest, Mapping) else {}
+                default_profile = str(manifest.get("default_profile") or "") if isinstance(manifest, Mapping) else ""
+                ordered_profiles = []
+                if default_profile and isinstance(profiles, Mapping) and default_profile in profiles:
+                    ordered_profiles.append(profiles[default_profile])
+                if isinstance(profiles, Mapping):
+                    ordered_profiles.extend(v for k, v in profiles.items() if k != default_profile)
+                for profile in ordered_profiles:
+                    if not isinstance(profile, Mapping):
+                        continue
+                    for key in ("container_path", "path", "relative_path"):
+                        value = str(profile.get(key) or "").strip()
+                        if value:
+                            candidate = Path(value)
+                            candidates.append(candidate if candidate.is_absolute() else (Path.cwd() / candidate))
+                    database_file = str(profile.get("database_file") or "").strip()
+                    if database_file:
+                        candidates.append(manifest_path.parent / database_file)
+            except Exception:
+                continue
+
         roots = [
+            Path("/app/data/unified_purple_agent"),
+            Path("/home/agent/data/unified_purple_agent"),
+            Path("/workspace/data/unified_purple_agent"),
+            Path.cwd() / "data" / "unified_purple_agent",
+            Path("/mnt/data/unified_purple_agent"),
             Path("/home/agent/data"), Path("/home/agent"), Path("/app/data"), Path("/app"),
             Path("/workspace/data"), Path("/workspace"), Path.cwd() / "data", Path.cwd(),
             Path("/mnt/data"),
         ]
         names = (
-            "crmarenapro_b2b_data.db", "crmarenapro_b2c_data.db", "crm.db",
-            "database.db", "salesforce.db", "data.db",
+            "aegisforge_unified_purple_agent.db",
+            "crmarenapro_b2b_data.db",
+            "crmarenapro_b2c_data.db",
+            "crmarena_b2b.db",
+            "crmarena_b2c.db",
+            "crm.db",
+            "database.db",
+            "salesforce.db",
+            "data.db",
         )
         for root in roots:
             for name in names:
@@ -887,9 +947,11 @@ class _CRMDatabase:
         for root in roots:
             try:
                 if root.exists():
-                    candidates.extend(list(root.glob("*.db"))[:20])
-                    candidates.extend(list(root.glob("**/*crm*.db"))[:20])
-                    candidates.extend(list(root.glob("**/*salesforce*.db"))[:20])
+                    candidates.extend(list(root.glob("*.db"))[:40])
+                    candidates.extend(list(root.glob("**/*unified*purple*.db"))[:40])
+                    candidates.extend(list(root.glob("**/*aegisforge*.db"))[:40])
+                    candidates.extend(list(root.glob("**/*crm*.db"))[:40])
+                    candidates.extend(list(root.glob("**/*salesforce*.db"))[:40])
             except Exception:
                 continue
 

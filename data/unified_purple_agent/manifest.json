@@ -1,0 +1,20 @@
+{
+  "name": "AegisForge Unified Purple Agent Data Manifest",
+  "version": "0.1.0",
+  "description": "Local data registry for benchmark-specific assets used by the AegisForge Unified Purple Agent.",
+  "default_profile": "unified_purple_agent",
+  "profiles": {
+    "unified_purple_agent": {
+      "benchmark": "CRMArenaPro",
+      "track": "crmarena",
+      "domain": "Salesforce CRM",
+      "dataset_type": "sqlite",
+      "database_file": "aegisforge_unified_purple_agent.db",
+      "relative_path": "data/unified_purple_agent/aegisforge_unified_purple_agent.db",
+      "container_path": "/app/data/unified_purple_agent/aegisforge_unified_purple_agent.db",
+      "env_var": "AEGISFORGE_CRM_DB_PATH",
+      "status": "active",
+      "notes": "Currently contains CRMArenaPro Salesforce CRM data, but is named for the broader AegisForge Unified Purple Agent data strategy."
+    }
+  }
+}
