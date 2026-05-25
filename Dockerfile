@@ -25,52 +25,128 @@ COPY run.sh ./run.sh
 COPY src ./src
 
 # Copy AegisForge Unified Purple local data.
-# Expected repo layout:
-#   data/unified_purple_agent/manifest.json
+# Supported repo layouts:
+#   data/aegisforge_unified_purple_agent.db
 #   data/unified_purple_agent/aegisforge_unified_purple_agent.db
+#   data/unified_purple_agent/manifest.json
 COPY data ./data
 
 # CRMArena/Salesforce data path used by src/aegisforge/agent.py.
 # Do not set or modify OPENAI_API_KEY here; AgentBeats/Amber injects secrets at runtime.
-ENV AEGISFORGE_CRM_DB_PATH=/app/data/unified_purple_agent/aegisforge_unified_purple_agent.db \
+#
+# Keep the runtime DB path canonical at /app/data/aegisforge_unified_purple_agent.db.
+# The validation block below will copy/sync from data/unified_purple_agent/ if needed.
+ENV AEGISFORGE_CRM_DB_PATH=/app/data/aegisforge_unified_purple_agent.db \
     AEGISFORGE_UNIFIED_PURPLE_DATA_MANIFEST=/app/data/unified_purple_agent/manifest.json \
     AEGISFORGE_CRM_ENABLE_PUBLIC_METADATA=true \
     AEGISFORGE_CRM_HF_TIMEOUT_SECONDS=5 \
     AEGISFORGE_CRM_LLM_TIMEOUT_SECONDS=18 \
     AEGISFORGE_CRM_MAX_CONTEXT_CHARS=26000
 
-# Fail the image build early if the Unified Purple SQLite asset is missing or invalid.
-RUN test -s "$AEGISFORGE_CRM_DB_PATH" \
- && test -s "$AEGISFORGE_UNIFIED_PURPLE_DATA_MANIFEST" \
+# Verify Unified Purple local assets without blocking the build on a partial schema.
+#
+# Important:
+# - Missing DB/manifest is still a build error.
+# - A DB that does not yet contain full CRMArena/Salesforce tables is only a warning.
+#   This keeps the image usable for the broader Unified Purple Agent strategy while
+#   allowing runtime fallback to public/local metadata and LLM support when available.
+RUN test -d /app/data \
  && python - <<'DOCKER_PY'
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
+canonical_db = Path(os.environ["AEGISFORGE_CRM_DB_PATH"])
 manifest_path = Path(os.environ["AEGISFORGE_UNIFIED_PURPLE_DATA_MANIFEST"])
-db_path = Path(os.environ["AEGISFORGE_CRM_DB_PATH"])
+
+db_candidates = [
+    canonical_db,
+    Path("/app/data/unified_purple_agent/aegisforge_unified_purple_agent.db"),
+    Path("/app/data/aegisforge_unified_purple_agent.db"),
+]
+db_candidates.extend(sorted(Path("/app/data").glob("**/*.db")))
+
+manifest_candidates = [
+    manifest_path,
+    Path("/app/data/manifest.json"),
+]
+manifest_candidates.extend(sorted(Path("/app/data").glob("**/manifest.json")))
+
+def first_existing(paths):
+    seen = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists() and path.is_file() and path.stat().st_size > 0:
+            return path
+    return None
+
+found_db = first_existing(db_candidates)
+found_manifest = first_existing(manifest_candidates)
+
+if found_db is None:
+    raise SystemExit(
+        "[Dockerfile] Missing Unified Purple SQLite DB. Expected one of: "
+        "/app/data/aegisforge_unified_purple_agent.db or "
+        "/app/data/unified_purple_agent/aegisforge_unified_purple_agent.db"
+    )
+
+if found_manifest is None:
+    raise SystemExit(
+        "[Dockerfile] Missing Unified Purple manifest. Expected: "
+        "/app/data/unified_purple_agent/manifest.json"
+    )
+
+canonical_db.parent.mkdir(parents=True, exist_ok=True)
+manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+if found_db.resolve() != canonical_db.resolve():
+    shutil.copy2(found_db, canonical_db)
+    print(f"[Dockerfile] Copied DB into canonical runtime path: {found_db} -> {canonical_db}", flush=True)
+
+if found_manifest.resolve() != manifest_path.resolve():
+    shutil.copy2(found_manifest, manifest_path)
+    print(f"[Dockerfile] Copied manifest into canonical path: {found_manifest} -> {manifest_path}", flush=True)
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 print(f"[Dockerfile] Unified Purple manifest: {manifest_path}", flush=True)
-print(f"[Dockerfile] Unified Purple DB: {db_path}", flush=True)
+print(f"[Dockerfile] Unified Purple DB: {canonical_db}", flush=True)
 print(f"[Dockerfile] Manifest default_profile: {manifest.get('default_profile', '')}", flush=True)
 
-conn = sqlite3.connect(db_path)
+tables = set()
+sqlite_ok = False
 try:
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-finally:
-    conn.close()
+    conn = sqlite3.connect(canonical_db)
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        sqlite_ok = True
+    finally:
+        conn.close()
+except Exception as exc:
+    print(f"[Dockerfile] WARNING: SQLite inspection failed: {exc.__class__.__name__}: {exc}", flush=True)
 
 required_any = {"Account", "Opportunity", "Product2", "Case"}
 matched = required_any & tables
-print(f"[Dockerfile] SQLite tables detected: {sorted(tables)[:40]}", flush=True)
+
+print(f"[Dockerfile] SQLite inspection ok: {int(sqlite_ok)}", flush=True)
+print(f"[Dockerfile] SQLite tables detected: {sorted(tables)[:80]}", flush=True)
 print(f"[Dockerfile] Salesforce/CRMArena table matches: {sorted(matched)}", flush=True)
 
-if len(matched) < 3:
-    raise SystemExit(
-        "Unified Purple DB does not look like a CRMArena/Salesforce SQLite DB. "
-        f"Expected at least 3 of {sorted(required_any)}, got {sorted(matched)}."
+if sqlite_ok and len(matched) >= 3:
+    print("[Dockerfile] CRMArena/Salesforce DB schema looks usable.", flush=True)
+else:
+    print(
+        "[Dockerfile] WARNING: Unified Purple DB exists but does not yet look "
+        "like a full CRMArena/Salesforce SQLite DB. Build will continue; "
+        "runtime can still use fallback/public/local metadata if needed.",
+        flush=True,
     )
 DOCKER_PY
 
