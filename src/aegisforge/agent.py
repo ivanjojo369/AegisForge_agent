@@ -6,7 +6,7 @@ This agent.py is a clean CRMArena-only rebuild.  It intentionally does not
 include OfficeQA, Build-What-I-Mean, browser helpers, Sprint4/NCP routing, or
 answer-key tables.
 
-v1.8 keeps the actual Entropic CRMArena Green protocol as the primary runtime
+v1.9 keeps the actual Entropic CRMArena Green protocol as the primary runtime
 and adds a DB-grounded Salesforce evidence layer.  The purple agent receives a
 JSON task_context message containing prompt, required_context, persona, config,
 and entropy metadata; then it grounds the answer in the bundled SQLite CRM DB
@@ -30,6 +30,9 @@ Merged design:
 - v1.8 competitor ranking: opportunity-bound communication evidence is trusted
   above global text-search evidence, and disadvantage questions rank competitors
   by local transcript context instead of global frequency.
+- v1.9 product-aware competitor filtering: Product2-style solution names are
+  excluded from competitor answers so sales_insight_mining returns rival
+  companies rather than TechPulse products/modules.
 
 Fair-play boundary:
 The code may use benchmark-provided task metadata, local Salesforce records, and
@@ -96,8 +99,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_8_opportunity_bound_competitor_rank_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_8_OPPORTUNITY_BOUND_COMPETITOR_RANK"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_9_product_aware_competitor_rank_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_9_PRODUCT_AWARE_COMPETITOR_RANK"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -204,6 +207,29 @@ POSITIVE_COMPETITOR_KEYWORDS = (
     "attractive", "appealing", "strong", "robust", "better", "advantage",
     "user-friendly", "user friendly", "ease", "enhancements", "on our radar",
     "buzz", "compelling", "promising", "impressed", "liked", "keen",
+)
+
+
+PRODUCT_ENTITY_HINTS = (
+    "suite", "platform", "module", "tool", "app", "application", "product",
+    "solution", "solutions suite", "service", "services suite", "software",
+    "automation", "analytics", "creator", "master", "pro", "max", "plus",
+    "cloud", "ai ", "ml ", "iot ", "api", "workflow", "monitoring",
+    "sim", "pcb", "circuit", "secure", "security suite",
+)
+
+PRODUCT_CONTEXT_HINTS = (
+    "product", "products", "solution", "solutions", "suite", "platform",
+    "module", "tool", "offering", "offerings", "features", "capabilities",
+    "implementation", "integrate", "integrates", "configuration",
+    "customizable", "real-time", "monitoring", "automation", "analytics",
+    "designed to", "provides", "offers", "our ", "techpulse",
+)
+
+COMPANY_LEGAL_HINTS = (
+    "inc", "llc", "ltd", "corp", "corporation", "company", "co",
+    "group", "partners", "enterprises", "industries", "solutions",
+    "systems", "technologies", "technology", "consulting", "logistics",
 )
 
 
@@ -515,6 +541,11 @@ def _normalize_key(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{3,}", text.lower()) if t not in _GENERIC_STOPWORDS}
+
+
+def _entity_key(text: str) -> str:
+    """Normalize a company/product candidate for safe equality checks."""
+    return re.sub(r"[^a-z0-9]+", " ", _coerce_text(text).lower()).strip()
 
 
 def _contains_any(text: str, needles: Iterable[str]) -> bool:
@@ -2552,15 +2583,102 @@ class AegisForgeAgent:
             if score > 0
         ]
 
-    def _rank_sales_competitors(self, raw_text: str, *, query: str, account_names: Iterable[str]) -> list[dict[str, Any]]:
-        """Rank competitor names from sales communications.
 
-        v1.8 is deliberately opportunity-bound.  Direct communications joined
-        through Opportunity/Lead/Account are trusted above bounded global text
-        search rows.  This prevents a broad query like "Which competitors are we
-        at a disadvantage against..." from selecting a strong competitor that
-        appears in another opportunity's transcript.
+    def _known_product_names(self, *, limit: int = 5000) -> list[str]:
+        """Return CRM product names that should not be treated as competitors."""
+        names: list[str] = []
+        seen: set[str] = set()
+        if not self.db.available or not self.db.has_table("Product2"):
+            return names
+        for row in self.db.query("SELECT Name FROM Product2 WHERE Name IS NOT NULL LIMIT ?", (limit,)):
+            name = re.sub(r"\s+", " ", str(row.get("Name") or "")).strip(" ,.;:-")
+            key = _entity_key(name)
+            if name and key and key not in seen:
+                seen.add(key)
+                names.append(name)
+        return names
+
+    def _is_product_like_competitor_candidate(
+        self,
+        name: str,
+        *,
+        window: str = "",
+        product_names: Iterable[str] = (),
+    ) -> bool:
+        """Detect product/solution names that look like company candidates.
+
+        CRMArena transcripts often mention TechPulse products with company-like
+        title case names (for example "... Automation").  For sales insight
+        questions asking about competitors, returning a Product2/solution name is
+        worse than returning INSUFFICIENT_INFORMATION, so this filter is
+        intentionally strict for exact DB product matches and conservative for
+        heuristic product wording.
         """
+        candidate = re.sub(r"\s+", " ", _coerce_text(name)).strip(" ,.;:-")
+        if not candidate:
+            return True
+        key = _entity_key(candidate)
+        if not key:
+            return True
+
+        # Dynamic DB grounding: exact/substantial Product2 names are products,
+        # not competitor companies.  This handles names such as DesignWave
+        # Automation without hardcoding task answers.
+        for product_name in product_names:
+            pkey = _entity_key(product_name)
+            if not pkey or len(pkey) < 4:
+                continue
+            if key == pkey:
+                return True
+            if len(key) >= 8 and (key in pkey or pkey in key):
+                # Avoid blocking a real company merely because it contains a
+                # generic token; require multi-token overlap.
+                key_tokens = set(key.split())
+                p_tokens = set(pkey.split())
+                if len(key_tokens & p_tokens) >= min(2, len(key_tokens)):
+                    return True
+
+        low_name = candidate.lower()
+        low_window = _coerce_text(window).lower()
+        tokens = key.split()
+        has_legal_hint = any(re.search(rf"\b{re.escape(hint)}\b", low_name) for hint in COMPANY_LEGAL_HINTS)
+
+        # One/two/three-token title-case names ending in product-ish words are
+        # usually modules/products in this benchmark unless they have a company
+        # suffix such as Inc/LLC/Solutions/Technologies.
+        productish_tail = any(
+            low_name.endswith(" " + hint) or low_name == hint
+            for hint in ("automation", "analytics", "creator", "master", "pro", "suite", "platform", "cloud", "max")
+        )
+        if productish_tail and not has_legal_hint and len(tokens) <= 4:
+            return True
+
+        # Product context immediately around the candidate makes product-like
+        # names very likely to be solution names, not rivals.  Do not block
+        # strong legal/company suffixes like "Adaptive Design Solutions" here.
+        product_context_hits = sum(1 for hint in PRODUCT_CONTEXT_HINTS if hint in low_window)
+        competitor_context = any(hint in low_window for hint in COMPETITOR_SIGNAL_KEYWORDS)
+        if product_context_hits >= 3 and productish_tail and not competitor_context:
+            return True
+
+        # Names containing multiple product markers without legal/company hints
+        # are products.  This catches generated product names that are not in DB
+        # during local smoke tests.
+        product_marker_hits = sum(1 for hint in PRODUCT_ENTITY_HINTS if hint.strip() and hint in low_name)
+        if product_marker_hits >= 2 and not has_legal_hint:
+            return True
+
+        return False
+
+    def _rank_sales_competitors(self, raw_text: str, *, query: str, account_names: Iterable[str]) -> list[dict[str, Any]]:
+        """Rank competitor company names from sales communications.
+
+        v1.9 adds product-aware filtering on top of v1.8's opportunity-bound
+        ranking.  It filters CRM Product2/solution names before ranking so a
+        module such as "DesignWave Automation" cannot outrank an actual rival
+        such as a company ending in "Solutions", "Inc", or "Technologies".
+        """
+        product_names = self._known_product_names()
         names = _extract_company_candidates(raw_text, query=query, account_names=account_names)
         if not names:
             return []
@@ -2580,70 +2698,68 @@ class AegisForgeAgent:
         def block_trust(block: str) -> float:
             head = block[:260]
             if head.startswith("VOICE_OPPORTUNITY"):
-                return 95.0
+                return 100.0
             if head.startswith("EMAIL_OPPORTUNITY"):
-                return 88.0
+                return 90.0
             if head.startswith("VOICE_LEAD"):
-                return 60.0
+                return 62.0
             if head.startswith("EMAIL_LEAD"):
-                return 56.0
+                return 58.0
             if head.startswith("LIVECHAT_ACCOUNT"):
                 return 38.0
             if head.startswith("VOICE_TEXT_SEARCH") or head.startswith("EMAIL_TEXT_SEARCH"):
-                return -35.0 if has_high_trust else 22.0
+                return -45.0 if has_high_trust else 20.0
             return 5.0
 
         def direct_disadvantage_signal(name: str, window: str) -> float:
-            """Score when the local wording says TechPulse is disadvantaged."""
+            """Score when local wording says TechPulse is disadvantaged."""
             escaped = re.escape(name)
             low = window.lower()
             score = 0.0
 
-            # Direct grammar around the candidate: "against X", "X has an
-            # advantage", "X is more attractive", etc.
             direct_patterns = [
-                rf"(?:disadvantage|behind|losing|weaker|hard(?:er)? to compete|difficult to compete|compete against|against)\W{{0,120}}{escaped}",
-                rf"{escaped}\W{{0,140}}(?:advantage|strong|robust|better|more attractive|more appealing|preferred|shortlist|radar|compelling|promising)",
-                rf"{escaped}\W{{0,140}}(?:pricing|roadmap|customization|integration|scalability|security|compliance|automation|workflow)",
-                rf"(?:advantage|strong|robust|better|attractive|appealing|preferred|shortlist|radar|compelling|promising)\W{{0,140}}{escaped}",
+                rf"(?:disadvantage|behind|losing|weaker|hard(?:er)? to compete|difficult to compete|compete against|against)\W{{0,140}}{escaped}",
+                rf"{escaped}\W{{0,160}}(?:advantage|strong|robust|better|more attractive|more appealing|preferred|shortlist|radar|compelling|promising)",
+                rf"{escaped}\W{{0,160}}(?:pricing|roadmap|customization|integration|scalability|security|compliance|automation|workflow|flexibility|flexible)",
+                rf"(?:advantage|strong|robust|better|attractive|appealing|preferred|shortlist|radar|compelling|promising|flexible|customization)\W{{0,160}}{escaped}",
+                rf"(?:competitor|competitors|rival|alternative|vendor|provider)\W{{0,160}}{escaped}",
+                rf"{escaped}\W{{0,160}}(?:competitor|competitors|rival|alternative|vendor|provider)",
             ]
             for pattern in direct_patterns:
                 if re.search(pattern, window, flags=re.I | re.S):
-                    score += 75.0
+                    score += 85.0
 
             if any(k in low for k in COMPETITOR_SIGNAL_KEYWORDS):
-                score += 28.0
+                score += 34.0
 
             positive_hits = sum(1 for k in POSITIVE_COMPETITOR_KEYWORDS if k in low)
             negative_hits = sum(1 for k in NEGATIVE_COMPETITOR_KEYWORDS if k in low)
             if wants_disadvantage:
-                # For "at a disadvantage against", positive facts about the
-                # competitor are stronger than negative facts about it.
-                score += positive_hits * 22.0
+                score += positive_hits * 24.0
                 score += min(negative_hits, 2) * 4.0
                 if positive_hits == 0 and negative_hits >= 2:
-                    score -= 18.0
+                    score -= 20.0
             elif wants_positive:
-                score += positive_hits * 20.0
+                score += positive_hits * 22.0
             else:
                 score += positive_hits * 10.0
                 score += negative_hits * 8.0
 
-            # Phrases about TechPulse/us being less competitive make the named
-            # rival especially likely to be the answer.
             if any(k in low for k in (
                 "we are at a disadvantage", "we're at a disadvantage",
-                "puts us at a disadvantage", "hard for us", "harder for us",
-                "difficult for us", "we may lose", "we could lose",
-                "compared to us", "over techpulse", "than techpulse",
-                "techpulse is weaker", "our disadvantage",
+                "puts us at a disadvantage", "put us at a disadvantage",
+                "hard for us", "harder for us", "difficult for us",
+                "we may lose", "we could lose", "compared to us",
+                "over techpulse", "than techpulse", "techpulse is weaker",
+                "our disadvantage", "less competitive", "not as competitive",
             )):
-                score += 55.0
+                score += 65.0
 
             return score
 
         scores: dict[str, float] = defaultdict(float)
         evidence: dict[str, list[str]] = defaultdict(list)
+        filtered_products: set[str] = set()
 
         for name in names:
             if any(tp.lower().strip("'") in name.lower() for tp in TECHPULSE_NAMES):
@@ -2654,6 +2770,7 @@ class AegisForgeAgent:
             name_re = re.compile(re.escape(name), re.I)
             total_matches = 0
             best_local = 0.0
+            saw_non_product_context = False
 
             for block in blocks:
                 matches = list(name_re.finditer(block))
@@ -2661,49 +2778,65 @@ class AegisForgeAgent:
                     continue
 
                 trust = block_trust(block)
-                # If we already have high-trust opportunity/lead evidence, do
-                # not let unrelated global text-search rows dominate. They can
-                # still contribute weak tie-break evidence, but only if their
-                # local wording is very strong.
                 text_search_penalty = 0.0
                 if has_high_trust and (block.startswith("VOICE_TEXT_SEARCH") or block.startswith("EMAIL_TEXT_SEARCH")):
-                    text_search_penalty = 45.0
+                    text_search_penalty = 55.0
 
                 total_matches += len(matches)
                 if wants_most_often:
-                    scores[name] += len(matches) * max(6.0, 20.0 + trust / 10.0)
+                    scores[name] += len(matches) * max(5.0, 18.0 + trust / 10.0)
                 else:
-                    scores[name] += len(matches) * max(2.0, 8.0 + trust / 20.0)
+                    scores[name] += len(matches) * max(1.0, 7.0 + trust / 20.0)
 
                 for match in matches[:12]:
-                    window = block[max(0, match.start() - 520):match.end() + 520]
+                    window = block[max(0, match.start() - 560):match.end() + 560]
                     low = window.lower()
 
+                    is_product_like = self._is_product_like_competitor_candidate(
+                        name,
+                        window=window,
+                        product_names=product_names,
+                    )
+                    if is_product_like:
+                        # Products can remain as context evidence, but they
+                        # should not be answer candidates for competitor-company
+                        # questions.  Penalize strongly instead of immediately
+                        # deleting in case a future DB has a company/product name
+                        # collision and explicit competitor wording.
+                        filtered_products.add(name)
+                        product_penalty = 180.0 if wants_disadvantage else 120.0
+                    else:
+                        saw_non_product_context = True
+                        product_penalty = 0.0
+
                     local_score = trust + direct_disadvantage_signal(name, window)
-                    if any(k in low for k in ("competitor", "competitors", "rival", "provider", "alternative", "market challenge")):
-                        local_score += 30.0
-                    if any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "vendor", "budget", "pricing", "proposal")):
-                        local_score += 18.0
+                    if any(k in low for k in ("competitor", "competitors", "rival", "provider", "alternative", "market challenge", "vendor", "vendors")):
+                        local_score += 38.0
+                    if any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "budget", "pricing", "proposal", "roadmap")):
+                        local_score += 20.0
 
-                    local_score += _company_quality_score(name, context=window) / 8.0
+                    local_score += _company_quality_score(name, context=window) / 7.0
                     local_score -= text_search_penalty
+                    local_score -= product_penalty
 
-                    # Very weak text-search-only mentions should not become the
-                    # top answer when direct opportunity communications exist.
-                    if has_high_trust and text_search_penalty and local_score < 90.0:
-                        local_score *= 0.18
+                    if has_high_trust and text_search_penalty and local_score < 100.0:
+                        local_score *= 0.12
 
                     scores[name] += local_score
                     best_local = max(best_local, local_score)
                     if local_score > 20 and len(evidence[name]) < 4:
-                        evidence[name].append(re.sub(r"\s+", " ", window).strip()[:650])
+                        evidence[name].append(re.sub(r"\s+", " ", window).strip()[:700])
 
-            # Require more than a name-quality hit.  This blocks company names
-            # that appear in unrelated context without competitor wording.
             if total_matches:
-                if wants_disadvantage and best_local < 30.0:
-                    scores[name] *= 0.25
+                if wants_disadvantage and best_local < 35.0:
+                    scores[name] *= 0.22
                 scores[name] += min(total_matches, 8) * 2.0
+
+            # If every mention looked product-like, remove the candidate.  This
+            # is the important v1.9 guardrail that separates product/solution
+            # names from external competitors.
+            if total_matches and not saw_non_product_context and name in filtered_products:
+                scores[name] = -9999.0
 
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0].lower()))
         return [
@@ -2711,6 +2844,7 @@ class AegisForgeAgent:
             for name, score in ranked
             if score > 0
         ]
+
 
     def _solve_sales_insight(self, query: str, context: str) -> str:
         evidence = self._sales_insight_evidence(query, context)
