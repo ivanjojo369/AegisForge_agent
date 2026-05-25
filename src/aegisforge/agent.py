@@ -79,8 +79,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_3_unified_purple_db_probe_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_3_UNIFIED_PURPLE_DB_PROBE"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_4_direct_unified_db_path_2026_05_24"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_4_DIRECT_UNIFIED_DB_PATH"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -870,7 +870,10 @@ class _CRMDatabase:
         """Find the Unified Purple/CRMArena SQLite DB inside local or Docker paths.
 
         Preferred deployment path:
-            /app/data/unified_purple_agent/aegisforge_unified_purple_agent.db
+            /app/data/aegisforge_unified_purple_agent.db
+
+        Manifest deployment path:
+            /app/data/unified_purple_agent/manifest.json
 
         The Dockerfile sets AEGISFORGE_CRM_DB_PATH directly, but this probe also
         supports the manifest file and legacy CRMArena filenames so local smoke
@@ -880,6 +883,19 @@ class _CRMDatabase:
         candidates: list[Path] = []
         if explicit:
             candidates.append(Path(explicit))
+
+        # Direct Unified Purple DB paths.  The manifest lives under
+        # data/unified_purple_agent/, but the SQLite file itself is stored
+        # directly under data/.
+        candidates.extend(
+            [
+                Path("/app/data/aegisforge_unified_purple_agent.db"),
+                Path("/home/agent/data/aegisforge_unified_purple_agent.db"),
+                Path("/workspace/data/aegisforge_unified_purple_agent.db"),
+                Path.cwd() / "data" / "aegisforge_unified_purple_agent.db",
+                Path("/mnt/data/aegisforge_unified_purple_agent.db"),
+            ]
+        )
 
         manifest_candidates: list[Path] = []
         manifest_env = _env_get("AEGISFORGE_UNIFIED_PURPLE_DATA_MANIFEST", "AEGISFORGE_DATA_MANIFEST")
@@ -916,19 +932,28 @@ class _CRMDatabase:
                             candidates.append(candidate if candidate.is_absolute() else (Path.cwd() / candidate))
                     database_file = str(profile.get("database_file") or "").strip()
                     if database_file:
+                        # Support both layouts:
+                        #   data/aegisforge_unified_purple_agent.db
+                        #   data/unified_purple_agent/aegisforge_unified_purple_agent.db
                         candidates.append(manifest_path.parent / database_file)
+                        candidates.append(manifest_path.parent.parent / database_file)
+                        candidates.append(Path.cwd() / "data" / database_file)
             except Exception:
                 continue
 
         roots = [
+            Path("/app/data"),
+            Path("/home/agent/data"),
+            Path("/workspace/data"),
+            Path.cwd() / "data",
+            Path("/mnt/data"),
             Path("/app/data/unified_purple_agent"),
             Path("/home/agent/data/unified_purple_agent"),
             Path("/workspace/data/unified_purple_agent"),
             Path.cwd() / "data" / "unified_purple_agent",
             Path("/mnt/data/unified_purple_agent"),
-            Path("/home/agent/data"), Path("/home/agent"), Path("/app/data"), Path("/app"),
-            Path("/workspace/data"), Path("/workspace"), Path.cwd() / "data", Path.cwd(),
-            Path("/mnt/data"),
+            Path("/home/agent"), Path("/app"),
+            Path("/workspace"), Path.cwd(),
         ]
         names = (
             "aegisforge_unified_purple_agent.db",

@@ -10,11 +10,11 @@
       "domain": "Salesforce CRM",
       "dataset_type": "sqlite",
       "database_file": "aegisforge_unified_purple_agent.db",
-      "relative_path": "data/unified_purple_agent/aegisforge_unified_purple_agent.db",
-      "container_path": "/app/data/unified_purple_agent/aegisforge_unified_purple_agent.db",
+      "relative_path": "data/aegisforge_unified_purple_agent.db",
+      "container_path": "/app/data/aegisforge_unified_purple_agent.db",
       "env_var": "AEGISFORGE_CRM_DB_PATH",
       "status": "active",
-      "notes": "Currently contains CRMArenaPro Salesforce CRM data, but is named for the broader AegisForge Unified Purple Agent data strategy."
+      "notes": "Manifest is stored under data/unified_purple_agent/ while the SQLite DB is stored directly under data/."
     }
   }
 }
