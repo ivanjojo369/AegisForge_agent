@@ -6,14 +6,15 @@ This agent.py is a clean CRMArena-only rebuild.  It intentionally does not
 include OfficeQA, Build-What-I-Mean, browser helpers, Sprint4/NCP routing, or
 answer-key tables.
 
-v1.6 keeps the actual Entropic CRMArena Green protocol as the primary runtime:
-the purple agent receives a JSON task_context message containing prompt,
-required_context, persona, config, and entropy metadata.  SQLite is still
-supported when a valid CRM DB exists, but the primary path is now
-task_context parsing, evidence auditing, conservative deterministic solving,
-and compact plain-answer emission.  When the green payload lacks real CRM
-records, the agent marks the task as insufficient evidence instead of
-hallucinating answers from dates/domain notes.
+v1.7 keeps the actual Entropic CRMArena Green protocol as the primary runtime
+and adds a DB-grounded Salesforce evidence layer.  The purple agent receives a
+JSON task_context message containing prompt, required_context, persona, config,
+and entropy metadata; then it grounds the answer in the bundled SQLite CRM DB
+when available.  The primary path is now task_context-first, artifact-only,
+read-only SQL evidence, conservative deterministic solving, and compact
+plain-answer emission.  When the green payload lacks enough records and no DB
+evidence is available, the agent marks the task as insufficient evidence
+instead of hallucinating answers from dates/domain notes.
 
 Merged design:
 - from agent_crmarena_clean_base_v2: small A2A entrypoint, direct plain answers,
@@ -22,6 +23,10 @@ Merged design:
   candidate gating, Amber/OpenAI secret support, and compact diagnostics.
 - from agent(145): SQLite/database-first CRM solving style and deterministic
   handlers for Salesforce objects before any LLM fallback.
+- v1.7 DB-grounding: safe read-only SQLite adapter for
+  data/aegisforge_unified_purple_agent.db, schema introspection, Opportunity/
+  Account/Lead transcript mining, best-region SQL solving, lead qualification,
+  and activity prioritization.
 
 Fair-play boundary:
 The code may use benchmark-provided task metadata, local Salesforce records, and
@@ -88,8 +93,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_evidence_first_v1_6_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_6_EVIDENCE_FIRST"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_7_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_7_DB_GROUNDED"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -140,6 +145,9 @@ COMPANY_SUFFIXES = (
     "Networks", "Software", "Services", "Labs", "Dynamics", "Medical",
     "Health", "Retail", "Finance", "Foods", "Works", "Ventures", "Insights",
     "Innovations", "Energy", "Electronics", "Automation",
+    "Biotech", "Collaboration", "Initiatives", "Hub", "Africa",
+    "Institute", "Institutes", "University", "Healthcare", "Pharma",
+    "Manufacturing", "Construction", "Aerospace", "Robotics", "Security",
 )
 
 NOISE_COMPANY_PHRASES = {
@@ -165,6 +173,35 @@ _GENERIC_STOPWORDS = {
     "about", "against", "have", "has", "had", "are", "was", "were", "our",
     "their", "them", "those", "these", "more", "most", "least", "than",
 }
+
+SALES_INTENT_KEYWORDS = (
+    "purchase", "buy", "units", "interested", "budget", "timeline", "decision",
+    "contract", "quote", "proposal", "pricing", "demo", "implementation",
+    "integration", "security", "efficiency", "monitoring", "workflow",
+    "automation", "urgent", "priority", "scale", "scalability", "compliance",
+)
+
+EXECUTIVE_TITLE_KEYWORDS = (
+    "chief", "cto", "cio", "ceo", "cfo", "vp", "vice president", "director",
+    "head", "lead", "principal", "senior", "manager", "officer", "analyst",
+)
+
+COMPETITOR_SIGNAL_KEYWORDS = (
+    "competitor", "competitors", "rival", "alternative", "provider",
+    "market challenge", "other solution", "shortlist", "evaluating", "compare",
+    "comparison", "against", "preferred", "vendor", "vendors",
+)
+
+NEGATIVE_COMPETITOR_KEYWORDS = (
+    "lacking", "lack of", "weak", "shortcoming", "concern", "cumbersome",
+    "delays", "hidden costs", "limited", "dealbreaker", "struggling",
+)
+
+POSITIVE_COMPETITOR_KEYWORDS = (
+    "attractive", "appealing", "strong", "robust", "better", "advantage",
+    "user-friendly", "user friendly", "ease", "enhancements", "on our radar",
+    "buzz", "compelling", "promising", "impressed", "liked", "keen",
+)
 
 
 _CRMARENA_PUBLIC_TASK_CACHE: dict[str, list[dict[str, Any]]] | None = None
@@ -477,6 +514,52 @@ def _tokens(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{3,}", text.lower()) if t not in _GENERIC_STOPWORDS}
 
 
+def _contains_any(text: str, needles: Iterable[str]) -> bool:
+    lowered = _coerce_text(text).lower()
+    return any(str(needle).lower() in lowered for needle in needles if str(needle).strip())
+
+
+def _query_like_terms(text: str, *, max_terms: int = 10) -> list[str]:
+    """Return safe, information-rich LIKE terms for small SQLite scans."""
+    blocked = set(_GENERIC_STOPWORDS) | {
+        "techpulse", "solutions", "salesforce", "crmarena", "company",
+        "customer", "account", "opportunity", "lead", "case", "product",
+        "which", "what", "return", "only", "month", "state", "region",
+    }
+    out: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", _coerce_text(text)):
+        low = token.lower().strip("_-.")
+        if low in blocked or len(low) < 4 or low.isdigit():
+            continue
+        if low not in out:
+            out.append(low)
+        if len(out) >= max_terms:
+            break
+    return out
+
+
+def _sales_intent_score(text: str) -> int:
+    lowered = _coerce_text(text).lower()
+    score = 0
+    for word in SALES_INTENT_KEYWORDS:
+        if word in lowered:
+            score += 2
+    for word in ("purchase", "quote", "proposal", "budget", "pricing", "demo", "contract"):
+        if word in lowered:
+            score += 3
+    return score
+
+
+def _seniority_score(text: str) -> int:
+    lowered = _coerce_text(text).lower()
+    return sum(2 for word in EXECUTIVE_TITLE_KEYWORDS if word in lowered)
+
+
+def _is_yes_no_query(text: str) -> bool:
+    lowered = _normalize_key(text)
+    return lowered.startswith(("is ", "are ", "should ", "would ", "can ", "does ", "do "))
+
+
 def _is_generic_runtime_probe(query: str) -> bool:
     """Detect tiny health/generic probes used by core adapter tests.
 
@@ -492,7 +575,7 @@ def _is_generic_runtime_probe(query: str) -> bool:
 
 def _salesforce_ids(text: str) -> list[str]:
     # Common Salesforce object prefixes seen in CRMArena.
-    pattern = r"\b(?:001|003|006|00Q|00q|500|01t|0Q0|802|a05|ka0)[A-Za-z0-9]{8,18}\b"
+    pattern = r"\b(?:001|003|006|00Q|00q|00T|00t|00U|00u|500|01t|0Q0|802|a05|ka0)[A-Za-z0-9]{8,18}\b"
     seen: set[str] = set()
     out: list[str] = []
     for match in re.finditer(pattern, text):
@@ -546,7 +629,9 @@ def _answer_shape(query: str, metadata: Mapping[str, Any], category: str = "") -
         return "month"
     if category == "sales_insight_mining" or "competitor" in lowered or "competitors" in lowered or "rival" in lowered:
         return "company"
-    if "id" in lowered and re.search(r"\b(?:case|lead|quote|opportunity|product|article|user|agent)\b", lowered):
+    if category in {"lead_qualification", "activity_priority", "case_routing", "lead_routing"} and ("which" in lowered or " id" in lowered or "record" in lowered):
+        return "id"
+    if "id" in lowered and re.search(r"\b(?:case|lead|quote|opportunity|product|article|user|agent|task|activity)\b", lowered):
         return "id"
     return "text"
 
@@ -776,6 +861,7 @@ def _extract_company_candidates(text: str, *, query: str = "", account_names: It
     org_pattern = rf"\b([A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){{0,6}}\s+(?:{suffixes}))\b"
     for match in re.finditer(org_pattern, blob):
         candidate = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;:-")
+        candidate = re.split(r"(?<=[A-Za-z0-9])\.\s+(?=[A-Z])", candidate)[0].strip(" ,.;:-")
         if candidate.lower() in account_lowers:
             continue
         window = blob[max(0, match.start() - 300):match.end() + 300]
@@ -796,6 +882,7 @@ def _extract_company_candidates(text: str, *, query: str = "", account_names: It
     )
     for match in re.finditer(key_pattern, blob):
         candidate = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;:-")
+        candidate = re.split(r"(?<=[A-Za-z0-9])\.\s+(?=[A-Z])", candidate)[0].strip(" ,.;:-")
         # Trim after obvious prose separators.
         candidate = re.split(r"\s+(?:and|but|while|because|with|for)\s+", candidate)[0].strip(" ,.;:-")
         if candidate.lower() in account_lowers:
@@ -1006,7 +1093,7 @@ def _answer_is_valid(answer: str, shape: str) -> bool:
     if shape == "company":
         return _company_quality_score(answer) > 0
     if shape == "id":
-        return bool(re.fullmatch(r"(?:001|003|006|00Q|00q|500|01t|0Q0|802|a05|ka0)[A-Za-z0-9]{8,18}", answer))
+        return bool(re.fullmatch(r"(?:001|003|006|00Q|00q|00T|00t|00U|00u|500|01t|0Q0|802|a05|ka0)[A-Za-z0-9]{8,18}", answer))
     return bool(answer)
 
 
@@ -1052,6 +1139,8 @@ class _CRMDatabase:
         self.conn: sqlite3.Connection | None = None
         self.path: str = ""
         self.error: str = ""
+        self._tables: set[str] | None = None
+        self._columns: dict[str, set[str]] = {}
 
         if _external_get_db is not None:
             try:
@@ -1065,6 +1154,10 @@ class _CRMDatabase:
                 try:
                     self.conn = sqlite3.connect(path)
                     self.conn.row_factory = sqlite3.Row
+                    try:
+                        self.conn.execute("PRAGMA query_only = ON")
+                    except Exception:
+                        pass
                     self.path = str(path)
                 except Exception as exc:
                     self.error = f"sqlite:{exc.__class__.__name__}"
@@ -1077,6 +1170,9 @@ class _CRMDatabase:
         sql = sql.strip().rstrip(";")
         params_tuple = tuple(params)
         if not sql:
+            return []
+        if not re.match(r"(?is)^\s*(?:select|with|pragma)\b", sql):
+            self.error = "query:blocked_non_readonly"
             return []
         try:
             if self.conn is not None:
@@ -1094,6 +1190,27 @@ class _CRMDatabase:
             self.error = f"query:{exc.__class__.__name__}"
             return []
         return []
+
+    def tables(self) -> set[str]:
+        if self._tables is not None:
+            return self._tables
+        rows = self.query("SELECT name FROM sqlite_master WHERE type='table'")
+        self._tables = {str(row.get("name") or "") for row in rows if row.get("name")}
+        return self._tables
+
+    def has_table(self, name: str) -> bool:
+        return name in self.tables()
+
+    def columns(self, table: str) -> set[str]:
+        if table in self._columns:
+            return self._columns[table]
+        rows = self.query(f'PRAGMA table_info("{table}")')
+        self._columns[table] = {str(row.get("name") or row.get("Name") or "") for row in rows}
+        return self._columns[table]
+
+    def has_columns(self, table: str, *columns: str) -> bool:
+        existing = self.columns(table)
+        return all(column in existing for column in columns)
 
     def scalar(self, sql: str, params: Iterable[Any] = ()) -> Any:
         rows = self.query(sql, params)
@@ -1208,10 +1325,16 @@ class _CRMDatabase:
             try:
                 if root.exists():
                     candidates.extend(list(root.glob("*.db"))[:40])
-                    candidates.extend(list(root.glob("**/*unified*purple*.db"))[:40])
-                    candidates.extend(list(root.glob("**/*aegisforge*.db"))[:40])
-                    candidates.extend(list(root.glob("**/*crm*.db"))[:40])
-                    candidates.extend(list(root.glob("**/*salesforce*.db"))[:40])
+                    # Avoid accidentally walking the entire container if cwd is
+                    # `/` during a local smoke import.  The real deployment puts
+                    # the DB under a data directory, so recursive probes are only
+                    # needed for data-ish roots.
+                    parts = {part.lower() for part in root.parts}
+                    if "data" in parts or "unified_purple_agent" in parts:
+                        candidates.extend(list(root.glob("**/*unified*purple*.db"))[:40])
+                        candidates.extend(list(root.glob("**/*aegisforge*.db"))[:40])
+                        candidates.extend(list(root.glob("**/*crm*.db"))[:40])
+                        candidates.extend(list(root.glob("**/*salesforce*.db"))[:40])
             except Exception:
                 continue
 
@@ -1715,6 +1838,14 @@ class AegisForgeAgent:
                 evidence = self._best_region_evidence(query, context)
                 if evidence:
                     pieces.append("DB_REGION_EVIDENCE:\n" + json.dumps(evidence, ensure_ascii=False, default=str))
+            elif category == "lead_qualification":
+                evidence = self._lead_qualification_evidence(query, context)
+                if evidence:
+                    pieces.append("DB_LEAD_QUALIFICATION_EVIDENCE:\n" + json.dumps(evidence, ensure_ascii=False, default=str))
+            elif category == "activity_priority":
+                evidence = self._activity_priority_evidence(query, context)
+                if evidence:
+                    pieces.append("DB_ACTIVITY_PRIORITY_EVIDENCE:\n" + json.dumps(evidence, ensure_ascii=False, default=str))
         except Exception as exc:
             pieces.append(f"DB_EVIDENCE_ERROR: {exc.__class__.__name__}")
         return "\n\n".join(piece for piece in pieces if piece)[: self.max_context_chars]
@@ -1747,6 +1878,12 @@ class AegisForgeAgent:
                 return months[0], "context_month_strong"
 
         if shape == "company":
+            # For sales insight mining, company-shaped answers are often
+            # competitors or prospects hidden in transcripts.  If a DB is
+            # available, let the DB-grounded sales miner run before a generic
+            # context company candidate can accidentally return the customer.
+            if category == "sales_insight_mining" and self.db.available:
+                return "", ""
             names = _extract_company_candidates(combined, query=query)
             if names:
                 return names[0], "context_company"
@@ -1774,6 +1911,18 @@ class AegisForgeAgent:
                 answer = self._solve_sales_insight(query, context)
                 if answer:
                     return answer, "db_sales_insight"
+            if category == "best_region_identification":
+                answer = self._solve_best_region(query, context)
+                if answer:
+                    return answer, "db_best_region"
+            if category == "lead_qualification":
+                answer = self._solve_lead_qualification(query, context, shape)
+                if answer:
+                    return answer, "db_lead_qualification"
+            if category == "activity_priority":
+                answer = self._solve_activity_priority(query, context, shape)
+                if answer:
+                    return answer, "db_activity_priority"
             if category == "quote_approval":
                 answer = self._solve_quote_approval(query, context)
                 if answer:
@@ -1845,6 +1994,39 @@ class AegisForgeAgent:
             if value not in ids:
                 ids.append(value)
         return ids
+
+    def _lead_ids_from_text(self, text: str) -> list[str]:
+        ids = []
+        for value in re.findall(r"\b00[Qq][A-Za-z0-9]{8,18}\b", text):
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _account_ids_from_text(self, text: str) -> list[str]:
+        ids = []
+        for value in re.findall(r"\b001[A-Za-z0-9]{8,18}\b", text):
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _case_ids_from_text(self, text: str) -> list[str]:
+        ids = []
+        for value in re.findall(r"\b500[A-Za-z0-9]{8,18}\b", text):
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _task_ids_from_text(self, text: str) -> list[str]:
+        ids = []
+        # Salesforce Task ids vary by org; CRMArena rows commonly use text ids.
+        for value in re.findall(r"(?i)\b(?:task[_ -]?id|taskid|activity[_ -]?id)\s*[:=]\s*['\"]?([A-Za-z0-9]{10,24})", text):
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _known_account_names(self, *, limit: int = 500) -> list[str]:
+        rows = self.db.query("SELECT Name FROM Account WHERE Name IS NOT NULL LIMIT ?", (limit,))
+        return [str(row.get("Name") or "") for row in rows if row.get("Name")]
 
     def _monthly_trend_evidence(self, query: str, context: str) -> dict[str, Any]:
         product_ids = self._product_ids_from_text(query + "\n" + context)
@@ -1930,66 +2112,433 @@ class AegisForgeAgent:
             return months[0]
         return ""
 
-    def _sales_insight_evidence(self, query: str, context: str) -> dict[str, Any]:
-        opp_ids = self._opportunity_ids_from_text(query + "\n" + context)
-        if not opp_ids:
-            return {}
+    def _account_rows_from_text(self, text: str, *, limit: int = 12) -> list[dict[str, Any]]:
+        account_ids = self._account_ids_from_text(text)
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for account_id in account_ids:
+            for row in self.db.query(
+                "SELECT Id, Name, Industry, ShippingState, NumberOfEmployees FROM Account WHERE Id = ?",
+                (account_id,),
+            ):
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
 
-        all_texts: list[str] = []
-        account_names: list[str] = []
-        rows_by_opp: dict[str, dict[str, Any]] = {}
+        # Name-based anchors. Prefer exact Account names already in the DB so
+        # suffix-free synthetic companies such as NexGen Biotech still match.
+        lowered = text.lower()
+        for row in self.db.query("SELECT Id, Name, Industry, ShippingState, NumberOfEmployees FROM Account"):
+            name = str(row.get("Name") or "").strip()
+            if not name or _is_noise_company(name):
+                continue
+            if name.lower() in lowered:
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        return rows
+        return rows[:limit]
 
-        for opp_id in opp_ids[:4]:
-            opp_rows = self.db.query(
+    def _lead_rows_from_text(self, text: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        lead_ids = self._lead_ids_from_text(text)
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for lead_id in lead_ids:
+            for row in self.db.query(
                 """
-                SELECT o.Id, o.Name, o.AccountId, a.Name AS AccountName
+                SELECT Id, FirstName, LastName, Company, Status, Title, CreatedDate,
+                       ConvertedDate, IsConverted, ConvertedAccountId, ConvertedContactId, OwnerId
+                FROM Lead
+                WHERE Id = ?
+                """,
+                (lead_id,),
+            ):
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+
+        lowered = text.lower()
+        for row in self.db.query(
+            """
+            SELECT Id, FirstName, LastName, Company, Status, Title, CreatedDate,
+                   ConvertedDate, IsConverted, ConvertedAccountId, ConvertedContactId, OwnerId
+            FROM Lead
+            """
+        ):
+            key = str(row.get("Id") or "")
+            company = str(row.get("Company") or "").strip()
+            full_name = f"{row.get('FirstName') or ''} {row.get('LastName') or ''}".strip()
+            if key in seen:
+                continue
+            if (company and company.lower() in lowered) or (full_name and full_name.lower() in lowered):
+                seen.add(key)
+                rows.append(row)
+                if len(rows) >= limit:
+                    return rows
+        return rows[:limit]
+
+    def _opportunity_rows_from_text(self, text: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        opp_ids = self._opportunity_ids_from_text(text)
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for opp_id in opp_ids:
+            for row in self.db.query(
+                """
+                SELECT o.Id, o.Name, o.AccountId, o.ContactId, o.OwnerId, o.Probability,
+                       o.Amount, o.StageName, o.CreatedDate, o.CloseDate,
+                       a.Name AS AccountName, a.Industry, a.ShippingState
                 FROM Opportunity o
                 LEFT JOIN Account a ON a.Id = o.AccountId
                 WHERE o.Id = ?
                 """,
                 (opp_id,),
-            )
-            if opp_rows:
-                rows_by_opp[opp_id] = opp_rows[0]
-                if opp_rows[0].get("AccountName"):
-                    account_names.append(str(opp_rows[0].get("AccountName")))
+            ):
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
 
-            transcripts = self.db.query(
+        account_rows = self._account_rows_from_text(text)
+        for account in account_rows:
+            account_id = str(account.get("Id") or "")
+            if not account_id:
+                continue
+            for row in self.db.query(
+                """
+                SELECT o.Id, o.Name, o.AccountId, o.ContactId, o.OwnerId, o.Probability,
+                       o.Amount, o.StageName, o.CreatedDate, o.CloseDate,
+                       a.Name AS AccountName, a.Industry, a.ShippingState
+                FROM Opportunity o
+                LEFT JOIN Account a ON a.Id = o.AccountId
+                WHERE o.AccountId = ?
+                ORDER BY COALESCE(o.Amount, 0) DESC, o.CreatedDate DESC
+                LIMIT 12
+                """,
+                (account_id,),
+            ):
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        return rows
+
+        lowered = text.lower()
+        if len(rows) < limit:
+            for row in self.db.query(
+                """
+                SELECT o.Id, o.Name, o.AccountId, o.ContactId, o.OwnerId, o.Probability,
+                       o.Amount, o.StageName, o.CreatedDate, o.CloseDate,
+                       a.Name AS AccountName, a.Industry, a.ShippingState
+                FROM Opportunity o
+                LEFT JOIN Account a ON a.Id = o.AccountId
+                ORDER BY COALESCE(o.Amount, 0) DESC, o.CreatedDate DESC
+                LIMIT 800
+                """
+            ):
+                name = str(row.get("Name") or "").strip()
+                account_name = str(row.get("AccountName") or "").strip()
+                key = str(row.get("Id") or "")
+                if key in seen:
+                    continue
+                if (name and name.lower() in lowered) or (account_name and account_name.lower() in lowered):
+                    seen.add(key)
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        return rows
+        return rows[:limit]
+
+    def _sales_transcripts_for_anchors(
+        self,
+        query: str,
+        context: str,
+        opp_rows: list[dict[str, Any]],
+        lead_rows: list[dict[str, Any]],
+        account_rows: list[dict[str, Any]],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Collect sales communications for Account/Opportunity/Lead anchors.
+
+        The benchmark DB stores high-value evidence in VoiceCallTranscript__c.
+        Some rows point to Opportunity, some to Lead, and some can only be found
+        by text search.  This function keeps all reads bounded and read-only.
+        """
+        texts: list[str] = []
+        snippets: list[dict[str, Any]] = []
+        seen_text_ids: set[str] = set()
+
+        def add(kind: str, row: Mapping[str, Any], body_key: str, meta: Mapping[str, Any] | None = None) -> None:
+            body = str(row.get(body_key) or "")
+            if not body:
+                return
+            rid = str(row.get("Id") or f"{kind}:{len(seen_text_ids)}")
+            if rid in seen_text_ids:
+                return
+            seen_text_ids.add(rid)
+            meta = dict(meta or {})
+            created = row.get("CreatedDate") or row.get("MessageDate") or row.get("EndTime__c") or ""
+            label_bits = [kind, rid, str(created)]
+            for key in ("AccountName", "Company", "LeadCompany", "OpportunityName", "StageName", "Amount"):
+                value = meta.get(key) or row.get(key)
+                if value not in (None, ""):
+                    label_bits.append(f"{key}={value}")
+            text_block = " ".join(label_bits) + ":\n" + body
+            texts.append(text_block)
+            snippets.append({
+                "kind": kind,
+                "id": rid,
+                "created": str(created),
+                "score_hint": _sales_intent_score(body),
+                "preview": re.sub(r"\s+", " ", body).strip()[:420],
+                **{k: v for k, v in meta.items() if v not in (None, "")},
+            })
+
+        opp_ids = [str(row.get("Id") or "") for row in opp_rows if row.get("Id")]
+        lead_ids = [str(row.get("Id") or "") for row in lead_rows if row.get("Id")]
+        account_ids = [str(row.get("Id") or "") for row in account_rows if row.get("Id")]
+
+        for opp in opp_rows[:20]:
+            opp_id = str(opp.get("Id") or "")
+            if not opp_id:
+                continue
+            meta = {
+                "OpportunityId": opp_id,
+                "OpportunityName": opp.get("Name"),
+                "AccountName": opp.get("AccountName"),
+                "StageName": opp.get("StageName"),
+                "Amount": opp.get("Amount"),
+            }
+            for row in self.db.query(
                 """
                 SELECT Id, Body__c, CreatedDate, EndTime__c
                 FROM VoiceCallTranscript__c
                 WHERE OpportunityId__c = ?
-                ORDER BY CreatedDate
+                ORDER BY CreatedDate DESC
+                LIMIT 30
                 """,
                 (opp_id,),
-            )
-            emails = self.db.query(
+            ):
+                add("VOICE_OPPORTUNITY", row, "Body__c", meta)
+            for row in self.db.query(
                 """
-                SELECT Id, Subject, TextBody, MessageDate
+                SELECT Id, Subject, TextBody, MessageDate, RelatedToId, ParentId
                 FROM EmailMessage
-                WHERE RelatedToId = ?
-                ORDER BY MessageDate
+                WHERE RelatedToId = ? OR ParentId = ?
+                ORDER BY MessageDate DESC
+                LIMIT 30
                 """,
-                (opp_id,),
-            )
-            for row in transcripts:
-                body = str(row.get("Body__c") or "")
-                if body:
-                    all_texts.append(f"VOICE_TRANSCRIPT {row.get('Id')} {row.get('CreatedDate')}:\n{body}")
-            for row in emails:
-                body = str(row.get("TextBody") or "")
-                if body:
-                    all_texts.append(f"EMAIL {row.get('Id')} {row.get('MessageDate')} {row.get('Subject')}:\n{body}")
+                (opp_id, opp_id),
+            ):
+                add("EMAIL_OPPORTUNITY", row, "TextBody", meta)
 
+        for lead in lead_rows[:20]:
+            lead_id = str(lead.get("Id") or "")
+            if not lead_id:
+                continue
+            meta = {
+                "LeadId": lead_id,
+                "LeadCompany": lead.get("Company"),
+                "Company": lead.get("Company"),
+                "Status": lead.get("Status"),
+                "Title": lead.get("Title"),
+            }
+            for row in self.db.query(
+                """
+                SELECT Id, Body__c, CreatedDate, EndTime__c
+                FROM VoiceCallTranscript__c
+                WHERE LeadId__c = ?
+                ORDER BY CreatedDate DESC
+                LIMIT 30
+                """,
+                (lead_id,),
+            ):
+                add("VOICE_LEAD", row, "Body__c", meta)
+
+        for account_id in account_ids[:12]:
+            for row in self.db.query(
+                """
+                SELECT Id, CaseId, AccountId, ContactId, Body, EndTime
+                FROM LiveChatTranscript
+                WHERE AccountId = ?
+                ORDER BY EndTime DESC
+                LIMIT 20
+                """,
+                (account_id,),
+            ):
+                add("LIVECHAT_ACCOUNT", row, "Body", {"AccountId": account_id})
+
+        # Text search fallback. It is intentionally bounded.  It catches cases
+        # where the prompt names a prospect/company but the green payload does
+        # not include Salesforce ids.
+        like_terms = _query_like_terms(query + "\n" + context, max_terms=12)
+        company_terms = []
+        for name in _extract_company_candidates(query + "\n" + context, query=query):
+            if not _is_noise_company(name):
+                company_terms.append(name.lower())
+        like_terms.extend([term for term in company_terms if term not in like_terms][:8])
+
+        for term in like_terms[:16]:
+            pattern = f"%{term.lower()}%"
+            for row in self.db.query(
+                """
+                SELECT v.Id, v.Body__c, v.CreatedDate, v.EndTime__c,
+                       l.Company AS LeadCompany, l.Status, l.Title,
+                       o.Name AS OpportunityName, o.StageName, o.Amount,
+                       a.Name AS AccountName, a.Industry, a.ShippingState
+                FROM VoiceCallTranscript__c v
+                LEFT JOIN Lead l ON l.Id = v.LeadId__c
+                LEFT JOIN Opportunity o ON o.Id = v.OpportunityId__c
+                LEFT JOIN Account a ON a.Id = o.AccountId
+                WHERE lower(v.Body__c) LIKE ?
+                ORDER BY v.CreatedDate DESC
+                LIMIT 20
+                """,
+                (pattern,),
+            ):
+                add("VOICE_TEXT_SEARCH", row, "Body__c", row)
+
+        return texts, snippets
+
+    def _sales_insight_evidence(self, query: str, context: str) -> dict[str, Any]:
+        text = query + "\n" + context
+        opp_rows = self._opportunity_rows_from_text(text)
+        lead_rows = self._lead_rows_from_text(text)
+        account_rows = self._account_rows_from_text(text)
+
+        # If a Lead has been converted, pull the converted account/opportunities
+        # as additional evidence, but never treat conversion metadata as an
+        # answer key.
+        converted_account_ids = [str(row.get("ConvertedAccountId") or "") for row in lead_rows if row.get("ConvertedAccountId")]
+        seen_account_ids = {str(row.get("Id") or "") for row in account_rows}
+        for account_id in converted_account_ids[:8]:
+            if not account_id or account_id in seen_account_ids:
+                continue
+            rows = self.db.query(
+                "SELECT Id, Name, Industry, ShippingState, NumberOfEmployees FROM Account WHERE Id = ?",
+                (account_id,),
+            )
+            for row in rows:
+                seen_account_ids.add(str(row.get("Id") or ""))
+                account_rows.append(row)
+
+        # Add opportunities for any account anchors discovered through leads.
+        known_opp_ids = {str(row.get("Id") or "") for row in opp_rows}
+        for account in account_rows[:12]:
+            account_id = str(account.get("Id") or "")
+            if not account_id:
+                continue
+            for row in self.db.query(
+                """
+                SELECT o.Id, o.Name, o.AccountId, o.ContactId, o.OwnerId, o.Probability,
+                       o.Amount, o.StageName, o.CreatedDate, o.CloseDate,
+                       a.Name AS AccountName, a.Industry, a.ShippingState
+                FROM Opportunity o
+                LEFT JOIN Account a ON a.Id = o.AccountId
+                WHERE o.AccountId = ?
+                ORDER BY COALESCE(o.Amount, 0) DESC, o.CreatedDate DESC
+                LIMIT 8
+                """,
+                (account_id,),
+            ):
+                oid = str(row.get("Id") or "")
+                if oid and oid not in known_opp_ids:
+                    known_opp_ids.add(oid)
+                    opp_rows.append(row)
+
+        all_texts, snippets = self._sales_transcripts_for_anchors(query, context, opp_rows, lead_rows, account_rows)
         raw_text = "\n\n---\n\n".join(all_texts)
-        candidates = self._rank_sales_competitors(raw_text, query=query, account_names=account_names)
+
+        excluded_customers = []
+        for row in account_rows:
+            if row.get("Name"):
+                excluded_customers.append(str(row.get("Name")))
+        for row in opp_rows:
+            if row.get("AccountName"):
+                excluded_customers.append(str(row.get("AccountName")))
+        for row in lead_rows:
+            if row.get("Company"):
+                excluded_customers.append(str(row.get("Company")))
+
+        candidates = self._rank_sales_competitors(raw_text, query=query, account_names=excluded_customers)
+
+        # Query may ask for the customer/prospect rather than a competitor.  In
+        # that case rank CRM-owned Account/Lead entities by communication and
+        # intent signals instead of excluding them.
+        target_candidates = self._rank_sales_targets(raw_text, account_rows, lead_rows, opp_rows, query=query)
+
         return {
-            "opportunity_ids": opp_ids,
-            "opportunity_records": rows_by_opp,
-            "account_names": account_names,
+            "opportunity_ids": [row.get("Id") for row in opp_rows if row.get("Id")],
+            "lead_ids": [row.get("Id") for row in lead_rows if row.get("Id")],
+            "account_ids": [row.get("Id") for row in account_rows if row.get("Id")],
+            "opportunity_records": opp_rows[:12],
+            "lead_records": lead_rows[:12],
+            "account_records": account_rows[:12],
             "candidate_competitors": candidates[:10],
-            "raw_text": raw_text[:16000],
+            "candidate_targets": target_candidates[:10],
+            "communication_count": len(snippets),
+            "communication_snippets": snippets[:12],
+            "raw_text": raw_text[:24000],
         }
+
+    def _rank_sales_targets(
+        self,
+        raw_text: str,
+        account_rows: Iterable[Mapping[str, Any]],
+        lead_rows: Iterable[Mapping[str, Any]],
+        opp_rows: Iterable[Mapping[str, Any]],
+        *,
+        query: str,
+    ) -> list[dict[str, Any]]:
+        scores: dict[str, float] = defaultdict(float)
+        evidence: dict[str, list[str]] = defaultdict(list)
+        raw_lower = raw_text.lower()
+        query_tokens = _tokens(query)
+
+        def add_name(name: str, base: float, row_text: str) -> None:
+            name = re.sub(r"\s+", " ", _coerce_text(name)).strip(" ,.;:-")
+            if not name or _is_noise_company(name):
+                return
+            low_name = name.lower()
+            occurrences = raw_lower.count(low_name)
+            score = base + occurrences * 12 + _sales_intent_score(row_text) + _seniority_score(row_text)
+            score += len(query_tokens & _tokens(name)) * 20
+            if occurrences == 0 and low_name not in query.lower():
+                score -= 10
+            if score <= 0:
+                return
+            scores[name] += score
+            if raw_text and len(evidence[name]) < 3:
+                idx = raw_lower.find(low_name)
+                if idx >= 0:
+                    window = raw_text[max(0, idx - 260):idx + len(name) + 360]
+                    evidence[name].append(re.sub(r"\s+", " ", window).strip()[:500])
+
+        for row in account_rows:
+            add_name(str(row.get("Name") or ""), 20.0, _stringify(row, limit=1200))
+        for row in lead_rows:
+            status = str(row.get("Status") or "")
+            base = 16.0
+            if status.lower() in {"qualified", "converted"}:
+                base += 20
+            elif status.lower() == "working":
+                base += 10
+            add_name(str(row.get("Company") or ""), base, _stringify(row, limit=1200))
+        for row in opp_rows:
+            stage = str(row.get("StageName") or "")
+            base = 18.0 + min(_safe_float(row.get("Amount")) / 1000.0, 20.0)
+            if stage.lower() in {"negotiation", "proposal", "closed won"}:
+                base += 20
+            add_name(str(row.get("AccountName") or ""), base, _stringify(row, limit=1200))
+
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+        return [
+            {"name": name, "score": round(score, 3), "evidence": evidence.get(name, [])}
+            for name, score in ranked
+            if score > 0
+        ]
 
     def _rank_sales_competitors(self, raw_text: str, *, query: str, account_names: Iterable[str]) -> list[dict[str, Any]]:
         names = _extract_company_candidates(raw_text, query=query, account_names=account_names)
@@ -2054,8 +2603,19 @@ class AegisForgeAgent:
     def _solve_sales_insight(self, query: str, context: str) -> str:
         evidence = self._sales_insight_evidence(query, context)
         candidates = evidence.get("candidate_competitors") or []
+        targets = evidence.get("candidate_targets") or []
+        q_lower = query.lower()
+        wants_competitor = any(word in q_lower for word in COMPETITOR_SIGNAL_KEYWORDS) or any(
+            word in q_lower for word in ("disadvantage", "rival", "alternative", "provider", "vendor")
+        )
+        if wants_competitor and candidates:
+            return str(candidates[0].get("name") or "")
+        if not wants_competitor and targets:
+            return str(targets[0].get("name") or "")
         if candidates:
             return str(candidates[0].get("name") or "")
+        if targets:
+            return str(targets[0].get("name") or "")
 
         # Context-only fallback from public/local task record.
         names = _extract_company_candidates(context, query=query)
@@ -2089,6 +2649,250 @@ class AegisForgeAgent:
             (start, end),
         )
         return {"start": start, "end": end, "states_by_fastest_closure": rows}
+
+    def _solve_best_region(self, query: str, context: str) -> str:
+        evidence = self._best_region_evidence(query, context)
+        rows = evidence.get("states_by_fastest_closure") or []
+        for row in rows:
+            state = str(row.get("state") or "").upper()
+            if state in STATE_CODES:
+                return state
+
+        # Fallback to all closed cases if the relative date window was too
+        # narrow or hidden by the Green runtime.
+        rows = self.db.query(
+            """
+            SELECT a.ShippingState AS state,
+                   COUNT(*) AS case_count,
+                   AVG((julianday(substr(c.ClosedDate,1,19)) - julianday(substr(c.CreatedDate,1,19))) * 24.0 * 60.0) AS avg_minutes
+            FROM "Case" c
+            JOIN Account a ON a.Id = c.AccountId
+            WHERE c.ClosedDate IS NOT NULL
+              AND a.ShippingState IS NOT NULL
+            GROUP BY a.ShippingState
+            HAVING case_count > 0
+            ORDER BY avg_minutes ASC, case_count DESC
+            LIMIT 5
+            """
+        )
+        for row in rows:
+            state = str(row.get("state") or "").upper()
+            if state in STATE_CODES:
+                return state
+        states = _state_candidates(context)
+        return states[0] if states else ""
+
+    def _lead_qualification_evidence(self, query: str, context: str) -> dict[str, Any]:
+        text = query + "\n" + context
+        lead_rows = self._lead_rows_from_text(text)
+        seen = {str(row.get("Id") or "") for row in lead_rows}
+        terms = _query_like_terms(text, max_terms=12)
+
+        for term in terms[:10]:
+            pattern = f"%{term.lower()}%"
+            for row in self.db.query(
+                """
+                SELECT DISTINCT l.Id, l.FirstName, l.LastName, l.Company, l.Status, l.Title,
+                       l.CreatedDate, l.ConvertedDate, l.IsConverted,
+                       l.ConvertedAccountId, l.ConvertedContactId, l.OwnerId
+                FROM Lead l
+                LEFT JOIN VoiceCallTranscript__c v ON v.LeadId__c = l.Id
+                WHERE lower(COALESCE(l.Company,'')) LIKE ?
+                   OR lower(COALESCE(l.FirstName,'') || ' ' || COALESCE(l.LastName,'')) LIKE ?
+                   OR lower(COALESCE(l.Title,'')) LIKE ?
+                   OR lower(COALESCE(v.Body__c,'')) LIKE ?
+                LIMIT 40
+                """,
+                (pattern, pattern, pattern, pattern),
+            ):
+                key = str(row.get("Id") or "")
+                if key and key not in seen:
+                    seen.add(key)
+                    lead_rows.append(row)
+
+        ranked: list[dict[str, Any]] = []
+        for lead in lead_rows[:80]:
+            lead_id = str(lead.get("Id") or "")
+            if not lead_id:
+                continue
+            transcripts = self.db.query(
+                """
+                SELECT Id, CreatedDate, Body__c
+                FROM VoiceCallTranscript__c
+                WHERE LeadId__c = ?
+                ORDER BY CreatedDate DESC
+                LIMIT 8
+                """,
+                (lead_id,),
+            )
+            transcript_text = "\n".join(str(row.get("Body__c") or "") for row in transcripts)
+            status = str(lead.get("Status") or "")
+            title = str(lead.get("Title") or "")
+            company = str(lead.get("Company") or "")
+            score = 0.0
+            if status.lower() == "converted":
+                score += 55
+            elif status.lower() == "qualified":
+                score += 45
+            elif status.lower() == "working":
+                score += 28
+            elif status.lower() == "new":
+                score += 12
+            if str(lead.get("IsConverted") or "").strip() in {"1", "true", "True"}:
+                score += 25
+            score += _sales_intent_score(transcript_text) * 2
+            score += _seniority_score(title) * 2
+            score += len(_tokens(query) & _tokens(company + " " + title + " " + transcript_text[:1000])) * 5
+            if _contains_any(transcript_text, ("purchase", "proposal", "budget", "pricing", "demo", "quote", "implementation")):
+                score += 25
+            ranked.append({
+                "id": lead_id,
+                "company": company,
+                "name": f"{lead.get('FirstName') or ''} {lead.get('LastName') or ''}".strip(),
+                "status": status,
+                "title": title,
+                "is_converted": lead.get("IsConverted"),
+                "owner_id": lead.get("OwnerId"),
+                "score": round(score, 3),
+                "transcript_count": len(transcripts),
+                "evidence": re.sub(r"\s+", " ", transcript_text).strip()[:700],
+            })
+        ranked.sort(key=lambda r: (-_safe_float(r.get("score")), str(r.get("company") or "").lower(), str(r.get("id") or "")))
+        return {"ranked_leads": ranked[:20], "terms": terms[:12]}
+
+    def _solve_lead_qualification(self, query: str, context: str, shape: str) -> str:
+        evidence = self._lead_qualification_evidence(query, context)
+        leads = evidence.get("ranked_leads") or []
+        if not leads:
+            return ""
+        top = leads[0]
+        q_lower = query.lower()
+        if shape == "id" or "which lead" in q_lower or "lead id" in q_lower or "record id" in q_lower:
+            return str(top.get("id") or "")
+        status = str(top.get("status") or "")
+        score = _safe_float(top.get("score"))
+        if "status" in q_lower:
+            return status or "None"
+        if _is_yes_no_query(query):
+            return "Yes" if score >= 45 or status.lower() in {"qualified", "converted"} else "No"
+        if "company" in q_lower or "account" in q_lower:
+            return str(top.get("company") or "")
+        if status.lower() in {"qualified", "converted"} or score >= 45:
+            return "Qualified"
+        if score >= 25:
+            return "Working"
+        return "Not Qualified"
+
+    def _activity_priority_evidence(self, query: str, context: str) -> dict[str, Any]:
+        text = query + "\n" + context
+        task_ids = self._task_ids_from_text(text)
+        clauses = []
+        params: list[Any] = []
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            clauses.append(f"t.Id IN ({placeholders})")
+            params.extend(task_ids)
+
+        for sid in self._salesforce_ids_for_activity(text)[:8]:
+            clauses.append("(t.WhatId = ? OR t.WhoId = ?)")
+            params.extend([sid, sid])
+
+        terms = _query_like_terms(text, max_terms=8)
+        for term in terms[:5]:
+            clauses.append("(lower(COALESCE(t.Subject,'')) LIKE ? OR lower(COALESCE(t.Description,'')) LIKE ?)")
+            params.extend([f"%{term.lower()}%", f"%{term.lower()}%"])
+
+        where = " OR ".join(clauses) if clauses else "1=1"
+        rows = self.db.query(
+            f"""
+            SELECT t.Id, t.WhatId, t.WhoId, t.OwnerId, t.Priority, t.Status,
+                   t.ActivityDate, t.Subject, t.Description,
+                   o.Amount AS OpportunityAmount, o.StageName AS OpportunityStage,
+                   c.Priority AS CasePriority, c.Status AS CaseStatus
+            FROM "Task" t
+            LEFT JOIN Opportunity o ON o.Id = t.WhatId
+            LEFT JOIN "Case" c ON c.Id = t.WhatId
+            WHERE ({where})
+            ORDER BY t.ActivityDate ASC
+            LIMIT 120
+            """,
+            tuple(params),
+        )
+        if not rows:
+            rows = self.db.query(
+                """
+                SELECT t.Id, t.WhatId, t.WhoId, t.OwnerId, t.Priority, t.Status,
+                       t.ActivityDate, t.Subject, t.Description,
+                       o.Amount AS OpportunityAmount, o.StageName AS OpportunityStage,
+                       c.Priority AS CasePriority, c.Status AS CaseStatus
+                FROM "Task" t
+                LEFT JOIN Opportunity o ON o.Id = t.WhatId
+                LEFT JOIN "Case" c ON c.Id = t.WhatId
+                WHERE lower(COALESCE(t.Status,'')) NOT IN ('completed','closed')
+                ORDER BY t.ActivityDate ASC
+                LIMIT 120
+                """
+            )
+
+        max_date = self.db.scalar('SELECT MAX(substr(ActivityDate,1,10)) FROM "Task"') or ""
+        today = _parse_crm_date(_parse_today(text, fallback=str(max_date or ""))) or _parse_crm_date(str(max_date or "")) or date.today()
+        ranked: list[dict[str, Any]] = []
+        for row in rows:
+            status = str(row.get("Status") or "")
+            priority = str(row.get("Priority") or "")
+            body = f"{row.get('Subject') or ''} {row.get('Description') or ''}"
+            score = 0.0
+            if status.lower() not in {"completed", "closed", "done"}:
+                score += 20
+            if priority.lower() == "high":
+                score += 35
+            elif priority.lower() == "normal":
+                score += 15
+            elif priority.lower() == "low":
+                score += 3
+            due = _parse_crm_date(row.get("ActivityDate"))
+            if due:
+                delta = (due - today).days
+                if delta < 0:
+                    score += 30
+                elif delta <= 2:
+                    score += 25
+                elif delta <= 7:
+                    score += 12
+            amount = _safe_float(row.get("OpportunityAmount"))
+            score += min(amount / 1000.0, 25.0)
+            stage = str(row.get("OpportunityStage") or "").lower()
+            if stage in {"negotiation", "proposal", "closed won"}:
+                score += 15
+            case_priority = str(row.get("CasePriority") or "").lower()
+            if case_priority == "high":
+                score += 18
+            score += _sales_intent_score(body)
+            score += len(_tokens(query) & _tokens(body)) * 3
+            ranked.append({**row, "score": round(score, 3)})
+        ranked.sort(key=lambda r: (-_safe_float(r.get("score")), str(r.get("ActivityDate") or "9999"), str(r.get("Id") or "")))
+        return {"ranked_tasks": ranked[:20], "today": today.isoformat()}
+
+    def _salesforce_ids_for_activity(self, text: str) -> list[str]:
+        ids = []
+        for value in re.findall(r"\b(?:001|003|006|00[Qq]|500)[A-Za-z0-9]{8,18}\b", text):
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _solve_activity_priority(self, query: str, context: str, shape: str) -> str:
+        evidence = self._activity_priority_evidence(query, context)
+        tasks = evidence.get("ranked_tasks") or []
+        if not tasks:
+            return ""
+        top = tasks[0]
+        q_lower = query.lower()
+        if shape == "id" or "which task" in q_lower or "which activity" in q_lower or "task id" in q_lower or "activity id" in q_lower:
+            return str(top.get("Id") or "")
+        if "priority" in q_lower and "which" not in q_lower:
+            return str(top.get("Priority") or "")
+        subject = str(top.get("Subject") or "")
+        return subject or str(top.get("Id") or "")
 
     def _solve_quote_approval(self, query: str, context: str) -> str:
         quote_ids = self._quote_ids_from_text(query + "\n" + context)
