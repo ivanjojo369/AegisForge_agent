@@ -6,7 +6,7 @@ This agent.py is a clean CRMArena-only rebuild.  It intentionally does not
 include OfficeQA, Build-What-I-Mean, browser helpers, Sprint4/NCP routing, or
 answer-key tables.
 
-v1.7 keeps the actual Entropic CRMArena Green protocol as the primary runtime
+v1.8 keeps the actual Entropic CRMArena Green protocol as the primary runtime
 and adds a DB-grounded Salesforce evidence layer.  The purple agent receives a
 JSON task_context message containing prompt, required_context, persona, config,
 and entropy metadata; then it grounds the answer in the bundled SQLite CRM DB
@@ -27,6 +27,9 @@ Merged design:
   data/aegisforge_unified_purple_agent.db, schema introspection, Opportunity/
   Account/Lead transcript mining, best-region SQL solving, lead qualification,
   and activity prioritization.
+- v1.8 competitor ranking: opportunity-bound communication evidence is trusted
+  above global text-search evidence, and disadvantage questions rank competitors
+  by local transcript context instead of global frequency.
 
 Fair-play boundary:
 The code may use benchmark-provided task metadata, local Salesforce records, and
@@ -93,8 +96,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_7_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_7_DB_GROUNDED"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_8_opportunity_bound_competitor_rank_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_8_OPPORTUNITY_BOUND_COMPETITOR_RANK"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -2370,9 +2373,18 @@ class AegisForgeAgent:
             ):
                 add("LIVECHAT_ACCOUNT", row, "Body", {"AccountId": account_id})
 
+        # Opportunity/lead/account anchored evidence is higher trust than global
+        # body text search.  In task 456-style prompts ("this opportunity"), the
+        # green payload carries Salesforce ids; once those direct communications
+        # are found, global LIKE searches can introduce unrelated competitor
+        # mentions from other opportunities.  Return direct evidence first and
+        # only fall back to text search when anchors produced no communication.
+        if (opp_ids or lead_ids or account_ids) and texts:
+            return texts, snippets
+
         # Text search fallback. It is intentionally bounded.  It catches cases
         # where the prompt names a prospect/company but the green payload does
-        # not include Salesforce ids.
+        # not include Salesforce ids or direct communications.
         like_terms = _query_like_terms(query + "\n" + context, max_terms=12)
         company_terms = []
         for name in _extract_company_candidates(query + "\n" + context, query=query):
@@ -2541,14 +2553,94 @@ class AegisForgeAgent:
         ]
 
     def _rank_sales_competitors(self, raw_text: str, *, query: str, account_names: Iterable[str]) -> list[dict[str, Any]]:
+        """Rank competitor names from sales communications.
+
+        v1.8 is deliberately opportunity-bound.  Direct communications joined
+        through Opportunity/Lead/Account are trusted above bounded global text
+        search rows.  This prevents a broad query like "Which competitors are we
+        at a disadvantage against..." from selecting a strong competitor that
+        appears in another opportunity's transcript.
+        """
         names = _extract_company_candidates(raw_text, query=query, account_names=account_names)
         if not names:
             return []
 
         q_lower = query.lower()
-        wants_disadvantage = any(w in q_lower for w in ("disadvantage", "challenge", "threat", "risk", "against"))
+        wants_disadvantage = any(w in q_lower for w in ("disadvantage", "challenge", "threat", "risk", "against", "weaker"))
         wants_positive = "positive sentiment" in q_lower or "positive" in q_lower
         wants_most_often = "most often" in q_lower or "came up most" in q_lower or "mentioned most" in q_lower
+
+        blocks = [block.strip() for block in re.split(r"\n\s*---\s*\n", raw_text) if block.strip()]
+        if not blocks and raw_text.strip():
+            blocks = [raw_text.strip()]
+
+        high_trust_prefixes = ("VOICE_OPPORTUNITY", "EMAIL_OPPORTUNITY", "VOICE_LEAD", "EMAIL_LEAD", "LIVECHAT_ACCOUNT")
+        has_high_trust = any(block.startswith(high_trust_prefixes) for block in blocks)
+
+        def block_trust(block: str) -> float:
+            head = block[:260]
+            if head.startswith("VOICE_OPPORTUNITY"):
+                return 95.0
+            if head.startswith("EMAIL_OPPORTUNITY"):
+                return 88.0
+            if head.startswith("VOICE_LEAD"):
+                return 60.0
+            if head.startswith("EMAIL_LEAD"):
+                return 56.0
+            if head.startswith("LIVECHAT_ACCOUNT"):
+                return 38.0
+            if head.startswith("VOICE_TEXT_SEARCH") or head.startswith("EMAIL_TEXT_SEARCH"):
+                return -35.0 if has_high_trust else 22.0
+            return 5.0
+
+        def direct_disadvantage_signal(name: str, window: str) -> float:
+            """Score when the local wording says TechPulse is disadvantaged."""
+            escaped = re.escape(name)
+            low = window.lower()
+            score = 0.0
+
+            # Direct grammar around the candidate: "against X", "X has an
+            # advantage", "X is more attractive", etc.
+            direct_patterns = [
+                rf"(?:disadvantage|behind|losing|weaker|hard(?:er)? to compete|difficult to compete|compete against|against)\W{{0,120}}{escaped}",
+                rf"{escaped}\W{{0,140}}(?:advantage|strong|robust|better|more attractive|more appealing|preferred|shortlist|radar|compelling|promising)",
+                rf"{escaped}\W{{0,140}}(?:pricing|roadmap|customization|integration|scalability|security|compliance|automation|workflow)",
+                rf"(?:advantage|strong|robust|better|attractive|appealing|preferred|shortlist|radar|compelling|promising)\W{{0,140}}{escaped}",
+            ]
+            for pattern in direct_patterns:
+                if re.search(pattern, window, flags=re.I | re.S):
+                    score += 75.0
+
+            if any(k in low for k in COMPETITOR_SIGNAL_KEYWORDS):
+                score += 28.0
+
+            positive_hits = sum(1 for k in POSITIVE_COMPETITOR_KEYWORDS if k in low)
+            negative_hits = sum(1 for k in NEGATIVE_COMPETITOR_KEYWORDS if k in low)
+            if wants_disadvantage:
+                # For "at a disadvantage against", positive facts about the
+                # competitor are stronger than negative facts about it.
+                score += positive_hits * 22.0
+                score += min(negative_hits, 2) * 4.0
+                if positive_hits == 0 and negative_hits >= 2:
+                    score -= 18.0
+            elif wants_positive:
+                score += positive_hits * 20.0
+            else:
+                score += positive_hits * 10.0
+                score += negative_hits * 8.0
+
+            # Phrases about TechPulse/us being less competitive make the named
+            # rival especially likely to be the answer.
+            if any(k in low for k in (
+                "we are at a disadvantage", "we're at a disadvantage",
+                "puts us at a disadvantage", "hard for us", "harder for us",
+                "difficult for us", "we may lose", "we could lose",
+                "compared to us", "over techpulse", "than techpulse",
+                "techpulse is weaker", "our disadvantage",
+            )):
+                score += 55.0
+
+            return score
 
         scores: dict[str, float] = defaultdict(float)
         evidence: dict[str, list[str]] = defaultdict(list)
@@ -2556,42 +2648,62 @@ class AegisForgeAgent:
         for name in names:
             if any(tp.lower().strip("'") in name.lower() for tp in TECHPULSE_NAMES):
                 continue
-            name_re = re.compile(re.escape(name), re.I)
-            matches = list(name_re.finditer(raw_text))
-            if not matches:
+            if any(name.lower().strip() == str(account).lower().strip() for account in account_names):
                 continue
-            scores[name] += len(matches) * (20 if wants_most_often else 8)
-            for match in matches[:12]:
-                window = raw_text[max(0, match.start() - 360):match.end() + 360]
-                low = window.lower()
-                local_score = 0
-                if any(k in low for k in ("competitor", "competitors", "rival", "provider", "alternative", "market challenge")):
-                    local_score += 25
-                if wants_disadvantage:
-                    if any(k in low for k in (
-                        "attractive", "appealing", "strong", "robust", "better", "advantage",
-                        "user-friendly", "user friendly", "ease", "enhancements", "on our radar",
-                        "on the radar", "buzz", "pricing seems attractive", "initial pricing",
-                        "compelling", "preferred", "evaluating", "shortlist",
-                    )):
-                        local_score += 35
-                    if any(k in low for k in (
-                        "lacking", "lack of", "weak", "shortcoming", "concern", "cumbersome",
-                        "delays", "hidden costs", "limited", "dealbreaker", "struggling",
-                    )):
-                        # Negative competitor facts can still be competitor
-                        # intelligence, but they are weaker evidence for "we are
-                        # at a disadvantage against".
-                        local_score += 8
-                elif wants_positive:
-                    if any(k in low for k in ("positive", "liked", "interested", "impressed", "keen", "promising", "compelling")):
-                        local_score += 20
+
+            name_re = re.compile(re.escape(name), re.I)
+            total_matches = 0
+            best_local = 0.0
+
+            for block in blocks:
+                matches = list(name_re.finditer(block))
+                if not matches:
+                    continue
+
+                trust = block_trust(block)
+                # If we already have high-trust opportunity/lead evidence, do
+                # not let unrelated global text-search rows dominate. They can
+                # still contribute weak tie-break evidence, but only if their
+                # local wording is very strong.
+                text_search_penalty = 0.0
+                if has_high_trust and (block.startswith("VOICE_TEXT_SEARCH") or block.startswith("EMAIL_TEXT_SEARCH")):
+                    text_search_penalty = 45.0
+
+                total_matches += len(matches)
+                if wants_most_often:
+                    scores[name] += len(matches) * max(6.0, 20.0 + trust / 10.0)
                 else:
-                    if any(k in low for k in ("challenge", "risk", "evaluation", "compare", "comparison", "option")):
-                        local_score += 20
-                scores[name] += local_score + _company_quality_score(name, context=window) / 10.0
-                if local_score > 0 and len(evidence[name]) < 3:
-                    evidence[name].append(re.sub(r"\s+", " ", window).strip()[:500])
+                    scores[name] += len(matches) * max(2.0, 8.0 + trust / 20.0)
+
+                for match in matches[:12]:
+                    window = block[max(0, match.start() - 520):match.end() + 520]
+                    low = window.lower()
+
+                    local_score = trust + direct_disadvantage_signal(name, window)
+                    if any(k in low for k in ("competitor", "competitors", "rival", "provider", "alternative", "market challenge")):
+                        local_score += 30.0
+                    if any(k in low for k in ("decision", "shortlist", "evaluating", "compare", "comparison", "vendor", "budget", "pricing", "proposal")):
+                        local_score += 18.0
+
+                    local_score += _company_quality_score(name, context=window) / 8.0
+                    local_score -= text_search_penalty
+
+                    # Very weak text-search-only mentions should not become the
+                    # top answer when direct opportunity communications exist.
+                    if has_high_trust and text_search_penalty and local_score < 90.0:
+                        local_score *= 0.18
+
+                    scores[name] += local_score
+                    best_local = max(best_local, local_score)
+                    if local_score > 20 and len(evidence[name]) < 4:
+                        evidence[name].append(re.sub(r"\s+", " ", window).strip()[:650])
+
+            # Require more than a name-quality hit.  This blocks company names
+            # that appear in unrelated context without competitor wording.
+            if total_matches:
+                if wants_disadvantage and best_local < 30.0:
+                    scores[name] *= 0.25
+                scores[name] += min(total_matches, 8) * 2.0
 
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0].lower()))
         return [
