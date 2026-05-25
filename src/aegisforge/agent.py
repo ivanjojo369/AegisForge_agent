@@ -98,8 +98,8 @@ try:
 except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_10_disadvantage_relation_rank_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_10_DISADVANTAGE_RELATION_RANK"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_11_required_context_competitor_rank_2026_05_25"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_11_REQUIRED_CONTEXT_COMPETITOR_RANK"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -2491,18 +2491,48 @@ class AegisForgeAgent:
                     opp_rows.append(row)
 
         all_texts, snippets = self._sales_transcripts_for_anchors(query, context, opp_rows, lead_rows, account_rows)
+
+        # v1.11: treat the green task required_context as first-class
+        # opportunity-bound evidence.  This context is already answer-field
+        # stripped before reaching this solver, and it often contains the most
+        # direct competitor/comparison clue.
+        context_evidence = _clean_required_context(context)
+        if context_evidence:
+            all_texts.insert(0, "TASK_CONTEXT_REQUIRED_CONTEXT:\n" + context_evidence[:30000])
+
         raw_text = "\n\n---\n\n".join(all_texts)
 
-        excluded_customers = []
-        for row in account_rows:
-            if row.get("Name"):
-                excluded_customers.append(str(row.get("Name")))
+        # v1.11: for competitor questions, exclude only the account attached to
+        # the directly referenced Opportunity.  Do not exclude every Account/Lead
+        # name found in the context, because competitors may also exist as CRM
+        # Account rows.
+        direct_opp_ids = set(self._opportunity_ids_from_text(query + "\n" + context))
+        wants_competitor_context = any(word in query.lower() for word in COMPETITOR_SIGNAL_KEYWORDS) or any(
+            word in query.lower()
+            for word in ("disadvantage", "rival", "alternative", "provider", "vendor", "competitor", "competitors")
+        )
+
+        excluded_customers: list[str] = []
+
+        def add_excluded(value: Any) -> None:
+            name = re.sub(r"\s+", " ", _coerce_text(value)).strip(" ,.;:-")
+            if name and name not in excluded_customers:
+                excluded_customers.append(name)
+
         for row in opp_rows:
+            opp_id = str(row.get("Id") or "")
+            if direct_opp_ids and opp_id not in direct_opp_ids:
+                continue
             if row.get("AccountName"):
-                excluded_customers.append(str(row.get("AccountName")))
-        for row in lead_rows:
-            if row.get("Company"):
-                excluded_customers.append(str(row.get("Company")))
+                add_excluded(row.get("AccountName"))
+
+        if not wants_competitor_context:
+            for row in account_rows:
+                if row.get("Name"):
+                    add_excluded(row.get("Name"))
+            for row in lead_rows:
+                if row.get("Company"):
+                    add_excluded(row.get("Company"))
 
         candidates = self._rank_sales_competitors(raw_text, query=query, account_names=excluded_customers)
 
@@ -2698,7 +2728,14 @@ class AegisForgeAgent:
         if not blocks and raw_text.strip():
             blocks = [raw_text.strip()]
 
-        high_trust_prefixes = ("VOICE_OPPORTUNITY", "EMAIL_OPPORTUNITY", "VOICE_LEAD", "EMAIL_LEAD", "LIVECHAT_ACCOUNT")
+        high_trust_prefixes = (
+            "TASK_CONTEXT_REQUIRED_CONTEXT",
+            "VOICE_OPPORTUNITY",
+            "EMAIL_OPPORTUNITY",
+            "VOICE_LEAD",
+            "EMAIL_LEAD",
+            "LIVECHAT_ACCOUNT",
+        )
         has_high_trust = any(block.startswith(high_trust_prefixes) for block in blocks)
 
         # First pass: pull extra candidate names from the exact local windows
@@ -2719,7 +2756,7 @@ class AegisForgeAgent:
                     idx = low_block.find(marker, start_at)
                     if idx < 0:
                         break
-                    relation_window = block[max(0, idx - 520):idx + 980]
+                    relation_window = block[max(0, idx - 900):idx + 1500]
                     for candidate in _extract_company_candidates(relation_window, query=query, account_names=account_names):
                         ckey = _entity_key(candidate)
                         if ckey and ckey not in seen_names:
@@ -2732,6 +2769,8 @@ class AegisForgeAgent:
 
         def block_trust(block: str) -> float:
             head = block[:260]
+            if head.startswith("TASK_CONTEXT_REQUIRED_CONTEXT"):
+                return 150.0
             if head.startswith("VOICE_OPPORTUNITY"):
                 return 110.0
             if head.startswith("EMAIL_OPPORTUNITY"):
