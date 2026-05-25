@@ -6,9 +6,16 @@ This agent.py is a clean CRMArena-only rebuild.  It intentionally does not
 include OfficeQA, Build-What-I-Mean, browser helpers, Sprint4/NCP routing, or
 answer-key tables.
 
+v1.5 shifts the runtime to the actual Entropic CRMArena Green protocol: the
+purple agent receives a JSON task_context message containing prompt,
+required_context, persona, config, and entropy metadata.  SQLite is still
+supported when a valid CRM DB exists, but the primary path is now
+`task_context` parsing, cleaning, deterministic context evidence, and compact
+plain-answer emission.
+
 Merged design:
 - from agent_crmarena_clean_base_v2: small A2A entrypoint, direct plain answers,
-  CRMArena routing, strict answer-shape guards, and the proven state fallback.
+  CRMArena routing, strict answer-shape guards, task_context parsing, and the proven state fallback.
 - from agent(146): local/public CRMArena metadata repair, answer-field stripping,
   candidate gating, Amber/OpenAI secret support, and compact diagnostics.
 - from agent(145): SQLite/database-first CRM solving style and deterministic
@@ -79,8 +86,8 @@ except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_4_direct_unified_db_path_2026_05_24"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_4_DIRECT_UNIFIED_DB_PATH"
+CRMARENA_AGENT_VERSION = "crmarena_task_context_first_v1_5_2026_05_24"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_5_TASK_CONTEXT_FIRST"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -238,6 +245,122 @@ def _maybe_json_mapping(text: str) -> Mapping[str, Any] | None:
         return None
 
 
+
+def _find_green_task_payload(value: Any, *, depth: int = 0) -> Mapping[str, Any] | None:
+    """Find the Entropic CRMArena task_context object in message text/metadata.
+
+    The green runtime sends a JSON string shaped like:
+      {"type":"crm_task","task_id":"...","task_category":"...",
+       "prompt":"...","required_context":"...", "config": {...}, "entropy": {...}}
+
+    This helper deliberately returns the task payload after answer-field
+    stripping.  It does not read or preserve any answer/gold/evaluator keys.
+    """
+    if depth > 8 or value is None:
+        return None
+    if isinstance(value, Mapping):
+        lower_keys = {str(k).lower() for k in value.keys()}
+        payload_type = str(value.get("type") or "").lower()
+        if (
+            payload_type == "crm_task"
+            or (
+                "prompt" in lower_keys
+                and ("task_category" in lower_keys or "task_id" in lower_keys or "required_context" in lower_keys)
+            )
+        ):
+            stripped = _strip_answer_fields(value)
+            return stripped if isinstance(stripped, Mapping) else None
+        for child in value.values():
+            found = _find_green_task_payload(child, depth=depth + 1)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value[:200]:
+            found = _find_green_task_payload(child, depth=depth + 1)
+            if found:
+                return found
+    return None
+
+
+def _green_task_payload(task_text: str, metadata: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Extract green `crm_task` JSON from raw A2A text and/or metadata."""
+    text_json = _maybe_json_mapping(task_text)
+    for candidate in (text_json, metadata, metadata.get("text_json") if isinstance(metadata, Mapping) else None):
+        found = _find_green_task_payload(candidate)
+        if found:
+            return found
+    return None
+
+
+_CONTEXT_NOISE_PATTERNS = (
+    r"^\s*\[(?:System Notice|Info|Warning|Notice|Alert)\s*:",
+    r"^\s*#\s*Domain Details\b",
+    r"^\s*##\s*(?:Quarters of the Year|Seasons|Time Periods)\b",
+)
+
+
+def _clean_required_context(text: str) -> str:
+    """Normalize benchmark context and suppress Entropic distractor notices.
+
+    We keep real records/evidence, dates, ids, and field values.  We only remove
+    generic green-injected notice lines that previously misled candidate
+    extraction (for example System Notice / Legacy records warnings).
+    """
+    raw = _sanitize_visible_text(text, max_chars=50000)
+    if not raw:
+        return ""
+    cleaned_lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append("")
+            continue
+        if any(re.search(pattern, stripped, flags=re.I) for pattern in _CONTEXT_NOISE_PATTERNS):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{4,}", "\n\n", cleaned).strip()
+    return cleaned[:50000]
+
+
+def _task_context_summary(payload: Mapping[str, Any]) -> str:
+    """Render the green task_context as concise, answer-stripped evidence."""
+    if not payload:
+        return ""
+    safe = _strip_answer_fields(payload)
+    if not isinstance(safe, Mapping):
+        return ""
+
+    fields: dict[str, Any] = {}
+    for key in ("type", "task_id", "task_category", "prompt", "persona"):
+        value = safe.get(key)
+        if value not in (None, "", {}, []):
+            fields[key] = value
+
+    required = _clean_required_context(_coerce_text(safe.get("required_context") or ""))
+    optional = _clean_required_context(_coerce_text(safe.get("optional_context") or ""))
+    if required:
+        fields["required_context"] = required
+    if optional:
+        fields["optional_context"] = optional
+
+    config = safe.get("config")
+    if isinstance(config, Mapping):
+        fields["config"] = dict(config)
+
+    entropy = safe.get("entropy")
+    if isinstance(entropy, Mapping):
+        # Keep only diagnostic entropy metadata.  Avoid dumping drift mapping objects
+        # if they are verbose/non-serializable.
+        fields["entropy"] = {
+            "drift_level": entropy.get("drift_level"),
+            "rot_level": entropy.get("rot_level"),
+            "note": entropy.get("note"),
+        }
+
+    return json.dumps(fields, ensure_ascii=False, default=str, indent=2)
+
+
 def _deep_merge_dicts(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(a)
     for key, value in b.items():
@@ -320,7 +443,13 @@ def _first_string_by_keys(value: Any, keys: Iterable[str], *, depth: int = 0) ->
 
 
 def _query_text(task_text: str, metadata: Mapping[str, Any]) -> str:
-    """Extract the real user CRM question, avoiding whole JSON payloads."""
+    """Extract the real CRM question, prioritizing green `task_context.prompt`."""
+    task_payload = _green_task_payload(task_text, metadata)
+    if task_payload:
+        prompt = _coerce_text(task_payload.get("prompt") or "").strip()
+        if prompt:
+            return _sanitize_visible_text(prompt, max_chars=6000)
+
     text_json = _maybe_json_mapping(task_text)
     query_keys = (
         "task_query", "query", "question", "instruction", "task", "prompt",
@@ -1300,6 +1429,10 @@ class AegisForgeAgent:
             return False
 
     def _handle_crmarena_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        task_payload = _green_task_payload(task_text, metadata)
+        task_context_present = bool(task_payload)
+        task_id = str(task_payload.get("task_id") or "") if task_payload else ""
+
         query = _query_text(task_text, metadata)
         initial_context = self._collect_context(task_text, metadata)
 
@@ -1311,6 +1444,8 @@ class AegisForgeAgent:
                 "category": "runtime_probe",
                 "shape": "text",
                 "source": "runtime_probe",
+                "task_context": int(task_context_present),
+                "task_id": task_id[:40],
                 "db": int(self.db.available),
                 "db_path": self.db.path or ("external" if self.db.external is not None else ""),
                 "db_error": self.db.error[:80],
@@ -1326,11 +1461,24 @@ class AegisForgeAgent:
             self._debug_log(self._last_status)
             return answer
 
-        matched_record = self.metadata_bridge.matching_record(query, metadata)
-        if matched_record:
-            initial_context = f"{initial_context}\n\nMATCHED_CRMARENA_TASK_CONTEXT_WITHOUT_ANSWER_FIELDS:\n{_stringify(matched_record, limit=18000)}"
+        # In the actual Entropic CRMArena Green protocol, task_context is the
+        # authoritative payload.  Public task rows only repeat prompt/metadata and
+        # do not include records after answer stripping, so avoid treating
+        # record_match=1 as evidence by default.
+        matched_record = None
+        if not task_context_present or _env_flag("AEGISFORGE_CRM_MATCH_PUBLIC_TASKS_IN_GREEN_CONTEXT", default=False):
+            matched_record = self.metadata_bridge.matching_record(query, metadata)
+            if matched_record:
+                initial_context = (
+                    f"{initial_context}\n\n"
+                    "MATCHED_CRMARENA_TASK_CONTEXT_WITHOUT_ANSWER_FIELDS:\n"
+                    f"{_stringify(matched_record, limit=18000)}"
+                )
 
-        category = _extract_category(query, metadata, initial_context)
+        category = ""
+        if task_payload:
+            category = str(task_payload.get("task_category") or "").strip()
+        category = category or _extract_category(query, metadata, initial_context)
         shape = _answer_shape(query, metadata, category)
         context = self._augment_context_with_db_evidence(query, initial_context, category, matched_record)
 
@@ -1364,6 +1512,8 @@ class AegisForgeAgent:
             "category": category or "unknown",
             "shape": shape,
             "source": source,
+            "task_context": int(task_context_present),
+            "task_id": task_id[:40],
             "db": int(self.db.available),
             "db_path": self.db.path or ("external" if self.db.external is not None else ""),
             "db_error": self.db.error[:80],
@@ -1381,6 +1531,20 @@ class AegisForgeAgent:
 
     def _collect_context(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         pieces = []
+        task_payload = _green_task_payload(task_text, metadata)
+        if task_payload:
+            summary = _task_context_summary(task_payload)
+            if summary:
+                pieces.append(f"GREEN_TASK_CONTEXT_WITHOUT_ANSWER_FIELDS:\n{summary}")
+
+            required_context = _clean_required_context(_coerce_text(task_payload.get("required_context") or ""))
+            if required_context:
+                pieces.append(f"REQUIRED_CONTEXT_CLEAN:\n{required_context}")
+
+            optional_context = _clean_required_context(_coerce_text(task_payload.get("optional_context") or ""))
+            if optional_context:
+                pieces.append(f"OPTIONAL_CONTEXT_CLEAN:\n{optional_context}")
+
         if task_text:
             pieces.append(f"TASK_TEXT:\n{task_text}")
         if metadata:
@@ -1418,6 +1582,40 @@ class AegisForgeAgent:
             pieces.append(f"DB_EVIDENCE_ERROR: {exc.__class__.__name__}")
         return "\n\n".join(piece for piece in pieces if piece)[: self.max_context_chars]
 
+    def _context_first_answer(
+        self,
+        query: str,
+        context: str,
+        metadata: Mapping[str, Any],
+        category: str,
+        shape: str,
+    ) -> tuple[str, str]:
+        """Answer from task_context evidence before DB/LLM.
+
+        This is intentionally conservative: it only returns when the required
+        context contains field-like evidence strong enough for the expected
+        answer shape.  If the green payload only contains a date/domain note,
+        it returns empty and lets DB/LLM/INSUFFICIENT_INFORMATION handle it.
+        """
+        combined = context + "\n" + _stringify(metadata, limit=12000)
+
+        if shape == "state":
+            states = _state_candidates(combined)
+            if states:
+                return states[0], "context_state"
+
+        if shape == "month":
+            months, diag = _month_candidates_from_context(combined, query)
+            if months and diag.get("month_source") == "strong":
+                return months[0], "context_month_strong"
+
+        if shape == "company":
+            names = _extract_company_candidates(combined, query=query)
+            if names:
+                return names[0], "context_company"
+
+        return "", ""
+
     def _deterministic_answer(
         self,
         query: str,
@@ -1426,6 +1624,10 @@ class AegisForgeAgent:
         category: str,
         shape: str,
     ) -> tuple[str, str]:
+        context_answer, context_source = self._context_first_answer(query, context, metadata, category, shape)
+        if context_answer:
+            return context_answer, context_source
+
         if self.db.available:
             if category == "monthly_trend_analysis":
                 answer = self._solve_monthly_trend(query, context)
@@ -2066,7 +2268,6 @@ class AegisForgeAgent:
             print(f"{CRMARENA_DIAG_TAG} " + " ".join(parts), file=sys.stderr, flush=True)
         except Exception:
             pass
-
 
 # Backwards-compatible aliases used by different AgentBeats templates.
 Agent = AegisForgeAgent
