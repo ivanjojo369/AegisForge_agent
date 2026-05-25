@@ -45,17 +45,18 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
-*.log
 
 # Type checkers / linters
 .mypy_cache/
 .pyright/
 .ruff_cache/
 
-# =========================
-# Jupyter / notebooks
-# =========================
+# ======================
+# Notebooks / large local datasets
+# ======================
 .ipynb_checkpoints/
+*.ipynb
+datasets/
 
 # =========================
 # OS / editor files
@@ -70,7 +71,7 @@ Thumbs.db
 # =========================
 # UV / lock / temporary
 # =========================
-# Keep uv.lock tracked if you use it
+# Keep uv.lock tracked if you use it.
 # uv.lock
 *.tmp
 *.temp
@@ -86,23 +87,37 @@ artifacts/
 logs/
 tmp/
 temp/
+cache/
+data/cache/
 
-# Agent/eval run dumps (common naming)
+# Agent/eval run dumps
 **/test_results/
 **/run_results/
 **/runs/
 **/provenance/*.json
 **/provenance/*.csv
 
-# If your tooling produces local databases or caches
+# Local logs
+*.log
+
+# Local databases/caches are ignored by default...
 *.sqlite
+*.sqlite3
 *.db
-data/cache/
-cache/
 
 # =========================
-# Docker
+# Docker backups / local extras
 # =========================
 **/.dockerignore.backup
-
 phaseB/
+
+# =========================
+# AegisForge Unified Purple Agent benchmark data
+# =========================
+# ...but these benchmark files must be tracked and included in Docker builds.
+!data/
+!data/**
+!data/aegisforge_unified_purple_agent.db
+!data/unified_purple_agent/
+!data/unified_purple_agent/**
+!data/unified_purple_agent/manifest.json

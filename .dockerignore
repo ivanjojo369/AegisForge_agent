@@ -1,33 +1,28 @@
 # =========
-# Secrets
+# Secrets / local env files
 # =========
 .env
 .env.*
+!.env.example
 secrets/
 **/secrets/
 *.key
 *.pem
 *.pfx
 *.p12
+*.crt
 
 # =========================
 # Python caches / artifacts
 # =========================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
 *.py[cod]
+*$py.class
 *.egg-info/
 build/
 dist/
+pip-wheel-metadata/
 *.whl
-.pytest_cache/
-.coverage
-htmlcov/
-.mypy_cache/
-.pyright/
-.ruff_cache/
 
 # ======================
 # Virtual environments
@@ -36,9 +31,24 @@ htmlcov/
 venv/
 env/
 ENV/
+.python-version
+
+# =========================
+# Test / coverage / tooling caches
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+.mypy_cache/
+.pyright/
+.ruff_cache/
 
 # ======================
-# Project output folders
+# Runtime outputs / local artifacts
 # ======================
 results/
 output/
@@ -47,35 +57,49 @@ artifacts/
 logs/
 tmp/
 temp/
+cache/
+data/cache/
 **/test_results/
 **/run_results/
 **/runs/
+**/provenance/*.json
+**/provenance/*.csv
+*.log
+*.tmp
+*.temp
+*.swp
 
 # ======================
-# Notebooks / datasets
+# Notebooks / large local datasets
 # ======================
 .ipynb_checkpoints/
 *.ipynb
-data/
 datasets/
 
 # ======================
-# VCS / IDE
+# VCS / IDE / OS
 # ======================
 .git/
-.gitignore
+.github/
 .vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
 .idea/
 .DS_Store
 Thumbs.db
 
 # ======================
-# Optional: docs/assets (si no los necesitas dentro de la imagen)
+# Local database caches
 # ======================
-docs/
-assets/
-harness/
-integrations/
-tooling/
-tests/
-scripts/
+*.sqlite
+*.sqlite3
+
+# IMPORTANT:
+# Do NOT ignore data/. Dockerfile uses:
+#   COPY data ./data
+# The unified purple benchmark database must be present in the Docker build context.
+!data/
+!data/**
+!data/aegisforge_unified_purple_agent.db
+!data/unified_purple_agent/
+!data/unified_purple_agent/**
