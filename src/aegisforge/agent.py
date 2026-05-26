@@ -98,8 +98,8 @@ try:
 except Exception:  # CRMArena images differ; sqlite probing is the fallback.
     _external_get_db = None
 
-CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_12_sales_context_decontam_direct_relation_diag_2026_05_25"
-CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_12_SALES_CONTEXT_DECONTAM_DIRECT_RELATION_DIAG"
+CRMARENA_AGENT_VERSION = "crmarena_db_grounded_v1_13_nebius_purple_route_2026_05_26"
+CRMARENA_DIAG_TAG = "CRMARENA_DIAG_V1_13_NEBIUS_PURPLE_ROUTE"
 
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
@@ -1604,13 +1604,15 @@ class AegisForgeAgent:
         self.llm_model = (
             _env_get(
                 "AEGISFORGE_CRM_OPENAI_MODEL",
+                "NEBIUS_MODEL",
+                "AMBER_CONFIG_AGENT_NEBIUS_MODEL",
                 "LLM_PRIMARY_MODEL",
                 "AMBER_CONFIG_AGENT_LLM_PRIMARY_MODEL",
                 "AMBER_CONFIG_AGENT_OPENAI_MODEL",
                 "OPENAI_MODEL",
                 "MODEL_NAME",
             )
-            or "gpt-4.1-mini"
+            or "meta-llama/Llama-3.3-70B-Instruct"
         )
         self.llm_timeout_seconds = max(5, int(os.getenv("AEGISFORGE_CRM_LLM_TIMEOUT_SECONDS", "18") or "18"))
         self.max_context_chars = max(8000, int(os.getenv("AEGISFORGE_CRM_MAX_CONTEXT_CHARS", "26000") or "26000"))
@@ -3639,6 +3641,8 @@ class AegisForgeAgent:
 
     def _api_key(self) -> str:
         return _env_get(
+            "NEBIUS_API_KEY",
+            "AMBER_CONFIG_AGENT_NEBIUS_API_KEY",
             "OPENAI_API_KEY",
             "AMBER_CONFIG_AGENT_OPENAI_API_KEY",
             "AMBER_CONFIG_AGENT_LLM_API_KEY",
@@ -3647,15 +3651,21 @@ class AegisForgeAgent:
         )
 
     def _base_url(self) -> str:
-        return (
-            _env_get(
-                "OPENAI_BASE_URL",
-                "AMBER_CONFIG_AGENT_OPENAI_BASE_URL",
-                "AMBER_CONFIG_AGENT_LLM_BASE_URL",
-                "LLM_BASE_URL",
-            )
-            or "https://api.openai.com/v1"
-        ).rstrip("/")
+        configured = _env_get(
+            "NEBIUS_BASE_URL",
+            "AMBER_CONFIG_AGENT_NEBIUS_BASE_URL",
+            "OPENAI_BASE_URL",
+            "AMBER_CONFIG_AGENT_OPENAI_BASE_URL",
+            "AMBER_CONFIG_AGENT_LLM_BASE_URL",
+            "LLM_BASE_URL",
+        )
+        if configured:
+            return configured.rstrip("/")
+
+        if _env_get("NEBIUS_API_KEY", "AMBER_CONFIG_AGENT_NEBIUS_API_KEY"):
+            return "https://api.tokenfactory.nebius.com/v1"
+
+        return "https://api.openai.com/v1"
 
     def _llm_answer(self, *, query: str, context: str, shape: str) -> str:
         key = self._api_key()
