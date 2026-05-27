@@ -122,8 +122,8 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 
-SPRINT4_POLICY_VERSION = "v1-sprint4-general-ncp-crmarena-v114-maizebargain-protocolfix"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_sprint4_general_ncp_crmarena_v114_maizebargain_protocolfix_2026_05_26"
+SPRINT4_POLICY_VERSION = "v1.1-sprint4-general-ncp-crmarena-v114-maizebargain-protocolfix"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_1_sprint4_general_ncp_crmarena_v114_maizebargain_protocolfix_2026_05_26"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
@@ -15502,6 +15502,51 @@ class AegisForgeAgent:
             else:
                 merged[key] = value
         return merged
+
+    def _maybe_parse_json(self, value: Any) -> Any:
+        """Parse JSON-like values without assuming the payload is a mapping.
+
+        MAizeBargAIn live turns may arrive as objects, lists, nested payloads,
+        or strings containing a JSON object/list.  v1 accidentally called this
+        helper before defining it, which caused the remote negotiator to fall
+        back to WALK.  Keep this helper intentionally small and side-effect
+        free: it only parses visible task/metadata data and never reads answer
+        keys, evaluator outputs, credentials, or external resources.
+        """
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            return self._normalize_mapping(value)
+        if isinstance(value, list):
+            normalized: list[Any] = []
+            for item in value:
+                if isinstance(item, Mapping):
+                    normalized.append(self._normalize_mapping(item))
+                else:
+                    normalized.append(item)
+            return normalized
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        if not (text.startswith("{") or text.startswith("[")):
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(parsed, Mapping):
+            return self._normalize_mapping(parsed)
+        if isinstance(parsed, list):
+            normalized_list: list[Any] = []
+            for item in parsed:
+                if isinstance(item, Mapping):
+                    normalized_list.append(self._normalize_mapping(item))
+                else:
+                    normalized_list.append(item)
+            return normalized_list
+        return parsed
 
     def _maybe_parse_json_mapping(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, str):
