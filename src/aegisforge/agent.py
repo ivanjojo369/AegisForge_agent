@@ -14092,25 +14092,21 @@ class AegisForgeAgent:
         else:
             round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
 
-        # v1.3.1 conservative micro-tune:
-        # Keep the v1.3 fairness/Nash core intact.  Add only a tiny
-        # profile-aware pressure when one item is clearly more valuable.
-        # This tries to improve MENE Regret, NWA, and Utilitarian Welfare
-        # without repeating the aggressive v1.4 swap behavior that hurt EF1/NW.
-        positive_values = [max(0, int(x)) for x in v[:n]]
-        value_sum = max(1.0, float(sum(positive_values)))
-        max_value = max(positive_values or [1])
-        value_concentration = float(max_value) / value_sum
+        # v1.3.2 conservative final-round pressure:
+        # Keep the v1.3 EF1/Nash core intact. Earlier failed experiments showed
+        # that broad value-concentration and swap logic can crush EF1. This only
+        # gives a tiny extra push in the final round, where MENE regret, NWA, and
+        # Utilitarian Welfare are most sensitive, while preserving can_add().
+        batna_pressure = min(0.078, max(0.0, float(batna) / best_non_extreme_value - 0.50))
 
-        batna_pressure = min(0.075, max(0.0, float(batna) / best_non_extreme_value - 0.50))
-
-        concentration_pressure = 0.0
-        if round_pressure >= 0.25 and value_concentration >= 0.45:
-            concentration_pressure = min(0.015, (value_concentration - 0.45) * 0.05)
+        if max_rounds <= 1:
+            late_round_pressure = 1.0
+        else:
+            late_round_pressure = 1.0 if current_round >= max_rounds else 0.0
 
         nash_tilt = min(
-            0.685,
-            0.602 + 0.055 * round_pressure + batna_pressure + concentration_pressure,
+            0.682,
+            0.60 + 0.06 * round_pressure + 0.006 * late_round_pressure + batna_pressure,
         )
 
         target_floor = max(float(batna), nash_tilt * best_non_extreme_value)
