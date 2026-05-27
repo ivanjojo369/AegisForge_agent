@@ -14080,9 +14080,27 @@ class AegisForgeAgent:
             if best_non_extreme[low_idx] > 0:
                 best_non_extreme[low_idx] -= 1
 
-        target_floor = max(float(batna), 0.55 * max(1.0, self._maizebargain_offer_value(best_non_extreme, v)))
+        # v1.3 surgical tilt:
+        # v1.2 was strongly fairness-first and used 0.55 of the best non-extreme
+        # allocation as the value floor.  That helped EF1, but often left Nash Welfare
+        # Advantage and Utilitarian Welfare too low.  Raise the floor gently and
+        # dynamically while preserving the anti-greedy constraints in can_add().
+        best_non_extreme_value = max(1.0, self._maizebargain_offer_value(best_non_extreme, v))
+
+        if max_rounds <= 1:
+            round_pressure = 1.0
+        else:
+            round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
+
+        batna_pressure = min(0.08, max(0.0, float(batna) / best_non_extreme_value - 0.50))
+
+        # Keep this conservative: high enough to improve welfare/NWA, but below the
+        # point where the policy starts behaving like an all-items utility maximizer.
+        nash_tilt = min(0.68, 0.60 + 0.06 * round_pressure + batna_pressure)
+
+        target_floor = max(float(batna), nash_tilt * best_non_extreme_value)
         # If BATNA is unrealistic, do not chase it into an all-items offer.
-        target_floor = min(target_floor, self._maizebargain_offer_value(best_non_extreme, v))
+        target_floor = min(target_floor, best_non_extreme_value)
 
         def can_add(i: int) -> bool:
             if offer[i] >= q[i]:
