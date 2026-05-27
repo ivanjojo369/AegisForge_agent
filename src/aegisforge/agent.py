@@ -14080,10 +14080,11 @@ class AegisForgeAgent:
             if best_non_extreme[low_idx] > 0:
                 best_non_extreme[low_idx] -= 1
 
-        # v1.4 guarded strategic tilt:
-        # Keep the v1.3 fairness-first base, but add a small value-concentration
-        # premium so high-value profiles improve MENE regret, NWA, and Utilitarian
-        # Welfare without becoming all-items/selfish proposals.
+        # v1.3 surgical tilt:
+        # v1.2 was strongly fairness-first and used 0.55 of the best non-extreme
+        # allocation as the value floor.  That helped EF1, but often left Nash Welfare
+        # Advantage and Utilitarian Welfare too low.  Raise the floor gently and
+        # dynamically while preserving the anti-greedy constraints in can_add().
         best_non_extreme_value = max(1.0, self._maizebargain_offer_value(best_non_extreme, v))
 
         if max_rounds <= 1:
@@ -14091,19 +14092,26 @@ class AegisForgeAgent:
         else:
             round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
 
+        # v1.3.1 conservative micro-tune:
+        # Keep the v1.3 fairness/Nash core intact.  Add only a tiny
+        # profile-aware pressure when one item is clearly more valuable.
+        # This tries to improve MENE Regret, NWA, and Utilitarian Welfare
+        # without repeating the aggressive v1.4 swap behavior that hurt EF1/NW.
         positive_values = [max(0, int(x)) for x in v[:n]]
         value_sum = max(1.0, float(sum(positive_values)))
         max_value = max(positive_values or [1])
-        min_value = min(positive_values or [0])
-        value_spread = 0.0 if max_value <= 0 else float(max_value - min_value) / float(max(1, max_value))
         value_concentration = float(max_value) / value_sum
 
-        batna_pressure = min(0.07, max(0.0, float(batna) / best_non_extreme_value - 0.50))
-        strategic_pressure = min(0.045, 0.025 * value_spread + 0.020 * value_concentration)
+        batna_pressure = min(0.075, max(0.0, float(batna) / best_non_extreme_value - 0.50))
 
-        # Conservative ceiling: slightly more assertive than v1.3, but still below
-        # the point where EF1/Nash Welfare usually collapses into egoistic offers.
-        nash_tilt = min(0.705, 0.605 + 0.050 * round_pressure + batna_pressure + strategic_pressure)
+        concentration_pressure = 0.0
+        if round_pressure >= 0.25 and value_concentration >= 0.45:
+            concentration_pressure = min(0.015, (value_concentration - 0.45) * 0.05)
+
+        nash_tilt = min(
+            0.685,
+            0.602 + 0.055 * round_pressure + batna_pressure + concentration_pressure,
+        )
 
         target_floor = max(float(batna), nash_tilt * best_non_extreme_value)
         # If BATNA is unrealistic, do not chase it into an all-items offer.
@@ -14126,39 +14134,6 @@ class AegisForgeAgent:
             if not candidates:
                 break
             offer[candidates[0]] += 1
-            
-        # v1.4 regret/utility polish:
-        # Swap a low-value self-held unit into a higher-value available slot while
-        # keeping the same total item count.  This improves own utility and regret
-        # without the EF1/Nash risk of simply taking more items.
-        if value_spread >= 0.20 and total_units > 2:
-            swap_guard = 0
-            while swap_guard < n:
-                swap_guard += 1
-                donor_candidates = [i for i in range(n) if offer[i] > 0]
-                receiver_candidates = [i for i in ranked if can_add(i)]
-                if not donor_candidates or not receiver_candidates:
-                    break
-
-                low_i = min(donor_candidates, key=lambda i: (v[i], -offer[i], i))
-                high_i = max(receiver_candidates, key=lambda i: (v[i], -i))
-                if v[high_i] <= v[low_i]:
-                    break
-
-                candidate = list(offer)
-                candidate[low_i] -= 1
-                candidate[high_i] += 1
-
-                # Preserve broad participation; do not collapse to a one-category
-                # grab unless the original offer was already that narrow.
-                active_before = sum(1 for x in offer if x > 0)
-                active_after = sum(1 for x in candidate if x > 0)
-                if active_before >= 2 and active_after < 2:
-                    break
-
-                if self._maizebargain_offer_value(candidate, v) <= self._maizebargain_offer_value(offer, v) + 1e-9:
-                    break
-                offer = candidate
 
         # Concession discipline: do not counter with less value than our last
         # proposal if it is visible in history, but also avoid all-or-nothing.
