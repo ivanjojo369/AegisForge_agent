@@ -122,8 +122,8 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 
-SPRINT4_POLICY_VERSION = "v1.1-sprint4-general-ncp-crmarena-v114-maizebargain-protocolfix"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_1_sprint4_general_ncp_crmarena_v114_maizebargain_protocolfix_2026_05_26"
+SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-allocation-json"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_2_sprint4_general_ncp_crmarena_v114_maizebargain_allocation_json_2026_05_27"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
@@ -13762,14 +13762,12 @@ class AegisForgeAgent:
 
     # --- MAizeBargAIn v1 protocol specialist ---------------------------------
     #
-    # The previous merged Sprint-4 build could see MAizeBargAIn bargaining turns
-    # as generic/CRM-like text and route them into the CRMArena specialist.  That
-    # produced Salesforce diagnostics or free-form `choice_id` text that the
-    # bargaining green rejected.  v1 makes MAizeBargAIn an early, deterministic
-    # protocol route and emits the exact action JSON described by the green:
-    #   {"action":"COUNTEROFFER","offer":[...]}
-    #   {"action":"ACCEPT"}
-    #   {"action":"WALK"}
+    # The previous merged Sprint-4 builds could see MAizeBargAIn bargaining
+    # turns as generic/CRM-like text and route them into the normal NCP renderer.
+    # The green then rejected visible output such as "AegisForge structured_response".
+    # v1.2 makes MAizeBargAIn an early, deterministic protocol route and emits
+    # only the schema that the green explicitly requests in live PROPOSE turns:
+    #   {"allocation_self":[...]}
     # No artifacts, trace text, Markdown, or explanations are emitted in this
     # route because the remote negotiator parser reads the visible final text.
 
@@ -13910,7 +13908,21 @@ class AegisForgeAgent:
         return None
 
     def _is_maizebargain_turn_payload(self, task_text: str, metadata: Mapping[str, Any]) -> bool:
-        """Detect live MAizeBargAIn negotiation turns before CRM/Office routing."""
+        """Detect live MAizeBargAIn negotiation turns before CRM/Office routing.
+
+        The live green often sends a plain prompt rather than a compact JSON
+        observation.  In the v1.1 logs the visible excerpt was:
+
+            AgentBeats bargaining meta-game as 'challenger'
+            Action: PROPOSE
+            Return ONLY JSON. Preferred: {"allocation_self":[...]}
+
+        That did not satisfy the old valuation/BATNA detector, so the turn fell
+        through to the generic NCP renderer and the green saw
+        "AegisForge structured_response".  This detector treats those prompt
+        markers as first-class protocol evidence and keeps MAizeBargAIn ahead of
+        CRMArena/OfficeQA routing.
+        """
         if self._maizebargain_observation_payload(task_text, metadata) is not None:
             return True
 
@@ -13924,25 +13936,42 @@ class AegisForgeAgent:
             os.getenv("GITHUB_WORKFLOW", ""),
         ]).lower()
         normalized = re.sub(r"[^a-z0-9]+", " ", blob)
+
         track_signal = any(marker in normalized for marker in (
             "maizebargain",
             "maize bargain",
+            "agentbeats bargaining",
+            "bargaining meta game",
             "meta game bargaining",
             "bargaining green",
             "bargaining env",
+            "bargaining environment",
             "negotiation game",
             "remote negotiator",
         ))
+
+        propose_schema_signal = (
+            ("allocation self" in normalized or "allocation_self" in blob or "allocation-self" in blob)
+            and ("return only json" in normalized or "only json" in normalized or "preferred" in normalized)
+            and ("action propose" in normalized or "propose" in normalized)
+        )
+
         state_signal = (
             "batna" in normalized
-            and ("valuation" in normalized or "valuations" in normalized or "private values" in normalized)
-            and ("offer" in normalized or "counteroffer" in normalized or "quantities" in normalized)
+            and ("valuation" in normalized or "valuations" in normalized or "private values" in normalized or "value vector" in normalized)
+            and ("offer" in normalized or "counteroffer" in normalized or "quantities" in normalized or "allocation" in normalized)
         )
+
         action_signal = (
-            "counteroffer" in normalized
-            and ("accept" in normalized or "walk" in normalized)
-            and ("offer" in normalized or "action" in normalized)
+            ("counteroffer" in normalized or "allocation self" in normalized or "allocation_self" in blob)
+            and ("accept" in normalized or "walk" in normalized or "propose" in normalized)
+            and ("offer" in normalized or "action" in normalized or "allocation" in normalized)
         )
+
+        # The live prompt itself is sufficient: it names the bargaining game,
+        # asks for PROPOSE, and specifies the allocation_self JSON shape.
+        if propose_schema_signal and ("bargaining" in normalized or track_signal):
+            return True
         return bool(track_signal and (state_signal or action_signal))
 
     def _maizebargain_number_list(self, value: Any, *, default: list[int] | None = None) -> list[int]:
@@ -14085,8 +14114,19 @@ class AegisForgeAgent:
         return self._maizebargain_sane_offer(offer, q)
 
     def _handle_maizebargain_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
-        """Return only valid MAizeBargAIn action JSON for the green parser."""
+        """Return only valid MAizeBargAIn JSON for the green parser.
+
+        v1 emitted {"action":"COUNTEROFFER","offer":[...]}.  The live green used
+        in this leaderboard run asks for the proposal schema
+        {"allocation_self":[...]}.  This handler therefore always emits a single
+        compact JSON object with allocation_self for live PROPOSE turns.  No
+        markdown, no trace prefix, and no AegisForge structured_response text.
+        """
         obs = self._maizebargain_observation_payload(task_text, metadata) or {}
+        visible = "\n".join([
+            self._coerce_text(task_text),
+            _officeqa_stringify_for_signal(metadata, limit=50000),
+        ])
 
         valuations = self._maizebargain_number_list(
             self._maizebargain_first_value(obs, ("valuations", "values", "value_vector", "my_values", "private_values")),
@@ -14094,15 +14134,44 @@ class AegisForgeAgent:
         )
         quantities = self._maizebargain_number_list(
             self._maizebargain_first_value(obs, ("quantities", "item_quantities", "counts", "items")),
-            default=[7, 4, 1],
+            default=[],
         )
+
+        # Last-resort visible-text extraction for natural-language prompts.
+        # Keep the patterns broad because the green can wrap the observation in
+        # A2A messages and only expose partial summary text in logs.
         if not valuations:
-            # Last-resort visible-text extraction for circle prompts.
-            lowered_text = self._coerce_text(task_text)
-            m = re.search(r"valuations?\s*[:=]\s*(\[[^\]]+\]|[0-9,\s]+)", lowered_text, flags=re.I)
-            valuations = self._maizebargain_number_list(m.group(1), default=[50, 50, 50]) if m else [50, 50, 50]
+            for pattern in (
+                r"(?:valuations?|values?|value_vector|value vector|private_values|private values)\s*[:=]\s*(\[[^\]]+\])",
+                r"(?:valuations?|values?|value vector|private values)\s*(?:are|is)\s*(\[[^\]]+\])",
+            ):
+                match = re.search(pattern, visible, flags=re.I)
+                if match:
+                    valuations = self._maizebargain_number_list(match.group(1), default=[])
+                    if valuations:
+                        break
         if not quantities:
+            for pattern in (
+                r"(?:quantities|item_quantities|item quantities|counts|items)\s*[:=]\s*(\[[^\]]+\])",
+                r"(?:quantities|item quantities|counts|items)\s*(?:are|is)\s*(\[[^\]]+\])",
+            ):
+                match = re.search(pattern, visible, flags=re.I)
+                if match:
+                    quantities = self._maizebargain_number_list(match.group(1), default=[])
+                    if quantities:
+                        break
+
+        if not quantities:
+            # Default game-family quantities observed in the public MAizeBargAIn
+            # setup.  This is a safe fallback, not an answer lookup: it only
+            # determines the shape of our proposal when the prompt summary hides
+            # the full observation.
             quantities = [7, 4, 1]
+        if not valuations:
+            # Neutral fallback prevents the route from failing back to the
+            # generic renderer.  The fairness-oriented split below still avoids
+            # all-items proposals.
+            valuations = [1 for _ in quantities]
 
         batna_raw = self._maizebargain_first_value(obs, ("batna", "outside_option", "reservation_value", "outsideoption"), 0)
         try:
@@ -14115,8 +14184,6 @@ class AegisForgeAgent:
             self._maizebargain_first_value(obs, ("last_offer", "opponent_offer", "current_offer", "offer")),
             default=[],
         )
-        # If the current `offer` field is actually our candidate action in a
-        # wrapper, do not let it force acceptance unless it has the right length.
         if last_offer and len(last_offer) != len(quantities):
             last_offer = []
 
@@ -14131,11 +14198,10 @@ class AegisForgeAgent:
         except Exception:
             max_rounds = 5
 
-        # Accept offers that beat BATNA and are strategically good enough.  In
-        # final rounds, accept any BATNA-beating offer to avoid M5.
         q = (quantities + [0] * max(len(quantities), len(valuations), 3))[:max(len(quantities), len(valuations), 3)]
         v = (valuations + [1] * len(q))[:len(q)]
-        counter = self._maizebargain_build_counteroffer(
+
+        proposal = self._maizebargain_build_counteroffer(
             v,
             q,
             batna,
@@ -14143,48 +14209,34 @@ class AegisForgeAgent:
             current_round=current_round,
             max_rounds=max_rounds,
         )
-        counter_value = self._maizebargain_offer_value(counter, v)
-        best_value = self._maizebargain_offer_value(self._maizebargain_sane_offer(q, q), v)
-        last_value = self._maizebargain_offer_value(last_offer, v) if last_offer else -1.0
+        proposal = self._maizebargain_sane_offer(proposal, q)
 
-        if last_offer:
-            accept_floor = max(float(batna), 0.90 * max(counter_value, 1.0))
-            if current_round >= max_rounds:
-                accept_floor = float(batna)
-            elif current_round >= max_rounds - 1:
-                accept_floor = max(float(batna), 0.75 * max(counter_value, 1.0))
-            if last_value + 1e-9 >= accept_floor:
-                action = {"action": "ACCEPT"}
-                self._maizebargain_last_status = {
-                    "mode": "maizebargain_turn_v1",
-                    "decision": "ACCEPT",
-                    "last_value": round(last_value, 3),
-                    "batna": round(float(batna), 3),
-                }
-                return json.dumps(action, ensure_ascii=False, separators=(",", ":"))
+        # Absolute schema firewall: the parser wants allocation_self.  Do not
+        # emit action/offer keys in this route.
+        response = {"allocation_self": [int(x) for x in proposal]}
+        final_json = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
 
-        # If even our best sane offer is below BATNA and the opponent's offer is
-        # also below BATNA at the deadline, walking is safer than an invalid deal.
-        if current_round >= max_rounds and counter_value + 1e-9 < float(batna) and (not last_offer or last_value + 1e-9 < float(batna)):
-            action = {"action": "WALK"}
-            self._maizebargain_last_status = {
-                "mode": "maizebargain_turn_v1",
-                "decision": "WALK",
-                "counter_value": round(counter_value, 3),
-                "batna": round(float(batna), 3),
-            }
-            return json.dumps(action, ensure_ascii=False, separators=(",", ":"))
+        # Local parse guard.  If a future edit corrupts the payload, fall back to
+        # the most conservative valid allocation JSON instead of exposing any
+        # AegisForge/NCP prose to the green.
+        try:
+            parsed = json.loads(final_json)
+            if not isinstance(parsed, Mapping) or not isinstance(parsed.get("allocation_self"), list):
+                raise ValueError("invalid allocation_self response")
+        except Exception:
+            safe_n = max(3, len(q))
+            final_json = json.dumps({"allocation_self": [0 for _ in range(safe_n)]}, ensure_ascii=False, separators=(",", ":"))
 
-        action = {"action": "COUNTEROFFER", "offer": [int(x) for x in counter]}
         self._maizebargain_last_status = {
-            "mode": "maizebargain_turn_v1",
-            "decision": "COUNTEROFFER",
-            "offer": action["offer"],
-            "offer_value": round(counter_value, 3),
+            "mode": "maizebargain_turn_v1_2",
+            "decision": "PROPOSE_ALLOCATION_SELF",
+            "allocation_self": response["allocation_self"],
+            "value": round(self._maizebargain_offer_value(response["allocation_self"], v), 3),
             "batna": round(float(batna), 3),
             "round": current_round,
+            "schema": "allocation_self_only",
         }
-        return json.dumps(action, ensure_ascii=False, separators=(",", ":"))
+        return final_json
 
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
@@ -14369,6 +14421,23 @@ class AegisForgeAgent:
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
                 name="AegisForgeResponse",
             )
+
+        # Absolute MAizeBargAIn final-output firewall.  If the live bargaining
+        # route was detected, the visible message must be parseable JSON and
+        # must use the requested allocation_self schema.  Never let the generic
+        # NCP renderer leak "AegisForge structured_response" into this protocol.
+        if maizebargain_turn_protocol:
+            try:
+                parsed_maize = json.loads(self._coerce_text(final_text).strip())
+                if not isinstance(parsed_maize, Mapping) or not isinstance(parsed_maize.get("allocation_self"), list):
+                    raise ValueError("MAizeBargAIn final response is not allocation_self JSON")
+                final_text = json.dumps(
+                    {"allocation_self": [int(x) for x in parsed_maize.get("allocation_self", [])]},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            except Exception:
+                final_text = json.dumps({"allocation_self": [0, 0, 0]}, ensure_ascii=False, separators=(",", ":"))
 
         # Emit one and only one visible final response for Build-it/strict modes.
         await updater.update_status(
