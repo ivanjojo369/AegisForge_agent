@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""AegisForge runtime agent v0.2.5.
+"""AegisForge runtime agent v0.2.6.
 
 Drop-in replacement for ``src/aegisforge/agent.py``.
 
@@ -15,8 +15,8 @@ Public exports provided here:
 
 The implementation keeps a stable compatibility surface while adding a broader
 BrowseComp-Plus final-answer mode, robust A2A message parsing, safe updater
-handling, adapter/status helpers, local fixed-corpus retrieval, and optional
-OpenAI-compatible LLM calls when credentials are available.
+handling, adapter/status helpers, local fixed-corpus retrieval, config-object
+normalization, and optional OpenAI-compatible LLM calls when credentials are available.
 """
 
 from dataclasses import asdict, dataclass, is_dataclass
@@ -34,7 +34,7 @@ import zipfile
 
 LOGGER = logging.getLogger(__name__)
 
-AGENT_VERSION = "0.2.5-runtime-extended"
+AGENT_VERSION = "0.2.6-runtime-extended-config-safe"
 AGENT_NAME = "AegisForgeAgent"
 
 SUPPORTED_TRACKS: tuple[str, ...] = (
@@ -170,6 +170,87 @@ def _read_attr_or_key(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _config_to_dict(config: Any) -> dict[str, Any]:
+    """Normalize AppConfig/Pydantic/dataclass/mapping objects to a plain dict.
+
+    Unit tests and server code pass an ``AppConfig`` object into the agent
+    constructor.  ``dict(AppConfig(...))`` is not valid for many config model
+    implementations, so this helper accepts the common model surfaces instead
+    of assuming the config is iterable.
+    """
+    if config is None:
+        return {}
+
+    if isinstance(config, Mapping):
+        return dict(config)
+
+    if is_dataclass(config):
+        try:
+            data = asdict(config)
+            return dict(data) if isinstance(data, Mapping) else {}
+        except Exception:
+            pass
+
+    # Pydantic v2 and compatible config models.
+    model_dump = getattr(config, "model_dump", None)
+    if callable(model_dump):
+        for call_kwargs in (
+            {"mode": "python"},
+            {},
+        ):
+            try:
+                data = model_dump(**call_kwargs)
+                if isinstance(data, Mapping):
+                    return dict(data)
+            except TypeError:
+                continue
+            except Exception:
+                break
+
+    # Pydantic v1 and older model-like objects.
+    dict_method = getattr(config, "dict", None)
+    if callable(dict_method):
+        for call_kwargs in (
+            {},
+            {"exclude_none": False},
+        ):
+            try:
+                data = dict_method(**call_kwargs)
+                if isinstance(data, Mapping):
+                    return dict(data)
+            except TypeError:
+                continue
+            except Exception:
+                break
+
+    # SimpleNamespace / plain Python objects.
+    try:
+        data = vars(config)
+        if isinstance(data, Mapping):
+            return {str(key): value for key, value in data.items() if not str(key).startswith("_")}
+    except TypeError:
+        pass
+
+    # Slotted config objects.
+    result: dict[str, Any] = {}
+    slots = getattr(type(config), "__slots__", ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    for name in slots or ():
+        if not name or str(name).startswith("_"):
+            continue
+        try:
+            result[str(name)] = getattr(config, name)
+        except Exception:
+            continue
+    if result:
+        return result
+
+    # Conservative last resort: expose a compact value without pretending the
+    # object was iterable.
+    return {"value": _coerce_text(config)}
 
 
 def get_message_text(message: Any) -> str:
@@ -315,8 +396,8 @@ class AegisForgeAgent:
     version = AGENT_VERSION
     supported_tracks = SUPPORTED_TRACKS
 
-    def __init__(self, config: Mapping[str, Any] | None = None, **kwargs: Any) -> None:
-        self.config: dict[str, Any] = dict(config or {})
+    def __init__(self, config: Any | None = None, **kwargs: Any) -> None:
+        self.config: dict[str, Any] = _config_to_dict(config)
         self.config.update(kwargs)
         self.created_at = datetime.now(timezone.utc).isoformat()
         self._current_llm_calls = 0
@@ -345,6 +426,7 @@ class AegisForgeAgent:
                 "browsecomp_plus_final_answer_mode",
                 "browsecomp_plus_local_retrieval",
                 "optional_openai_compatible_llm",
+                "config_object_normalization",
             ],
             "public_exports": ["AegisForgeAgent", "Agent", "get_message_text", "new_agent_text_message"],
         }
