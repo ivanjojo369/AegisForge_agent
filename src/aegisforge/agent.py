@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""AegisForge runtime agent v0.2.9.
+"""AegisForge runtime agent v0.2.10.
 
 Drop-in replacement for ``src/aegisforge/agent.py``.
 
@@ -34,7 +34,7 @@ import zipfile
 
 LOGGER = logging.getLogger(__name__)
 
-AGENT_VERSION = "0.2.9-runtime-extended-agent181-contract"
+AGENT_VERSION = "0.2.10-runtime-extended-agent181-contract"
 AGENT_NAME = "AegisForgeAgent"
 
 SUPPORTED_TRACKS: tuple[str, ...] = (
@@ -681,22 +681,23 @@ class AegisForgeAgent:
         return await self._try_updater_calls(updater, attempts)
 
     async def _safe_add_artifact(self, updater: Any, text: str) -> bool:
-        # Keep artifacts simple and text-only to satisfy many A2A versions.
-        payloads = [
-            text,
-            new_agent_text_message(text),
-            {"name": "Result", "parts": [{"text": text}]},
-            {"parts": [{"text": text}]},
-        ]
-        attempts: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-        for payload in payloads:
-            attempts.extend([
-                ("add_artifact", (payload,), {}),
-                ("add_artifact", (), {"parts": [{"text": text}], "name": "Result"}),
-                ("append_artifact", (payload,), {}),
-                ("add_message", (payload,), {}),
-            ])
-        return await self._try_updater_calls(updater, tuple(attempts))
+        """Add the final response artifact using the legacy test contract name.
+
+        ``tests/test_core/test_agent.py`` inspects the last artifact and expects
+        ``artifact.get("name") == "AegisForgeResponse"``.  The full agent lineage
+        used that public artifact name, so the lightweight runtime must not use
+        generic names such as ``Result`` even though the payload is still plain
+        text-only for broad A2A compatibility.
+        """
+        artifact = {"name": "AegisForgeResponse", "parts": [{"text": text}]}
+        message = new_agent_text_message(text)
+        attempts: tuple[tuple[str, tuple[Any, ...], dict[str, Any]], ...] = (
+            ("add_artifact", (artifact,), {}),
+            ("add_artifact", (), {"parts": [{"text": text}], "name": "AegisForgeResponse"}),
+            ("append_artifact", (artifact,), {}),
+            ("add_message", (message,), {}),
+        )
+        return await self._try_updater_calls(updater, attempts)
 
     async def _try_updater_calls(self, updater: Any, attempts: tuple[tuple[str, tuple[Any, ...], dict[str, Any]], ...]) -> bool:
         if updater is None:
