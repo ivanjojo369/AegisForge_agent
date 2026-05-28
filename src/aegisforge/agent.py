@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_2_sprint4_general_ncp_crmarena_v114_maizebargain_browsecomp_plus_v0_1_2026_05_28"
-BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_research_answer_engine_v0_1_direct_answer_2026_05_28"
+BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_research_answer_engine_v0_2_1_scope_routefix_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
@@ -12093,6 +12093,46 @@ class AegisForgeAgent:
             "schema": "allocation_self_only",
         }
         return final_json
+    def _browsecomp_plus_scope_hint(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> bool:
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        chunks = [self._coerce_text(task_text)]
+        if safe_metadata:
+            try:
+                chunks.append(json.dumps(self._normalize_for_json(dict(safe_metadata)), ensure_ascii=False)[:12000])
+            except Exception:
+                chunks.append(str(dict(safe_metadata))[:12000])
+        try:
+            chunks.extend([
+                os.getenv("AGENTBEATS_TRACK", ""),
+                os.getenv("AGENTBEATS_BENCHMARK", ""),
+                os.getenv("AGENTBEATS_TASK", ""),
+                os.getenv("BROWSECOMP_MODE", ""),
+                os.getenv("BROWSECOMP_PLUS_MODE", ""),
+                os.getenv("BROWSECOMP_CORPUS_PATH", ""),
+                os.getenv("BROWSECOMP_PLUS_CORPUS_PATH", ""),
+                os.getenv("GITHUB_REPOSITORY", ""),
+                os.getenv("GITHUB_WORKFLOW", ""),
+                os.getenv("GITHUB_JOB", ""),
+                os.getenv("AMBER_COMPOSE_PROJECT", ""),
+                str(Path.cwd()),
+                str(Path(__file__).resolve()),
+            ])
+        except Exception:
+            pass
+        blob = "\n".join(chunk for chunk in chunks if chunk).lower()
+        normalized = re.sub(r"[^a-z0-9]+", "_", blob).strip("_")
+        markers = (
+            "browsecomp_plus",
+            "browsecomp-plus",
+            "browsecompplus",
+            "browsecomp_plus_leaderboard",
+            "browsecomp-plus-leaderboard",
+            "rdi_foundation_browsecomp_plus",
+            "fixed_document_corpus",
+            "transparent_fixed_document_corpus",
+        )
+        return any(marker in blob or marker in normalized for marker in markers)
+
     def _is_browsecomp_plus_protocol(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> bool:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
         combined = self._coerce_text(task_text)
@@ -12597,8 +12637,8 @@ class AegisForgeAgent:
         if not scored:
             diag["elapsed_ms"] = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             try:
-                LOGGER.info(
-                    "BROWSECOMP_PLUS_DIAG_V0_2 roots=%s files=%s archives=%s records=%s hits=0 skips=%s errors=%s elapsed_ms=%s",
+                LOGGER.warning(
+                    "BROWSECOMP_PLUS_DIAG_V0_2_1 roots=%s files=%s archives=%s records=%s hits=0 skips=%s errors=%s elapsed_ms=%s",
                     diag["roots_seen"], diag["files_seen"], diag["archives_seen"], diag["records_seen"],
                     diag["forbidden_skips"], diag["read_errors"], diag["elapsed_ms"],
                 )
@@ -12622,8 +12662,8 @@ class AegisForgeAgent:
         diag["top_sources"] = top_sources[:8]
         diag["elapsed_ms"] = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         try:
-            LOGGER.info(
-                "BROWSECOMP_PLUS_DIAG_V0_2 roots=%s files=%s archives=%s records=%s hits=%s max_score=%s skips=%s errors=%s evidence_chars=%s elapsed_ms=%s top_sources=%s",
+            LOGGER.warning(
+                "BROWSECOMP_PLUS_DIAG_V0_2_1 roots=%s files=%s archives=%s records=%s hits=%s max_score=%s skips=%s errors=%s evidence_chars=%s elapsed_ms=%s top_sources=%s",
                 diag["roots_seen"], diag["files_seen"], diag["archives_seen"], diag["records_seen"],
                 diag["scored_hits"], diag["max_score"], diag["forbidden_skips"], diag["read_errors"],
                 len("\n\n".join(chunks)), diag["elapsed_ms"], "|".join(top_sources[:5]),
@@ -12706,7 +12746,7 @@ class AegisForgeAgent:
         if not answer:
             answer = "INSUFFICIENT_INFORMATION"
         self._browsecomp_plus_last_status = {
-            "mode": "browsecomp_plus_diagnostic_retrieval_v0_2",
+            "mode": "browsecomp_plus_diagnostic_retrieval_v0_2_1_scope_routefix",
             "question_chars": len(question),
             "context_chars": len(context),
             "prompt_context_present": bool(has_prompt_context),
@@ -12718,8 +12758,8 @@ class AegisForgeAgent:
             "answer_chars": len(answer),
         }
         try:
-            LOGGER.info(
-                "BROWSECOMP_PLUS_STATUS_V0_2 question_chars=%s context_chars=%s local_evidence=%s local_chars=%s llm_calls=%s llm_error=%s answer_chars=%s roots=%s files=%s hits=%s",
+            LOGGER.warning(
+                "BROWSECOMP_PLUS_STATUS_V0_2_1 question_chars=%s context_chars=%s local_evidence=%s local_chars=%s llm_calls=%s llm_error=%s answer_chars=%s roots=%s files=%s hits=%s",
                 len(question), len(context), int(bool(local_evidence)), len(local_evidence),
                 self._current_llm_calls, getattr(self, "_last_llm_error", ""), len(answer),
                 retrieval_diag.get("roots_seen", 0), retrieval_diag.get("files_seen", 0), retrieval_diag.get("scored_hits", 0),
@@ -12741,11 +12781,17 @@ class AegisForgeAgent:
         maizebargain_turn_protocol = False if generic_smoke_request else self._is_maizebargain_turn_payload(base_text, metadata)
         multi_agent_result_protocol = False if (generic_smoke_request or maizebargain_turn_protocol) else self._is_maizebargain_result_payload(base_text, metadata)
         maizebargain_protocol = maizebargain_turn_protocol or multi_agent_result_protocol
-        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol) else _crmarena_strong_question_signal(base_text, metadata=metadata)
-        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
-        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
-        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
-        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol) else self._is_browsecomp_plus_protocol(base_text, metadata)
+        browsecomp_plus_scope = False if (generic_smoke_request or maizebargain_protocol) else self._browsecomp_plus_scope_hint(base_text, metadata)
+        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_scope) else _crmarena_strong_question_signal(base_text, metadata=metadata)
+        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or browsecomp_plus_scope) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or browsecomp_plus_scope) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
+        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or officeqa_protocol or browsecomp_plus_scope) else self._is_build_it_protocol(metadata, base_text)
+        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol) else (browsecomp_plus_scope or self._is_browsecomp_plus_protocol(base_text, metadata))
+        if browsecomp_plus_scope:
+            try:
+                LOGGER.warning("BROWSECOMP_PLUS_SCOPE_V0_2_1 route=enabled crmarena_blocked=%s task_chars=%s", int(not crmarena_protocol), len(base_text))
+            except Exception:
+                pass
         strict_protocol = "" if (generic_smoke_request or maizebargain_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol or browsecomp_plus_protocol) else self._strict_output_protocol(metadata, base_text)
         if not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.update_status(
