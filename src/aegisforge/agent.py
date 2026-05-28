@@ -404,6 +404,7 @@ class AegisForgeAgent:
         self._last_llm_error = ""
         self._last_route = "generic"
         self._last_answer = ""
+        self.turns = 0
         self._browsecomp_plus_last_status: dict[str, Any] = {}
         self._browsecomp_plus_last_diag: dict[str, Any] = {}
 
@@ -620,6 +621,9 @@ class AegisForgeAgent:
         return self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
 
     async def run(self, message: Any, updater: Any) -> None:
+        self.turns = int(getattr(self, "turns", 0) or 0) + 1
+        metadata = self._extract_metadata(message)
+        task_text = get_message_text(message)
         """A2A executor entrypoint with the original agent_181 return contract.
 
         The old full agent exposes ``async def run(message, updater) -> None``:
