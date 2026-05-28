@@ -887,6 +887,33 @@ BROWSECOMP_HANDLER = r'''
 '''
 
 
+
+PUBLIC_EXPORTS_BLOCK = '\n\n# ---------------------------------------------------------------------------\n# Public compatibility exports\n# ---------------------------------------------------------------------------\n# Some A2A/server tests import either `AegisForgeAgent` or `Agent` from this\n# module.  Keep the canonical class and expose the historical alias explicitly.\nAgent = AegisForgeAgent\n\n__all__ = [\n    "AegisForgeAgent",\n    "Agent",\n    "get_message_text",\n    "new_agent_text_message",\n]\n'
+
+
+def _ensure_public_agent_exports(text: str) -> str:
+    """Expose Agent alias and public helpers expected by tests/loaders."""
+    if "class AegisForgeAgent" not in text:
+        return text
+    updated = text.rstrip()
+    if "Agent = AegisForgeAgent" not in updated:
+        updated += PUBLIC_EXPORTS_BLOCK
+    if "__all__" not in updated[-1400:]:
+        updated += '\n\n__all__ = ["AegisForgeAgent", "Agent", "get_message_text", "new_agent_text_message"]\n'
+    return updated + ("\n" if text.endswith("\n") else "")
+
+
+def _validate_target_agent_shape(text: str) -> None:
+    """Fail fast if src/aegisforge/agent.py was accidentally replaced by a patch script."""
+    required = ("class AegisForgeAgent", "async def run", "def _handle_browsecomp_plus_turn")
+    missing = [marker for marker in required if marker not in text]
+    if missing:
+        raise SystemExit(
+            "Refusing to patch src/aegisforge/agent.py because it does not look like the complete agent module. "
+            "Missing: " + ", ".join(missing) + ". Restore/copy a complete agent.py first, then rerun this patch."
+        )
+
+
 def main() -> None:
     if not AGENT_PATH.exists():
         raise SystemExit(f"Not found: {AGENT_PATH}. Run this from the AegisForge_agent repo root.")
@@ -897,6 +924,7 @@ def main() -> None:
         print("BrowseComp-Plus v0.2.2 patch already appears to be installed. Set AEGISFORGE_BROWSECOMP_PLUS_PATCH_FORCE=1 to re-apply.")
         return
 
+    _validate_target_agent_shape(text)
     original = text
     text = ensure_agent_runtime_imports(text)
     text = replace_between(
@@ -918,6 +946,8 @@ def main() -> None:
         BROWSECOMP_HANDLER,
     )
 
+    text = _ensure_public_agent_exports(text)
+
     try:
         ast.parse(text)
         compile(text, str(AGENT_PATH), "exec")
@@ -931,7 +961,7 @@ def main() -> None:
 
     print(f"Patched: {AGENT_PATH}")
     print(f"Backup:  {backup}")
-    print("Installed: browsecomp_plus_diagnostic_retrieval_v0_2_2 (agent181 import-safe rebuild)")
+    print("Installed: browsecomp_plus_diagnostic_retrieval_v0_2_2 (agent183 safe rebuild + public exports)")
 
 
 if __name__ == "__main__":
