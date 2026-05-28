@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Patch BrowseComp-Plus v0.2.2 diagnostics/retrieval into src/aegisforge/agent.py.
+# Patch BrowseComp-Plus v0.2.3 diagnostics/retrieval into src/aegisforge/agent.py.
 # import-safe rebuild: agent(181).py imports/froms are stored as data, not executed here.
 #
 # Scope:
@@ -10,7 +10,7 @@ from __future__ import annotations
 # - Creates a timestamped backup before writing.
 #
 # Run from the repo root:
-#     python tools/apply_browsecomp_plus_v0_2_2_patch.py
+#     python tools/apply_browsecomp_plus_v0_2_3_repair_patch.py
 
 import ast
 import os
@@ -70,6 +70,127 @@ def _clean_known_bad_import_lines(text: str) -> str:
             continue
         cleaned.append(line)
     return "\n".join(cleaned) + ("\n" if text.endswith("\n") else "")
+
+def _agent_ast_shape(text: str) -> tuple[bool, bool, bool]:
+    """Return whether text defines the real top-level agent class/run/handler."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False, False, False
+    has_class = False
+    has_run = False
+    has_handler = False
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "AegisForgeAgent":
+            has_class = True
+            for item in node.body:
+                if isinstance(item, ast.AsyncFunctionDef) and item.name == "run":
+                    has_run = True
+                if isinstance(item, ast.FunctionDef) and item.name == "_handle_browsecomp_plus_turn":
+                    has_handler = True
+    return has_class, has_run, has_handler
+
+
+def _looks_like_complete_agent_module(text: str) -> bool:
+    """Return True only for a real runtime agent module, not a patch script."""
+    has_class, has_run, has_handler = _agent_ast_shape(text)
+    if not (has_class and has_run and has_handler):
+        return False
+    if "AGENT_PATH = Path(\"src/aegisforge/agent.py\")" in text and "BROWSECOMP_DETECTOR =" in text:
+        return False
+    return True
+
+
+def _looks_like_accidental_patch_script(text: str) -> bool:
+    """Detect the CI failure mode: a patch script committed as src/aegisforge/agent.py."""
+    patch_markers = (
+        "Patch BrowseComp-Plus",
+        "AGENT_PATH = Path(\"src/aegisforge/agent.py\")",
+        "def replace_between(text: str",
+        "BROWSECOMP_DETECTOR =",
+    )
+    return all(marker in text for marker in patch_markers) and not _looks_like_complete_agent_module(text)
+
+
+def _candidate_restore_paths() -> list[Path]:
+    """Search local repo paths for a full agent backup/copy before patching."""
+    candidates: list[Path] = []
+    roots = [AGENT_PATH.parent, Path.cwd(), Path("tools")]
+    patterns = (
+        "agent.py.bak*",
+        "agent.py.*.bak",
+        "agent_*.py",
+        "agent*.py",
+        "*agent*.py.bak*",
+    )
+    seen: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            try:
+                iterable = root.glob(pattern)
+            except Exception:
+                continue
+            for candidate in iterable:
+                try:
+                    resolved = str(candidate.resolve())
+                except Exception:
+                    resolved = str(candidate)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                if candidate == AGENT_PATH:
+                    continue
+                name_l = candidate.name.lower()
+                if name_l.startswith("apply_browsecomp") or "patch" in name_l:
+                    continue
+                candidates.append(candidate)
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return candidates
+
+
+def _read_complete_agent_candidate(candidate: Path) -> str | None:
+    try:
+        candidate_text = candidate.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if not _looks_like_complete_agent_module(candidate_text):
+        return None
+    try:
+        ast.parse(candidate_text)
+        compile(candidate_text, str(candidate), "exec")
+    except SyntaxError:
+        return None
+    return candidate_text
+
+
+def _restore_agent_if_patch_script(text: str) -> tuple[str, Path | None]:
+    """Restore a real agent.py if the target was accidentally overwritten by this patcher."""
+    if _looks_like_complete_agent_module(text):
+        return text, None
+
+    if not _looks_like_accidental_patch_script(text):
+        return text, None
+
+    for candidate in _candidate_restore_paths():
+        candidate_text = _read_complete_agent_candidate(candidate)
+        if candidate_text is None:
+            continue
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        broken_backup = AGENT_PATH.with_suffix(f".py.broken_patch_script_{timestamp}.bak")
+        broken_backup.write_text(text, encoding="utf-8")
+        AGENT_PATH.write_text(candidate_text, encoding="utf-8")
+        print(f"Restored complete agent module from: {candidate}")
+        print(f"Broken patch-script backup: {broken_backup}")
+        return candidate_text, candidate
+
+    raise SystemExit(
+        "src/aegisforge/agent.py is a patch script, not the real agent module. "
+        "No complete local backup/copy was found automatically. Restore a full agent.py "
+        "that contains `class AegisForgeAgent` and `async def run`, then rerun this patch. "
+        "Do not copy apply_browsecomp*.py into src/aegisforge/agent.py."
+    )
 
 def ensure_agent_runtime_imports(text: str) -> str:
     """Ensure target agent.py uses the import/from block from agent(181).py.
@@ -888,6 +1009,70 @@ BROWSECOMP_HANDLER = r'''
 
 
 
+PUBLIC_A2A_HELPERS_BLOCK = '''
+
+# ---------------------------------------------------------------------------
+# Public A2A helper compatibility
+# ---------------------------------------------------------------------------
+# Tests and A2A wrappers import these helpers from aegisforge.agent. Prefer the
+# official a2a.utils functions, but keep lightweight fallbacks so module import
+# stays robust in stripped-down smoke-test environments.
+try:
+    get_message_text
+except NameError:
+    try:
+        from a2a.utils import get_message_text as get_message_text
+    except Exception:  # pragma: no cover - fallback for minimal test envs
+        def get_message_text(message):
+            if message is None:
+                return ""
+            if isinstance(message, str):
+                return message
+            for attr in ("text", "content"):
+                value = getattr(message, attr, None)
+                if isinstance(value, str):
+                    return value
+            parts = getattr(message, "parts", None)
+            if parts:
+                chunks = []
+                for part in parts:
+                    root = getattr(part, "root", part)
+                    text_value = getattr(root, "text", None)
+                    if isinstance(text_value, str):
+                        chunks.append(text_value)
+                if chunks:
+                    return "\n".join(chunks)
+            return str(message)
+
+try:
+    new_agent_text_message
+except NameError:
+    try:
+        from a2a.utils import new_agent_text_message as new_agent_text_message
+    except Exception:  # pragma: no cover - fallback for minimal test envs
+        def new_agent_text_message(text):
+            return text
+'''
+
+
+def _ensure_public_a2a_helpers(text: str) -> str:
+    """Ensure get_message_text/new_agent_text_message exist at module level."""
+    has_get = (
+        "from a2a.utils import get_message_text" in text
+        or "from a2a.utils import get_message_text, new_agent_text_message" in text
+        or "def get_message_text(" in text
+        or "get_message_text =" in text
+    )
+    has_new = (
+        "from a2a.utils import new_agent_text_message" in text
+        or "from a2a.utils import get_message_text, new_agent_text_message" in text
+        or "def new_agent_text_message(" in text
+        or "new_agent_text_message =" in text
+    )
+    if has_get and has_new:
+        return text
+    return text.rstrip() + "\n" + PUBLIC_A2A_HELPERS_BLOCK + "\n"
+
 PUBLIC_EXPORTS_BLOCK = '\n\n# ---------------------------------------------------------------------------\n# Public compatibility exports\n# ---------------------------------------------------------------------------\n# Some A2A/server tests import either `AegisForgeAgent` or `Agent` from this\n# module.  Keep the canonical class and expose the historical alias explicitly.\nAgent = AegisForgeAgent\n\n__all__ = [\n    "AegisForgeAgent",\n    "Agent",\n    "get_message_text",\n    "new_agent_text_message",\n]\n'
 
 
@@ -904,9 +1089,15 @@ def _ensure_public_agent_exports(text: str) -> str:
 
 
 def _validate_target_agent_shape(text: str) -> None:
-    """Fail fast if src/aegisforge/agent.py was accidentally replaced by a patch script."""
-    required = ("class AegisForgeAgent", "async def run", "def _handle_browsecomp_plus_turn")
-    missing = [marker for marker in required if marker not in text]
+    """Fail fast if src/aegisforge/agent.py is not the complete runtime module."""
+    has_class, has_run, has_handler = _agent_ast_shape(text)
+    missing: list[str] = []
+    if not has_class:
+        missing.append("top-level class AegisForgeAgent")
+    if not has_run:
+        missing.append("AegisForgeAgent.async run")
+    if not has_handler:
+        missing.append("AegisForgeAgent._handle_browsecomp_plus_turn")
     if missing:
         raise SystemExit(
             "Refusing to patch src/aegisforge/agent.py because it does not look like the complete agent module. "
@@ -914,18 +1105,45 @@ def _validate_target_agent_shape(text: str) -> None:
         )
 
 
+
 def main() -> None:
     if not AGENT_PATH.exists():
         raise SystemExit(f"Not found: {AGENT_PATH}. Run this from the AegisForge_agent repo root.")
 
     text = AGENT_PATH.read_text(encoding="utf-8")
+    text, restored_from = _restore_agent_if_patch_script(text)
+    _validate_target_agent_shape(text)
+
     force = os.getenv("AEGISFORGE_BROWSECOMP_PLUS_PATCH_FORCE", "0").strip().lower() in {"1", "true", "yes", "on"}
-    if "browsecomp_plus_diagnostic_retrieval_v0_2_2" in text and not force:
-        print("BrowseComp-Plus v0.2.2 patch already appears to be installed. Set AEGISFORGE_BROWSECOMP_PLUS_PATCH_FORCE=1 to re-apply.")
+    already_installed = "browsecomp_plus_diagnostic_retrieval_v0_2_2" in text
+
+    original = text
+
+    if already_installed and not force:
+        # Do not skip the public-export repair. The CI failure in the screenshots
+        # is an import/export failure, so this branch still verifies and repairs
+        # AegisForgeAgent/Agent/get_message_text/new_agent_text_message.
+        text = ensure_agent_runtime_imports(text)
+        text = _ensure_public_a2a_helpers(text)
+        text = _ensure_public_agent_exports(text)
+        try:
+            ast.parse(text)
+            compile(text, str(AGENT_PATH), "exec")
+        except SyntaxError as exc:
+            raise SystemExit(f"Repaired agent.py failed syntax validation: {exc}") from exc
+        if text != original:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = AGENT_PATH.with_suffix(f".py.bak_exports_repair_v0_2_3_{timestamp}")
+            backup.write_text(original, encoding="utf-8")
+            AGENT_PATH.write_text(text, encoding="utf-8")
+            print(f"Repaired exports/imports in: {AGENT_PATH}")
+            print(f"Backup:  {backup}")
+        else:
+            print("BrowseComp-Plus v0.2.2 is already installed and public exports are OK.")
+        if restored_from is not None:
+            print(f"Initial restore source: {restored_from}")
         return
 
-    _validate_target_agent_shape(text)
-    original = text
     text = ensure_agent_runtime_imports(text)
     text = replace_between(
         text,
@@ -946,6 +1164,7 @@ def main() -> None:
         BROWSECOMP_HANDLER,
     )
 
+    text = _ensure_public_a2a_helpers(text)
     text = _ensure_public_agent_exports(text)
 
     try:
@@ -955,13 +1174,15 @@ def main() -> None:
         raise SystemExit(f"Patched agent.py failed syntax validation: {exc}") from exc
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = AGENT_PATH.with_suffix(f".py.bak_browsecomp_v0_2_2_{timestamp}")
+    backup = AGENT_PATH.with_suffix(f".py.bak_browsecomp_v0_2_3_{timestamp}")
     backup.write_text(original, encoding="utf-8")
     AGENT_PATH.write_text(text, encoding="utf-8")
 
     print(f"Patched: {AGENT_PATH}")
     print(f"Backup:  {backup}")
-    print("Installed: browsecomp_plus_diagnostic_retrieval_v0_2_2 (agent183 safe rebuild + public exports)")
+    if restored_from is not None:
+        print(f"Initial restore source: {restored_from}")
+    print("Installed: browsecomp_plus_diagnostic_retrieval_v0_2_3 repair wrapper + v0_2_2 retrieval + public exports")
 
 
 if __name__ == "__main__":
