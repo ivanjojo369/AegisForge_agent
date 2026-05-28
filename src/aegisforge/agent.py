@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""AegisForge runtime agent v0.2.10.
+"""AegisForge runtime agent v0.2.11.
 
 Drop-in replacement for ``src/aegisforge/agent.py``.
 
@@ -34,7 +34,7 @@ import zipfile
 
 LOGGER = logging.getLogger(__name__)
 
-AGENT_VERSION = "0.2.10-runtime-extended-agent181-contract"
+AGENT_VERSION = "0.2.11-runtime-datapart-routefix"
 AGENT_NAME = "AegisForgeAgent"
 
 SUPPORTED_TRACKS: tuple[str, ...] = (
@@ -172,6 +172,64 @@ def _read_attr_or_key(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
+def _data_to_text(data: Any, *, depth: int = 0) -> str:
+    """Extract user-facing text from A2A DataPart-style payloads.
+
+    The BrowseComp-Plus runner can send the real question inside DataPart.data
+    rather than TextPart.text.  Prefer natural-language fields when present and
+    otherwise fall back to compact JSON so downstream routing can still inspect
+    keys such as question/query/prompt/input/task.
+    """
+    if data is None or depth > 6:
+        return ""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="ignore")
+    if isinstance(data, Mapping):
+        for key in (
+            "question",
+            "query",
+            "prompt",
+            "input",
+            "task",
+            "user_query",
+            "content",
+            "text",
+            "message",
+        ):
+            value = data.get(key)
+            text = _data_to_text(value, depth=depth + 1)
+            if text.strip():
+                return text
+        for key in ("messages", "parts", "documents", "context", "evidence", "data"):
+            value = data.get(key)
+            text = _data_to_text(value, depth=depth + 1)
+            if text.strip():
+                return text
+        try:
+            return json.dumps(_normalize_for_json(data), ensure_ascii=False)
+        except Exception:
+            return _coerce_text(data)
+    if isinstance(data, (list, tuple, set)):
+        chunks = [_data_to_text(item, depth=depth + 1) for item in list(data)[:80]]
+        return "\n".join(chunk for chunk in chunks if chunk)
+    if hasattr(data, "model_dump"):
+        try:
+            return _data_to_text(data.model_dump(), depth=depth + 1)
+        except Exception:
+            pass
+    if hasattr(data, "dict"):
+        try:
+            return _data_to_text(data.dict(), depth=depth + 1)
+        except Exception:
+            pass
+    try:
+        return _data_to_text(vars(data), depth=depth + 1)
+    except Exception:
+        return _coerce_text(data)
+
+
 def _config_to_dict(config: Any) -> dict[str, Any]:
     """Normalize AppConfig/Pydantic/dataclass/mapping objects to a plain dict.
 
@@ -257,8 +315,8 @@ def get_message_text(message: Any) -> str:
     """Return plain text from an A2A message-like object.
 
     Re-exported at module level because tests and executor code import it from
-    ``aegisforge.agent``.  It handles official A2A models, dicts, JSON-RPC
-    payloads, simple strings, and several historical local message shapes.
+    ``aegisforge.agent``.  v0.2.11 also handles A2A DataPart/root.data payloads,
+    which is critical for BrowseComp-Plus runners that do not send a TextPart.
     """
     if _a2a_get_message_text is not None:
         try:
@@ -275,31 +333,45 @@ def get_message_text(message: Any) -> str:
     if isinstance(message, bytes):
         return message.decode("utf-8", errors="ignore")
 
-    # A2A JSON-RPC-like envelopes often wrap the actual message under params.
     if isinstance(message, Mapping):
-        for key in ("text", "content", "message", "prompt", "query", "question", "input"):
+        for key in ("text", "content", "message", "prompt", "query", "question", "input", "task"):
             value = message.get(key)
             if isinstance(value, str) and value.strip():
                 return value
+
         params = message.get("params")
         if isinstance(params, Mapping):
-            for key in ("message", "text", "content", "prompt", "query", "question"):
+            for key in ("message", "text", "content", "prompt", "query", "question", "input", "task"):
                 nested = params.get(key)
                 if nested is not None:
                     text = get_message_text(nested)
                     if text:
                         return text
+
         parts = message.get("parts")
         if parts is not None:
             text = _parts_to_text(parts)
             if text:
                 return text
+
         root = message.get("root")
         if root is not None:
             text = get_message_text(root)
             if text:
                 return text
+
+        if "data" in message:
+            text = _data_to_text(message.get("data"))
+            if text:
+                return text
+
         return json.dumps(_normalize_for_json(message), ensure_ascii=False)
+
+    for attr in ("text", "content", "message", "prompt", "query", "question", "input", "task"):
+        if hasattr(message, attr):
+            text = _coerce_text(getattr(message, attr))
+            if text:
+                return text
 
     parts = getattr(message, "parts", None)
     if parts is not None:
@@ -313,11 +385,19 @@ def get_message_text(message: Any) -> str:
         if text:
             return text
 
-    for attr in ("text", "content", "message", "prompt", "query", "question", "input"):
-        if hasattr(message, attr):
-            text = _coerce_text(getattr(message, attr))
+    if hasattr(message, "data"):
+        text = _data_to_text(getattr(message, "data"))
+        if text:
+            return text
+
+    try:
+        data = vars(message)
+        if data:
+            text = _data_to_text(data)
             if text:
                 return text
+    except Exception:
+        pass
 
     return _coerce_text(message)
 
@@ -336,8 +416,8 @@ def _parts_to_text(parts: Any) -> str:
             chunks.append(part)
             continue
         if isinstance(part, Mapping):
-            for key in ("text", "content"):
-                if isinstance(part.get(key), str):
+            for key in ("text", "content", "message", "prompt", "query", "question", "input", "task"):
+                if isinstance(part.get(key), str) and part.get(key).strip():
                     chunks.append(_coerce_text(part.get(key)))
                     break
             else:
@@ -347,9 +427,12 @@ def _parts_to_text(parts: Any) -> str:
                     if text:
                         chunks.append(text)
                 elif "data" in part:
-                    chunks.append(json.dumps(_normalize_for_json(part.get("data")), ensure_ascii=False))
+                    text = _data_to_text(part.get("data"))
+                    if text:
+                        chunks.append(text)
             continue
-        for attr in ("text", "content"):
+
+        for attr in ("text", "content", "message", "prompt", "query", "question", "input", "task"):
             if hasattr(part, attr):
                 text = _coerce_text(getattr(part, attr))
                 if text:
@@ -361,7 +444,12 @@ def _parts_to_text(parts: Any) -> str:
                 text = get_message_text(root)
                 if text:
                     chunks.append(text)
+            elif hasattr(part, "data"):
+                text = _data_to_text(getattr(part, "data"))
+                if text:
+                    chunks.append(text)
     return "\n".join(chunk for chunk in chunks if chunk)
+
 
 
 def new_agent_text_message(text: Any) -> Any:
@@ -426,6 +514,7 @@ class AegisForgeAgent:
                 "safe_updater_compatibility",
                 "browsecomp_plus_final_answer_mode",
                 "browsecomp_plus_local_retrieval",
+                "browsecomp_plus_datapart_routing",
                 "optional_openai_compatible_llm",
                 "config_object_normalization",
             ],
@@ -648,15 +737,79 @@ class AegisForgeAgent:
             await self._safe_update_status(updater, self._task_state("failed"), error_text, final=True)
             return None
 
+    def _effective_task_text(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        """Build routing text from TextPart plus DataPart/metadata fields.
+
+        This intentionally ignores evaluator/gold/secret-like keys and only uses
+        user-facing task/context fields.  It makes BrowseComp-Plus detection work
+        when the runner sends the question in DataPart.data instead of plain text.
+        """
+        pieces: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            text = self._sanitize_text(value)
+            if not text:
+                return
+            key = text[:500].lower()
+            if key in seen:
+                return
+            seen.add(key)
+            pieces.append(text)
+
+        def walk(value: Any, path: str = "", depth: int = 0) -> None:
+            if depth > 5 or len("\n\n".join(pieces)) > 26000:
+                return
+            if path and self._browsecomp_plus_forbidden_name(path):
+                return
+            if isinstance(value, Mapping):
+                for key, item in list(value.items())[:100]:
+                    key_s = _coerce_text(key)
+                    if self._browsecomp_plus_forbidden_name(key_s):
+                        continue
+                    next_path = f"{path}.{key_s}" if path else key_s
+                    if re.search(r"(?i)(question|query|prompt|input|task|content|text|message|context|evidence|document|source|passage|corpus|snippet)", key_s):
+                        if isinstance(item, (str, bytes)):
+                            add(item)
+                        else:
+                            extracted = _data_to_text(item)
+                            if extracted:
+                                add(extracted)
+                    walk(item, next_path, depth + 1)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for idx, item in enumerate(list(value)[:60]):
+                    walk(item, f"{path}[{idx}]", depth + 1)
+                return
+
+        add(task_text)
+        walk(metadata)
+        return "\n\n".join(pieces)[:30000] if pieces else self._sanitize_text(task_text)
+
+    def _browsecomp_plus_probe(self, task_text: str, metadata: Mapping[str, Any], effective_text: str) -> None:
+        """Safe routing probe: lengths and keys only, never full payloads."""
+        try:
+            keys = sorted(_coerce_text(key)[:80] for key in metadata.keys())[:25] if isinstance(metadata, Mapping) else []
+            LOGGER.warning(
+                "BROWSECOMP_PLUS_PROBE_V0_2_11 task_chars=%s effective_chars=%s metadata_keys=%s",
+                len(_coerce_text(task_text)),
+                len(_coerce_text(effective_text)),
+                ",".join(keys),
+            )
+        except Exception:
+            pass
+
     def _dispatch(self, task_text: str, metadata: Mapping[str, Any]) -> str:
-        if self._is_browsecomp_plus_protocol(task_text, metadata):
+        effective_task_text = self._effective_task_text(task_text, metadata)
+        self._browsecomp_plus_probe(task_text, metadata, effective_task_text)
+        if self._is_browsecomp_plus_protocol(effective_task_text, metadata):
             self._last_route = "browsecomp_plus"
-            return self._handle_browsecomp_plus_turn(task_text, metadata)
-        if self._is_openenv_disabled_request(task_text, metadata):
+            return self._handle_browsecomp_plus_turn(effective_task_text, metadata)
+        if self._is_openenv_disabled_request(effective_task_text, metadata):
             self._last_route = "openenv_disabled"
             return "OPENENV_DISABLED: the OpenEnv adapter is disabled or unavailable in this runtime."
         self._last_route = "generic"
-        return self._handle_generic_turn(task_text, metadata)
+        return self._handle_generic_turn(task_text or effective_task_text, metadata)
 
     def _handle_generic_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         text = self._sanitize_text(task_text)
@@ -781,7 +934,7 @@ class AegisForgeAgent:
             "browsecomp plus",
         )
         if force_env or any(marker in lowered for marker in forced_markers) or "browsecomp" in compact:
-            LOGGER.info("BROWSECOMP_PLUS_ROUTE_V0_2_5 reason=marker")
+            LOGGER.warning("BROWSECOMP_PLUS_ROUTE_V0_2_11 reason=marker")
             return True
 
         # Do not steal strongly marked non-BrowseComp protocols.
@@ -798,10 +951,14 @@ class AegisForgeAgent:
         )):
             return False
 
-        questionish = bool(re.search(
-            r"(?is)(?:^|\n)\s*(?:question|query)\s*[:\-]\s*\S|"
+        json_questionish = bool(re.search(
+            r"(?is)[\"'](?:question|query|prompt|input|task)[\"']\s*:\s*[\"'][^\"']{12,}",
+            combined,
+        ))
+        questionish = json_questionish or bool(re.search(
+            r"(?is)(?:^|\n)\s*(?:question|query|prompt|input|task)\s*[:\-]\s*\S|"
             r"^\s*(?:what|which|who|whom|whose|when|where|why|how|identify|name|determine|find|list)\b|"
-            r"\?\s*$",
+            r"\?\s*(?:$|[}\]]\s*$)",
             task_text.strip(),
         ))
         researchish = bool(re.search(
@@ -816,7 +973,7 @@ class AegisForgeAgent:
         auto_route = os.getenv("AEGISFORGE_BROWSECOMP_PLUS_AUTO_ROUTE", "1").strip().lower() not in {"0", "false", "no", "off"}
         routed = bool(auto_route and questionish and (researchish or has_anchor) and len(task_text.strip()) >= 24)
         if routed:
-            LOGGER.info("BROWSECOMP_PLUS_ROUTE_V0_2_5 reason=auto_question")
+            LOGGER.warning("BROWSECOMP_PLUS_ROUTE_V0_2_11 reason=auto_question")
         return routed
 
     def _handle_browsecomp_plus_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
@@ -824,6 +981,18 @@ class AegisForgeAgent:
         prompt_context = self._browsecomp_plus_extract_context(task_text, metadata)
         local_evidence = self._browsecomp_plus_local_evidence(question or task_text)
         context = "\n\n".join(part for part in (prompt_context, local_evidence) if part).strip()
+        try:
+            diag = self._browsecomp_plus_last_diag if isinstance(self._browsecomp_plus_last_diag, Mapping) else {}
+            LOGGER.warning(
+                "BROWSECOMP_PLUS_DIAG_V0_2_11 roots=%s files=%s records=%s hits=%s evidence_chars=%s",
+                diag.get("roots_seen", 0),
+                diag.get("files_seen", 0),
+                diag.get("records_seen", 0),
+                diag.get("hits", 0),
+                len(local_evidence),
+            )
+        except Exception:
+            pass
 
         answer = ""
         if context:
@@ -835,7 +1004,7 @@ class AegisForgeAgent:
         answer = self._browsecomp_plus_finalize_answer(answer, question=question)
 
         self._browsecomp_plus_last_status = {
-            "mode": "browsecomp_plus_runtime_extended_v0_2_5",
+            "mode": "browsecomp_plus_runtime_datapart_routefix_v0_2_11",
             "question_chars": len(question),
             "prompt_context_chars": len(prompt_context),
             "local_evidence_chars": len(local_evidence),
@@ -846,22 +1015,60 @@ class AegisForgeAgent:
             "llm_error": self._last_llm_error,
             "answer_chars": len(answer),
         }
-        LOGGER.info(
-            "BROWSECOMP_PLUS_STATUS_V0_2_5 question_chars=%s context_chars=%s evidence_chars=%s answer_chars=%s llm_calls=%s llm_error=%s",
+        LOGGER.warning(
+            "BROWSECOMP_PLUS_STATUS_V0_2_11 question_chars=%s context_chars=%s evidence_chars=%s answer_chars=%s llm_calls=%s llm_error=%s",
             len(question), len(context), len(local_evidence), len(answer), self._current_llm_calls, self._last_llm_error,
         )
         return answer
 
     def _browsecomp_plus_extract_question(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> str:
         safe_metadata = metadata if isinstance(metadata, Mapping) else {}
-        for key in ("question", "query", "prompt", "task", "input", "user_query"):
-            value = safe_metadata.get(key) if isinstance(safe_metadata, Mapping) else None
-            if isinstance(value, str) and value.strip():
-                return self._sanitize_text(value)[:4000]
+
+        def find_question(value: Any, depth: int = 0) -> str:
+            if value is None or depth > 5:
+                return ""
+            if isinstance(value, str):
+                return ""
+            if isinstance(value, Mapping):
+                for key in ("question", "query", "prompt", "task", "input", "user_query"):
+                    item = value.get(key)
+                    if isinstance(item, str) and item.strip() and not self._browsecomp_plus_forbidden_name(key):
+                        return self._sanitize_text(item)[:4000]
+                for key in ("data", "params", "message", "root", "content"):
+                    if key in value and not self._browsecomp_plus_forbidden_name(key):
+                        found = find_question(value.get(key), depth + 1)
+                        if found:
+                            return found
+                for item in list(value.values())[:80]:
+                    found = find_question(item, depth + 1)
+                    if found:
+                        return found
+            if isinstance(value, (list, tuple, set)):
+                for item in list(value)[:80]:
+                    found = find_question(item, depth + 1)
+                    if found:
+                        return found
+            return ""
+
+        found = find_question(safe_metadata)
+        if found:
+            return found
+
         text = _coerce_text(task_text).strip()
-        match = re.search(r"(?is)(?:^|\n)\s*(?:question|query)\s*[:\-]\s*(.+?)(?=\n\s*(?:context|evidence|documents|sources|passages|answer|final)\s*[:\-]|\Z)", text)
+        try:
+            parsed = json.loads(text)
+            found = find_question(parsed)
+            if found:
+                return found
+        except Exception:
+            pass
+
+        match = re.search(r"(?is)(?:^|[\n{,])\s*[\"']?(?:question|query|prompt|input|task)[\"']?\s*[:=\-]\s*[\"']?(.+?)(?=[\"']?\s*(?:[,}\n]|$)|\n\s*(?:context|evidence|documents|sources|passages|answer|final)\s*[:\-]|\Z)", text)
         if match:
-            return self._sanitize_text(match.group(1))[:4000]
+            candidate = self._sanitize_text(match.group(1))
+            if candidate:
+                return candidate[:4000]
+
         return self._sanitize_text(text)[:4000]
 
     def _browsecomp_plus_extract_context(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> str:
@@ -919,7 +1126,6 @@ class AegisForgeAgent:
             return ""
         # Explicit answer-like fields are accepted only if they are not evaluator labels.
         for pattern in (
-            r"(?im)^\s*(?:response|final_response|observed_answer|candidate_answer|short_answer)\s*[:\-]\s*(.{1,240})$",
             r"(?im)^\s*(?:title|name|entity|person|place|organization)\s*[:\-]\s*(.{2,180})$",
         ):
             match = re.search(pattern, context)
@@ -1282,25 +1488,87 @@ class AegisForgeAgent:
         return merged
 
     def _extract_metadata(self, message: Any) -> dict[str, Any]:
-        candidates: list[Any] = []
-        if isinstance(message, Mapping):
-            candidates.append(message.get("metadata"))
-            params = message.get("params")
-            if isinstance(params, Mapping):
-                candidates.append(params.get("metadata"))
-                nested = params.get("message")
-                if isinstance(nested, Mapping):
-                    candidates.append(nested.get("metadata"))
-        else:
-            candidates.append(getattr(message, "metadata", None))
-            root = getattr(message, "root", None)
-            if root is not None:
-                candidates.append(getattr(root, "metadata", None))
+        """Extract metadata plus safe DataPart payload fields from A2A messages."""
         result: dict[str, Any] = {}
-        for raw in candidates:
-            if isinstance(raw, Mapping):
-                result.update(dict(raw))
+
+        def forbidden_key(key: str) -> bool:
+            compact = re.sub(r"[^a-z0-9]+", "_", key.lower())
+            blocked = (
+                "answer_key",
+                "gold",
+                "label",
+                "reward",
+                "score",
+                "result",
+                "eval",
+                "evaluation",
+                "ground_truth",
+                "solution",
+                "oracle",
+                "judge",
+                "secret",
+                "credential",
+                "password",
+                "api_key",
+                "token",
+                "authorization",
+            )
+            return any(part in compact for part in blocked)
+
+        def merge_mapping(raw: Any, *, source: str = "") -> None:
+            if not isinstance(raw, Mapping):
+                return
+            safe: dict[str, Any] = {}
+            for key, value in list(raw.items())[:120]:
+                key_s = _coerce_text(key)
+                if not key_s or forbidden_key(key_s):
+                    continue
+                safe[key_s] = _normalize_for_json(value)
+                # Promote common task fields for direct BrowseComp extraction.
+                if key_s in {"question", "query", "prompt", "input", "task", "user_query", "context", "evidence", "documents", "sources", "passages"}:
+                    result.setdefault(key_s, _normalize_for_json(value))
+            if safe:
+                if source:
+                    result.setdefault(source, safe)
+                else:
+                    result.update(safe)
+
+        def collect(value: Any, *, depth: int = 0, source: str = "") -> None:
+            if value is None or depth > 5:
+                return
+            if isinstance(value, Mapping):
+                merge_mapping(value.get("metadata"), source="metadata")
+                merge_mapping(value.get("config"), source="config")
+                merge_mapping(value.get("assessment_config"), source="assessment_config")
+                if "data" in value:
+                    merge_mapping(value.get("data"), source="data")
+                    collect(value.get("data"), depth=depth + 1, source="data")
+                for key in ("params", "message", "root"):
+                    if key in value:
+                        collect(value.get(key), depth=depth + 1, source=key)
+                if "parts" in value:
+                    collect(value.get("parts"), depth=depth + 1, source="parts")
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in list(value)[:80]:
+                    collect(item, depth=depth + 1, source=source)
+                return
+
+            merge_mapping(getattr(value, "metadata", None), source="metadata")
+            if hasattr(value, "data"):
+                data = getattr(value, "data")
+                merge_mapping(data, source="data")
+                collect(data, depth=depth + 1, source="data")
+            parts = getattr(value, "parts", None)
+            if parts is not None:
+                collect(parts, depth=depth + 1, source="parts")
+            root = getattr(value, "root", None)
+            if root is not None and root is not value:
+                collect(root, depth=depth + 1, source="root")
+
+        collect(message)
         return result
+
 
     def _sanitize_text(self, value: Any) -> str:
         text = _coerce_text(value)
@@ -1318,7 +1586,9 @@ class AegisForgeAgent:
         for name in (
             "AEGISFORGE_OPENAI_API_KEY",
             "AMBER_CONFIG_AGENT_OPENAI_API_KEY",
+            "AMBER_CONFIG_GREEN_OPENAI_API_KEY",
             "AGENT_OPENAI_API_KEY",
+            "GREEN_OPENAI_API_KEY",
             "OPENAI_API_KEY",
         ):
             value = os.getenv(name, "").strip()
@@ -1329,7 +1599,10 @@ class AegisForgeAgent:
     def _llm_base_url(self) -> str:
         base = (
             os.getenv("AEGISFORGE_OPENAI_BASE_URL")
+            or os.getenv("AMBER_CONFIG_AGENT_OPENAI_BASE_URL")
+            or os.getenv("AMBER_CONFIG_GREEN_OPENAI_BASE_URL")
             or os.getenv("AGENT_OPENAI_BASE_URL")
+            or os.getenv("GREEN_OPENAI_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
             or os.getenv("LOCAL_LLM_BASE_URL")
             or "https://api.openai.com/v1"
@@ -1339,7 +1612,10 @@ class AegisForgeAgent:
     def _llm_model(self) -> str:
         return (
             os.getenv("AEGISFORGE_LLM_MODEL")
+            or os.getenv("AMBER_CONFIG_AGENT_OPENAI_MODEL")
+            or os.getenv("AMBER_CONFIG_GREEN_OPENAI_MODEL")
             or os.getenv("AGENT_OPENAI_MODEL")
+            or os.getenv("GREEN_OPENAI_MODEL")
             or os.getenv("OPENAI_MODEL")
             or os.getenv("LOCAL_LLM_MODEL")
             or "gpt-4.1-mini"
