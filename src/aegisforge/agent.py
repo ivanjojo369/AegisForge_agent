@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""AegisForge runtime agent v0.2.7.
+"""AegisForge runtime agent v0.2.8.
 
 Drop-in replacement for ``src/aegisforge/agent.py``.
 
@@ -16,7 +16,7 @@ Public exports provided here:
 The implementation keeps a stable compatibility surface while adding a broader
 BrowseComp-Plus final-answer mode, robust A2A message parsing, safe updater
 handling, adapter/status helpers, local fixed-corpus retrieval, config-object
-normalization, async request-handler compatibility, and optional OpenAI-compatible LLM calls when credentials are available.
+normalization, and optional OpenAI-compatible LLM calls when credentials are available.
 """
 
 from dataclasses import asdict, dataclass, is_dataclass
@@ -34,7 +34,7 @@ import zipfile
 
 LOGGER = logging.getLogger(__name__)
 
-AGENT_VERSION = "0.2.7-runtime-extended-async-request-safe"
+AGENT_VERSION = "0.2.8-runtime-extended-request-safe"
 AGENT_NAME = "AegisForgeAgent"
 
 SUPPORTED_TRACKS: tuple[str, ...] = (
@@ -427,7 +427,6 @@ class AegisForgeAgent:
                 "browsecomp_plus_local_retrieval",
                 "optional_openai_compatible_llm",
                 "config_object_normalization",
-                "async_request_handler_compatibility",
             ],
             "public_exports": ["AegisForgeAgent", "Agent", "get_message_text", "new_agent_text_message"],
         }
@@ -474,61 +473,40 @@ class AegisForgeAgent:
     # ------------------------------------------------------------------
     # Request handling API.
     # ------------------------------------------------------------------
-    def _handle_request_core(self, request: Any, metadata: Mapping[str, Any] | None = None, **kwargs: Any) -> str:
-        """Synchronous core request dispatcher used by async public handlers."""
-        request_metadata = self._merge_metadata(request, metadata, kwargs)
-        task_text = get_message_text(request)
-        answer = self._dispatch(task_text, request_metadata)
-        self._last_answer = answer
-        return answer
-
     async def handle_request(
         self,
         request: Any,
         updater: Any | None = None,
         metadata: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> str:
-        """Coroutine request handler used by test/executor compatibility shims.
+    ) -> str | None:
+        """Handle a benchmark request.
 
-        The unit tests call the selected request method as ``method(message,
-        updater)`` and then pass the returned value to ``asyncio.run``.  Earlier
-        versions returned an awaitable string-like object; ``asyncio.run`` only
-        accepts real coroutine objects.  This method is therefore an actual
-        coroutine while still accepting both common calling conventions:
-
-        - ``await handle_request(message, updater)``
-        - ``await handle_request(message, metadata_mapping)``
-        - ``await handle_request(message, metadata=metadata_mapping)``
+        Compatibility behavior:
+        - ``handle_request(message, updater)`` follows the A2A executor path,
+          writes updates/artifacts through the updater, and returns ``None``.
+          The core unit test wraps this result in ``asyncio.run`` and asserts
+          that the resolved value is ``None``.
+        - ``await handle_request(message)`` returns the answer string for direct
+          request/response integrations.
+        - ``handle_request(message, metadata_dict)`` remains supported by
+          detecting when the second positional argument is a mapping.
         """
         actual_updater = updater
         actual_metadata = metadata
 
-        # Backward-compatible convention: handle_request(message, metadata).
-        # Treat the second positional argument as metadata only when it is a
-        # mapping and does not look like a TaskUpdater-like object.
-        if isinstance(updater, Mapping) and metadata is None and not self._looks_like_updater(updater):
+        if actual_metadata is None and isinstance(updater, Mapping):
             actual_metadata = updater
             actual_updater = None
 
         if actual_updater is not None:
-            await self._safe_update_status(
-                actual_updater,
-                self._task_state("working"),
-                "AegisForgeAgent is processing the request.",
-                final=False,
-            )
+            await self.run(request, actual_updater)
+            return None
 
-        answer = self._handle_request_core(request, metadata=actual_metadata, **kwargs)
-
-        if actual_updater is not None:
-            await self._safe_add_artifact(actual_updater, answer)
-            await self._safe_update_status(
-                actual_updater,
-                self._task_state("completed"),
-                answer,
-                final=True,
-            )
+        request_metadata = self._merge_metadata(request, actual_metadata, kwargs)
+        task_text = get_message_text(request)
+        answer = self._dispatch(task_text, request_metadata)
+        self._last_answer = answer
         return answer
 
     async def ahandle_request(
@@ -537,21 +515,30 @@ class AegisForgeAgent:
         updater: Any | None = None,
         metadata: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> str:
+    ) -> str | None:
         return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
 
-    def handle_request_sync(self, request: Any, metadata: Mapping[str, Any] | None = None, **kwargs: Any) -> AwaitableText:
-        """Legacy synchronous wrapper for callers that do not use asyncio."""
-        return AwaitableText(self._handle_request_core(request, metadata=metadata, **kwargs))
+    def handle_request_sync(
+        self,
+        request: Any,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Synchronous direct-call helper for integrations that cannot await."""
+        request_metadata = self._merge_metadata(request, metadata, kwargs)
+        task_text = get_message_text(request)
+        answer = self._dispatch(task_text, request_metadata)
+        self._last_answer = answer
+        return answer
 
-    async def __call__(
+    def __call__(
         self,
         request: Any,
         updater: Any | None = None,
         metadata: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> str:
-        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+    ) -> Any:
+        return self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
 
     async def run(self, message: Any, updater: Any) -> None:
         """A2A executor entrypoint.
@@ -569,11 +556,13 @@ class AegisForgeAgent:
             self._last_answer = answer
             await self._safe_add_artifact(updater, answer)
             await self._safe_update_status(updater, self._task_state("completed"), answer, final=True)
+            return None
         except Exception as exc:
             LOGGER.exception("AegisForgeAgent run failed")
             error_text = f"AegisForgeAgent error: {type(exc).__name__}: {exc}"
             self._last_answer = error_text
             await self._safe_update_status(updater, self._task_state("failed"), error_text, final=True)
+            return None
 
     def _dispatch(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         if self._is_browsecomp_plus_protocol(task_text, metadata):
@@ -596,27 +585,8 @@ class AegisForgeAgent:
             return _json_dumps(self.adapter_statuses())
         if not text:
             return "AegisForgeAgent is ready."
-        compact = text[:180].strip()
-        return f"AegisForgeAgent received the request: {compact}. Ready for benchmark-safe execution."
-
-    def _looks_like_updater(self, value: Any) -> bool:
-        """Return True for TaskUpdater/DummyUpdater-like objects.
-
-        A mapping can be metadata, while updater test doubles usually expose
-        status/artifact methods.  Keeping this check broad prevents accidental
-        metadata/updater confusion in mixed test harnesses.
-        """
-        if value is None:
-            return False
-        updater_methods = (
-            "update_status",
-            "set_status",
-            "add_artifact",
-            "append_artifact",
-            "add_message",
-            "complete",
-        )
-        return any(hasattr(value, name) for name in updater_methods)
+        preview = text[:220]
+        return f"AegisForgeAgent received the request: {preview}. Ready for benchmark-safe execution."
 
     async def _safe_update_status(self, updater: Any, state: Any, text: str, *, final: bool) -> bool:
         message = new_agent_text_message(text)
