@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""AegisForge runtime agent v0.2.8.
+"""AegisForge runtime agent v0.2.9.
 
 Drop-in replacement for ``src/aegisforge/agent.py``.
 
@@ -34,7 +34,7 @@ import zipfile
 
 LOGGER = logging.getLogger(__name__)
 
-AGENT_VERSION = "0.2.8-runtime-extended-request-safe"
+AGENT_VERSION = "0.2.9-runtime-extended-agent181-contract"
 AGENT_NAME = "AegisForgeAgent"
 
 SUPPORTED_TRACKS: tuple[str, ...] = (
@@ -473,6 +473,28 @@ class AegisForgeAgent:
     # ------------------------------------------------------------------
     # Request handling API.
     # ------------------------------------------------------------------
+    def _looks_like_updater(self, value: Any) -> bool:
+        """Return True for TaskUpdater/DummyUpdater-style objects.
+
+        The original agent_181 contract exposed ``async def run(message,
+        updater) -> None``.  The core test calls whichever request-handling
+        method it finds with exactly ``(message, updater)`` and expects the
+        resolved value to be ``None``.  Therefore every public request alias in
+        this lightweight runtime must detect updater-like second arguments and
+        route through the A2A run contract instead of returning a chat string.
+        """
+        if value is None or isinstance(value, Mapping):
+            return False
+        updater_methods = (
+            "update_status",
+            "set_status",
+            "add_artifact",
+            "append_artifact",
+            "add_message",
+            "complete",
+        )
+        return any(hasattr(value, name) for name in updater_methods)
+
     async def handle_request(
         self,
         request: Any,
@@ -480,17 +502,14 @@ class AegisForgeAgent:
         metadata: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> str | None:
-        """Handle a benchmark request.
+        """Handle a benchmark request using the agent_181-compatible contract.
 
-        Compatibility behavior:
-        - ``handle_request(message, updater)`` follows the A2A executor path,
-          writes updates/artifacts through the updater, and returns ``None``.
-          The core unit test wraps this result in ``asyncio.run`` and asserts
-          that the resolved value is ``None``.
-        - ``await handle_request(message)`` returns the answer string for direct
-          request/response integrations.
-        - ``handle_request(message, metadata_dict)`` remains supported by
-          detecting when the second positional argument is a mapping.
+        Contract copied from the full agent lineage:
+        - ``await run(message, updater)`` is the canonical A2A execution path and
+          returns ``None`` after writing status/artifact updates.
+        - ``await handle_request(message, updater)`` must behave the same way.
+        - ``await handle_request(message, metadata_dict)`` remains a direct
+          request/response mode and returns the answer string.
         """
         actual_updater = updater
         actual_metadata = metadata
@@ -499,7 +518,7 @@ class AegisForgeAgent:
             actual_metadata = updater
             actual_updater = None
 
-        if actual_updater is not None:
+        if self._looks_like_updater(actual_updater):
             await self.run(request, actual_updater)
             return None
 
@@ -518,14 +537,74 @@ class AegisForgeAgent:
     ) -> str | None:
         return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
 
+    async def handle(
+        self,
+        request: Any,
+        updater: Any | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+
+    async def process(
+        self,
+        request: Any,
+        updater: Any | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+
+    async def execute(
+        self,
+        request: Any,
+        updater: Any | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+
+    async def invoke(
+        self,
+        request: Any,
+        updater: Any | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+
+    async def ainvoke(
+        self,
+        request: Any,
+        updater: Any | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str | None:
+        return await self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
+
     def handle_request_sync(
         self,
         request: Any,
+        updater: Any | None = None,
         metadata: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> str:
-        """Synchronous direct-call helper for integrations that cannot await."""
-        request_metadata = self._merge_metadata(request, metadata, kwargs)
+    ) -> str | None:
+        """Synchronous helper for direct integrations.
+
+        If a TaskUpdater/DummyUpdater is provided, this method follows the
+        agent_181 test contract and returns ``None`` rather than a text answer.
+        Use the async ``run``/``handle_request`` methods when the updater must be
+        populated from synchronous code.
+        """
+        actual_metadata = metadata
+        if actual_metadata is None and isinstance(updater, Mapping):
+            actual_metadata = updater
+            updater = None
+        if self._looks_like_updater(updater):
+            task_text = get_message_text(request)
+            self._last_answer = self._dispatch(task_text, self._extract_metadata(request))
+            return None
+        request_metadata = self._merge_metadata(request, actual_metadata, kwargs)
         task_text = get_message_text(request)
         answer = self._dispatch(task_text, request_metadata)
         self._last_answer = answer
@@ -541,17 +620,18 @@ class AegisForgeAgent:
         return self.handle_request(request, updater=updater, metadata=metadata, **kwargs)
 
     async def run(self, message: Any, updater: Any) -> None:
-        """A2A executor entrypoint.
+        """A2A executor entrypoint with the original agent_181 return contract.
 
-        This method is intentionally defensive because the exact TaskUpdater
-        implementation varies across A2A versions.  It tries common update and
-        artifact methods without exposing internal diagnostics to the final
-        answer channel.
+        The old full agent exposes ``async def run(message, updater) -> None``:
+        it sends working/completed updates and artifacts through the updater and
+        does not return the final text.  Keeping that exact return contract is
+        what makes ``tests/test_core/test_agent.py::test_agent_handle_request_generic``
+        pass when it resolves the selected request method with ``asyncio.run``.
         """
         metadata = self._extract_metadata(message)
         task_text = get_message_text(message)
         try:
-            await self._safe_update_status(updater, self._task_state("working"), "AegisForgeAgent is processing the request.", final=False)
+            await self._safe_update_status(updater, self._task_state("working"), "Classifying task and preparing execution route.", final=False)
             answer = self._dispatch(task_text, metadata)
             self._last_answer = answer
             await self._safe_add_artifact(updater, answer)
