@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_tau2_airline_scope_clean_2026_05_29"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_1_tau2_airline_json_contract_adapter_2026_05_29"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -1820,6 +1820,8 @@ class AegisForgeAgent:
         self._maizebargain_last_status: dict[str, Any] = {}
         self._browsecomp_plus_last_status: dict[str, Any] = {}
         self._browsecomp_plus_last_diag: dict[str, Any] = {}
+        self._tau2_airline_sessions: dict[str, dict[str, Any]] = {}
+        self._tau2_airline_last_status: dict[str, Any] = {}
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -12318,6 +12320,279 @@ class AegisForgeAgent:
             )
         )
 
+
+    def _tau2_airline_response_name(self, task_text: str = "") -> str:
+        return "respond"
+
+    def _tau2_airline_extract_context_key(self, message: Any, task_text: str, metadata: Mapping[str, Any]) -> str:
+        for attr in ("context_id", "task_id", "id", "message_id"):
+            value = getattr(message, attr, None)
+            if isinstance(value, str) and value.strip():
+                return f"{attr}:{value.strip()}"
+        for key in ("context_id", "task_id", "conversation_id", "thread_id", "session_id"):
+            value = metadata.get(key) if isinstance(metadata, Mapping) else None
+            if isinstance(value, str) and value.strip():
+                return f"{key}:{value.strip()}"
+        reservation = self._tau2_airline_extract_reservation_id(task_text)
+        if reservation:
+            return f"reservation:{reservation}"
+        digest = hashlib.sha1(self._coerce_text(task_text).encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return f"text:{digest}"
+
+    def _tau2_airline_extract_json_object(self, text: str) -> Mapping[str, Any] | None:
+        raw = self._coerce_text(text).strip()
+        if not raw:
+            return None
+        match = re.search(r"<\s*json\s*>(.*?)<\s*/\s*json\s*>", raw, flags=re.IGNORECASE | re.DOTALL)
+        candidates: list[str] = []
+        if match:
+            candidates.append(match.group(1).strip())
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidates.append(fenced.group(1).strip())
+        if "{" in raw and "}" in raw:
+            candidates.append(raw[raw.find("{"): raw.rfind("}") + 1])
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, Mapping):
+                return parsed
+        return None
+
+    def _tau2_airline_format_action(self, name: str, kwargs: Mapping[str, Any] | None = None) -> str:
+        payload = {"name": self._coerce_text(name).strip() or self._tau2_airline_response_name(), "kwargs": dict(kwargs or {})}
+        return "<json>" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "</json>"
+
+    def _tau2_airline_valid_tool_names(self, task_text: str) -> set[str]:
+        names = set(re.findall(r'''(?is)["']name["']\s*:\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']''', self._coerce_text(task_text)))
+        names.update({
+            "respond",
+            "get_reservation_details",
+            "get_user_details",
+            "search_direct_flight",
+            "search_onestop_flight",
+            "get_flight_status",
+            "update_reservation_flights",
+            "update_reservation_baggages",
+            "update_reservation_passengers",
+            "cancel_reservation",
+            "book_reservation",
+            "calculate",
+            "transfer_to_human_agents",
+            "list_all_airports",
+        })
+        return names
+
+    def _tau2_airline_normalize_action(self, candidate: Mapping[str, Any] | None, task_text: str) -> dict[str, Any] | None:
+        if not isinstance(candidate, Mapping):
+            return None
+        name = candidate.get("name") or candidate.get("tool") or candidate.get("action")
+        kwargs = candidate.get("kwargs")
+        if kwargs is None:
+            kwargs = candidate.get("arguments")
+        if isinstance(kwargs, str):
+            try:
+                loaded = json.loads(kwargs)
+                kwargs = loaded
+            except Exception:
+                kwargs = {}
+        if not isinstance(name, str) or not name.strip():
+            return None
+        name = name.strip()
+        if not isinstance(kwargs, Mapping):
+            kwargs = {}
+        allowed = self._tau2_airline_valid_tool_names(task_text)
+        if name not in allowed:
+            lowered = name.lower()
+            aliases = {
+                "message": "respond",
+                "reply": "respond",
+                "final": "respond",
+                "final_answer": "respond",
+                "human": "transfer_to_human_agents",
+                "escalate": "transfer_to_human_agents",
+                "handoff": "transfer_to_human_agents",
+            }
+            name = aliases.get(lowered, name)
+        if name not in allowed and name != "respond":
+            return None
+        normalized = {"name": name, "kwargs": dict(kwargs)}
+        if name == "respond":
+            content = normalized["kwargs"].get("content")
+            if content is None:
+                content = normalized["kwargs"].get("message") or normalized["kwargs"].get("text") or ""
+            normalized["kwargs"] = {"content": self._coerce_text(content).strip() or "I can help with that."}
+        return normalized
+
+    def _tau2_airline_extract_reservation_id(self, task_text: str) -> str:
+        text = self._coerce_text(task_text)
+        patterns = (
+            r"\bconfirmation\s+(?:number|code|id)\s*(?:is|:)?\s*([A-Z0-9]{6})\b",
+            r"\breservation\s+(?:id|number|code)\s*(?:is|:)?\s*([A-Z0-9]{6})\b",
+            r"\brecord\s+locator\s*(?:is|:)?\s*([A-Z0-9]{6})\b",
+            r"\b(?:booking|trip)\s+(?:id|number|code)\s*(?:is|:)?\s*([A-Z0-9]{6})\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        generic = re.findall(r"\b[A-Z0-9]{6}\b", text)
+        for token in generic:
+            if not re.fullmatch(r"\d{6}", token):
+                return token.upper()
+        return ""
+
+    def _tau2_airline_extract_flight_number(self, task_text: str) -> str:
+        match = re.search(r"\b([A-Z]{2,4}\d{1,4})\b", self._coerce_text(task_text))
+        return match.group(1).upper() if match else ""
+
+    def _tau2_airline_extract_date(self, task_text: str) -> str:
+        match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", self._coerce_text(task_text))
+        return match.group(1) if match else ""
+
+    def _tau2_airline_latest_tool_result_json(self, task_text: str) -> Mapping[str, Any] | None:
+        text = self._coerce_text(task_text)
+        idx = text.lower().rfind("tool call result:")
+        if idx < 0:
+            return None
+        tail = text[idx + len("tool call result:"):].strip()
+        obj = self._tau2_airline_extract_json_object(tail)
+        return obj if isinstance(obj, Mapping) else None
+
+    def _tau2_airline_default_action(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        text = self._coerce_text(task_text)
+        lowered = text.lower()
+        tool_result = self._tau2_airline_latest_tool_result_json(text)
+        if isinstance(tool_result, Mapping):
+            reservation_id = self._coerce_text(tool_result.get("reservation_id")).strip()
+            if reservation_id and re.search(r"\b(cancel|refund|reimbursement)\b", lowered):
+                cabin = self._coerce_text(tool_result.get("cabin")).lower()
+                insurance = self._coerce_text(tool_result.get("insurance")).lower()
+                status = self._coerce_text(tool_result.get("status")).lower()
+                if "business" in cabin or insurance in {"yes", "true"} or "cancel" in status:
+                    return {"name": "cancel_reservation", "kwargs": {"reservation_id": reservation_id}}
+                return {
+                    "name": "transfer_to_human_agents",
+                    "kwargs": {
+                        "summary": (
+                            f"Customer requests cancellation/refund for reservation {reservation_id}. "
+                            f"Reservation details were reviewed. Cabin={tool_result.get('cabin')}; "
+                            f"insurance={tool_result.get('insurance')}; status={tool_result.get('status')}. "
+                            "Policy appears to require human review or an exception decision."
+                        )
+                    },
+                }
+            user_id = self._coerce_text(tool_result.get("user_id")).strip()
+            if user_id and re.search(r"\b(profile|details|payment|certificate|balance|user)\b", lowered):
+                return {"name": "get_user_details", "kwargs": {"user_id": user_id}}
+        reservation_id = self._tau2_airline_extract_reservation_id(text)
+        if reservation_id:
+            return {"name": "get_reservation_details", "kwargs": {"reservation_id": reservation_id}}
+        flight_number = self._tau2_airline_extract_flight_number(text)
+        if flight_number and re.search(r"\b(status|delay|delayed|cancelled|canceled|flight)\b", lowered):
+            kwargs = {"flight_number": flight_number}
+            date = self._tau2_airline_extract_date(text)
+            if date:
+                kwargs["date"] = date
+            return {"name": "get_flight_status", "kwargs": kwargs}
+        airport_pair = re.search(r"\b([A-Z]{3})\s*(?:to|->|-)\s*([A-Z]{3})\b", text)
+        date = self._tau2_airline_extract_date(text)
+        if airport_pair and date:
+            return {
+                "name": "search_direct_flight",
+                "kwargs": {
+                    "origin": airport_pair.group(1),
+                    "destination": airport_pair.group(2),
+                    "date": date,
+                },
+            }
+        if re.search(r"\b(airport|airports|city|cities)\b", lowered):
+            return {"name": "list_all_airports", "kwargs": {}}
+        return {
+            "name": "respond",
+            "kwargs": {
+                "content": "I can help with that. Could you please provide the reservation confirmation number or the flight details?"
+            },
+        }
+
+    def _tau2_airline_build_llm_messages(self, task_text: str, session: Mapping[str, Any]) -> list[dict[str, str]]:
+        clipped = self._coerce_text(task_text)
+        if len(clipped) > 28000:
+            clipped = clipped[:14000] + "\n\n...[middle omitted by AegisForge adapter]...\n\n" + clipped[-14000:]
+        session_hint = json.dumps(self._normalize_for_json(session), ensure_ascii=False)[:6000] if session else "{}"
+        system_prompt = (
+            "You are AegisForge's tau2 airline contract adapter. "
+            "Return exactly one action for the airline customer-service benchmark. "
+            "The green agent requires text output containing a JSON object wrapped in <json>...</json> tags. "
+            "The JSON must have exactly two top-level keys: name and kwargs. "
+            "Use name='respond' with kwargs={'content': '...'} only when replying to the user. "
+            "Otherwise use one airline tool from the provided tool list. "
+            "Use at most one tool at a time. Prefer looking up reservation/user/flight data before giving policy decisions. "
+            "Do not include markdown, reasoning, logs, or any text outside the <json> tags."
+        )
+        user_prompt = (
+            "Current tau2 airline turn follows. Produce the next valid action only.\n\n"
+            f"Session memory:\n{session_hint}\n\n"
+            f"Turn payload:\n{clipped}\n\n"
+            "Return format example for a tool call:\n"
+            "<json>{\"name\":\"get_reservation_details\",\"kwargs\":{\"reservation_id\":\"ABC123\"}}</json>\n"
+            "Return format example for a user reply:\n"
+            "<json>{\"name\":\"respond\",\"kwargs\":{\"content\":\"I can help with that.\"}}</json>"
+        )
+        return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+    def _handle_tau2_airline_turn(self, task_text: str, metadata: Mapping[str, Any], *, message: Any = None) -> str:
+        key = self._tau2_airline_extract_context_key(message, task_text, metadata) if message is not None else self._tau2_airline_extract_context_key(None, task_text, metadata)
+        session = self._tau2_airline_sessions.setdefault(key, {"turns": [], "last_actions": []})
+        try:
+            session["turns"].append(self._coerce_text(task_text)[-2000:])
+            if len(session["turns"]) > 12:
+                session["turns"] = session["turns"][-12:]
+        except Exception:
+            pass
+
+        fallback = self._tau2_airline_default_action(task_text, metadata)
+        action = fallback
+        llm_text = ""
+        if self._current_llm_calls < self.max_llm_calls_per_response:
+            llm_text = self._call_llm(
+                messages=self._tau2_airline_build_llm_messages(task_text, session),
+                temperature=0.0,
+                max_tokens=700,
+            )
+            parsed = self._tau2_airline_extract_json_object(llm_text)
+            normalized = self._tau2_airline_normalize_action(parsed, task_text)
+            if normalized:
+                action = normalized
+
+        if not isinstance(action, Mapping) or not action.get("name"):
+            action = fallback
+        try:
+            session["last_actions"].append(action)
+            if len(session["last_actions"]) > 12:
+                session["last_actions"] = session["last_actions"][-12:]
+        except Exception:
+            pass
+
+        self._tau2_airline_last_status = {
+            "mode": "tau2_airline_json_contract_adapter_v1_1",
+            "context_key": key,
+            "action_name": action.get("name"),
+            "used_llm": bool(llm_text),
+            "llm_error": getattr(self, "_last_llm_error", ""),
+            "fallback_name": fallback.get("name"),
+        }
+        try:
+            LOGGER.warning(
+                "TAU2_AIRLINE_ADAPTER_V1_1 action=%s fallback=%s used_llm=%s llm_error=%s",
+                action.get("name"), fallback.get("name"), int(bool(llm_text)), getattr(self, "_last_llm_error", ""),
+            )
+        except Exception:
+            pass
+        return self._tau2_airline_format_action(self._coerce_text(action.get("name")), action.get("kwargs") if isinstance(action.get("kwargs"), Mapping) else {})
+
     def _browsecomp_plus_probe(self, task_text: str, metadata: Mapping[str, Any], effective_text: str) -> None:
         """Safe BrowseComp routing probe: lengths and keys only, never payloads."""
         if self._aegisforge_tau2_airline_scope_signal(task_text, metadata):
@@ -13124,6 +13399,10 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
+        for _ctx_attr in ("context_id", "task_id", "message_id"):
+            _ctx_value = getattr(message, _ctx_attr, None)
+            if isinstance(_ctx_value, str) and _ctx_value.strip():
+                metadata.setdefault(_ctx_attr, _ctx_value.strip())
         raw_a2a_bundle = self._officeqa_extract_raw_a2a_bundle(message, base_text=base_text)
         if raw_a2a_bundle:
             metadata = self._deep_merge_dicts(metadata, {"raw_a2a_snapshot": raw_a2a_bundle})
@@ -13155,12 +13434,22 @@ class AegisForgeAgent:
                 )
             except Exception:
                 pass
-        if not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
             )
-        if maizebargain_turn_protocol:
+        if tau2_airline_scope and not maizebargain_protocol:
+            final_text = self._handle_tau2_airline_turn(base_text, metadata, message=message)
+            trace = {
+                "mode": "tau2_airline_protocol",
+                "protocol": "tau2_json_action_contract_v1_1",
+                "version": AEGISFORGE_GENERAL_AGENT_VERSION,
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+                "tau2_airline_status": getattr(self, "_tau2_airline_last_status", {}),
+            }
+        elif maizebargain_turn_protocol:
             final_text = self._handle_maizebargain_turn(base_text, metadata)
             trace = {
                 "mode": "maizebargain_turn_protocol",
@@ -13304,7 +13593,7 @@ class AegisForgeAgent:
             officeqa_protocol = True
             build_it_protocol = False
             strict_protocol = ""
-        should_emit_primary_artifact = generic_smoke_request or not (strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
+        should_emit_primary_artifact = generic_smoke_request or not (tau2_airline_scope or strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
         if should_emit_primary_artifact:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
@@ -13331,12 +13620,12 @@ class AegisForgeAgent:
             TaskState.completed,
             new_agent_text_message(final_text),
         )
-        if self.trace_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.trace_artifacts_enabled and not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
-        if self.debug_artifacts_enabled and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.debug_artifacts_enabled and not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
