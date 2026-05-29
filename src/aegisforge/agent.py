@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_2_sprint4_general_ncp_crmarena_v114_maizebargain_browsecomp_plus_v0_1_2026_05_28_browsecomp_v0_2_13_merged"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_tau2_airline_scope_clean_2026_05_29"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -12181,8 +12181,147 @@ class AegisForgeAgent:
         walk(metadata)
         return "\n\n".join(pieces)[:30000] if pieces else self._sanitize_text(task_text)
 
+    def _aegisforge_v1_scope_text(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> str:
+        """Compact routing text used only for v1 domain isolation gates."""
+        chunks: list[str] = []
+        seen: set[int] = set()
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            text = self._coerce_text(value)
+            if not text:
+                return
+            key = hash(text[:1000])
+            if key in seen:
+                return
+            seen.add(key)
+            chunks.append(text[:4000])
+
+        def walk(value: Any, depth: int = 0) -> None:
+            if value is None or depth > 4 or len("\n".join(chunks)) > 24000:
+                return
+            if isinstance(value, Mapping):
+                for key, item in list(value.items())[:80]:
+                    add(key)
+                    if isinstance(item, (Mapping, list, tuple, set)):
+                        walk(item, depth + 1)
+                    else:
+                        add(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in list(value)[:60]:
+                    walk(item, depth + 1)
+                return
+            add(value)
+
+        add(task_text)
+        if isinstance(metadata, Mapping):
+            walk(metadata)
+        for name in (
+            "AGENTBEATS_TRACK",
+            "AGENTBEATS_BENCHMARK",
+            "AGENTBEATS_TASK",
+            "AGENTBEATS_DOMAIN",
+            "TAU2_DOMAIN",
+            "AMBER_CONFIG_DOMAIN",
+            "AMBER_CONFIG_AGENT_DOMAIN",
+            "AMBER_CONFIG_GREEN_DOMAIN",
+            "AEGISFORGE_FORCE_BROWSECOMP_PLUS",
+            "BROWSECOMP_MODE",
+            "BROWSECOMP_PLUS_MODE",
+        ):
+            value = os.getenv(name, "")
+            if value:
+                add(f"{name}={value}")
+        return "\n".join(chunks)[:30000]
+
+    def _aegisforge_browsecomp_explicit_scope_signal(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> bool:
+        """True only when the request/env explicitly names BrowseComp/BrowseComp-Plus."""
+        combined = self._aegisforge_v1_scope_text(task_text, metadata)
+        lowered = combined.lower()
+        compact = re.sub(r"[^a-z0-9]+", "", lowered)
+        if os.getenv("AEGISFORGE_FORCE_BROWSECOMP_PLUS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+        explicit_markers = (
+            "browsecomp-plus-leaderboard",
+            "browsecomp_plus_leaderboard",
+            "browsecomp-plus",
+            "browsecomp_plus",
+            "browsecomp plus",
+            "browsecomp",
+            '"domain": "browsecomp"',
+            '"domain":"browsecomp"',
+            '"track": "browsecomp"',
+            '"track":"browsecomp"',
+            "agent_mode: browsecomp_plus",
+            "agent_mode': 'browsecomp_plus'",
+            '"agent_mode": "browsecomp_plus"',
+            "browsecomp_plus_",
+        )
+        return any(marker in lowered for marker in explicit_markers) or "browsecomp" in compact
+
+    def _aegisforge_tau2_airline_scope_signal(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> bool:
+        """Hard v1 scope gate for the tau2 airline run.
+
+        This is intentionally conservative for Sprint 4: when the current request
+        looks like tau2/airline, closed specialists such as BrowseComp-Plus and
+        OfficeQA must not capture the turn or emit free-form specialist answers.
+        """
+        if self._aegisforge_browsecomp_explicit_scope_signal(task_text, metadata):
+            return False
+        combined = self._aegisforge_v1_scope_text(task_text, metadata)
+        lowered = combined.lower()
+        compact = re.sub(r"[^a-z0-9]+", "", lowered)
+        explicit_airline_domain = bool(
+            re.search(r'''(?is)["']domain["']\s*[:=]\s*["']airline["']''', combined)
+            or re.search(r"(?is)\bdomain\s*[:=]\s*airline\b", combined)
+            or "airline domain" in lowered
+            or "domainairline" in compact
+        )
+        tau2_marker = bool(
+            "tau2" in lowered
+            or "tau²" in lowered
+            or "tickettwister" in lowered
+            or "trajectory" in lowered
+            or "tool_schemas" in lowered
+            or "expected_action" in lowered
+            or "database_state" in lowered
+            or "starting evaluation of 50 tasks" in lowered
+        )
+        airline_terms = bool(re.search(
+            r"(?is)\b(?:airline|flight|flights|passenger|passengers|booking|bookings|reservation|reservations|"
+            r"confirmation\s+number|record\s+locator|ticket|tickets|itinerary|airport|airports|departure|arrival|"
+            r"departing|arriving|nonstop|layover|cabin|seat|baggage|bag|bags|fare|refund|refunds|cancel(?:led|ed|lation)?|"
+            r"change\s+(?:my\s+)?flight|cancel\s+(?:my\s+)?flight|delay|delayed|compensation\s+claim)\b",
+            combined,
+        ))
+        iata_route = bool(re.search(r"\b[A-Z]{3}\s+(?:to|->|-)\s+[A-Z]{3}\b", combined))
+        return bool(explicit_airline_domain or (tau2_marker and airline_terms) or iata_route or airline_terms)
+
+    def _is_openenv_disabled_request(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> bool:
+        """Compatibility shim required by the BrowseComp v0.2.13 merge path.
+
+        The previous merged file called this method from BrowseComp routing but
+        did not define it. Returning a narrow signal preserves normal routing
+        while preventing AttributeError failures in AgentBeats.
+        """
+        combined = self._aegisforge_v1_scope_text(task_text, metadata).lower()
+        return bool(
+            "openenv" in combined
+            and (
+                "disabled" in combined
+                or "disable" in combined
+                or "turned off" in combined
+                or "not available" in combined
+                or "unavailable" in combined
+            )
+        )
+
     def _browsecomp_plus_probe(self, task_text: str, metadata: Mapping[str, Any], effective_text: str) -> None:
         """Safe BrowseComp routing probe: lengths and keys only, never payloads."""
+        if self._aegisforge_tau2_airline_scope_signal(task_text, metadata):
+            return
         try:
             keys = sorted(str(key)[:80] for key in metadata.keys())[:25] if isinstance(metadata, Mapping) else []
             LOGGER.warning(
@@ -12203,6 +12342,10 @@ class AegisForgeAgent:
         """
         text = self._sanitize_text(task_text)
         lowered = text.lower()
+        if self._aegisforge_tau2_airline_scope_signal(text, metadata):
+            return False
+        if not self._aegisforge_browsecomp_explicit_scope_signal(text, metadata):
+            return False
         if len(text) < 240:
             return False
         status_like = (
@@ -12264,6 +12407,8 @@ class AegisForgeAgent:
 
     def _is_browsecomp_plus_protocol(self, task_text: str, metadata: Mapping[str, Any] | None = None) -> bool:
         safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        if self._aegisforge_tau2_airline_scope_signal(task_text, safe_metadata):
+            return False
         try:
             metadata_text = json.dumps(self._normalize_for_json(safe_metadata), ensure_ascii=False)[:12000] if safe_metadata else ""
         except Exception:
@@ -12340,7 +12485,7 @@ class AegisForgeAgent:
             or re.search(r'"[^"]{3,100}"|“[^”]{3,100}”|\'[^\']{3,100}\'', combined)
             or re.search(r"\b[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){1,6}\b", task_text)
         )
-        auto_route = os.getenv("AEGISFORGE_BROWSECOMP_PLUS_AUTO_ROUTE", "1").strip().lower() not in {"0", "false", "no", "off"}
+        auto_route = os.getenv("AEGISFORGE_BROWSECOMP_PLUS_AUTO_ROUTE", "0").strip().lower() in {"1", "true", "yes", "on"}
         routed = bool(auto_route and questionish and (researchish or has_anchor) and len(task_text.strip()) >= 24)
         if routed:
             LOGGER.warning("BROWSECOMP_PLUS_ROUTE_V0_2_13 reason=auto_question")
@@ -12979,25 +13124,28 @@ class AegisForgeAgent:
         self._current_llm_calls = 0
         base_text = self._sanitize_text(get_message_text(message))
         metadata = self._extract_metadata(message, base_text=base_text)
-        browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
-        self._browsecomp_plus_probe(base_text, metadata, browsecomp_task_text)
         raw_a2a_bundle = self._officeqa_extract_raw_a2a_bundle(message, base_text=base_text)
         if raw_a2a_bundle:
             metadata = self._deep_merge_dicts(metadata, {"raw_a2a_snapshot": raw_a2a_bundle})
+        browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
+        tau2_airline_scope = self._aegisforge_tau2_airline_scope_signal(base_text, metadata)
+        browsecomp_explicit_scope = self._aegisforge_browsecomp_explicit_scope_signal(browsecomp_task_text, metadata)
+        if browsecomp_explicit_scope and not tau2_airline_scope:
+            self._browsecomp_plus_probe(base_text, metadata, browsecomp_task_text)
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
         generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
         maizebargain_turn_protocol = False if generic_smoke_request else self._is_maizebargain_turn_payload(base_text, metadata)
         multi_agent_result_protocol = False if (generic_smoke_request or maizebargain_turn_protocol) else self._is_maizebargain_result_payload(base_text, metadata)
         maizebargain_protocol = maizebargain_turn_protocol or multi_agent_result_protocol
-        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol) else (
+        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or tau2_airline_scope or not browsecomp_explicit_scope) else (
             self._is_browsecomp_plus_protocol(browsecomp_task_text, metadata)
             or self._should_route_browsecomp_plus_by_probe(browsecomp_task_text, metadata)
         )
-        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol) else _crmarena_strong_question_signal(base_text, metadata=metadata)
-        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
-        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
-        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol) else self._is_build_it_protocol(metadata, base_text)
+        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or tau2_airline_scope) else _crmarena_strong_question_signal(base_text, metadata=metadata)
+        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
+        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or tau2_airline_scope) else self._is_build_it_protocol(metadata, base_text)
         strict_protocol = "" if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
         if browsecomp_plus_protocol:
             try:
@@ -13095,7 +13243,8 @@ class AegisForgeAgent:
             final_text = self._apply_self_check(execution["task_text"], final_text, execution)
             execution_track = self._normalize_track(execution["metadata"].get("track_hint"))
             execution_seems_officeqa = (
-                not _crmarena_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
+                not tau2_airline_scope
+                and not _crmarena_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
                 and (
                     execution_track == "officeqa"
                     or _officeqa_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
@@ -13124,6 +13273,7 @@ class AegisForgeAgent:
         stale_bwim_visible_output = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE))
         final_seems_officeqa = (
             not generic_smoke_request
+            and not tau2_airline_scope
             and not crmarena_protocol
             and not maizebargain_protocol
             and not browsecomp_plus_protocol
