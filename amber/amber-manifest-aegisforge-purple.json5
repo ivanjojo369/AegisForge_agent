@@ -1,0 +1,114 @@
+{
+  // Generalist AgentBeats Purple manifest for AegisForge.
+  // Built from the previous OfficeQA manifest, with the required Pi-Bench
+  // runtime/config pieces merged in. No secrets are hardcoded here.
+  manifest_version: "0.3.0",
+
+  metadata: {
+    name: "AegisForge AgentBeats Purple",
+    display_name: "AegisForge AgentBeats Purple",
+    description: "Generalist AegisForge NCP Purple adapter for AgentX-AgentBeats selected-opponent tracks, including OfficeQA and Pi-Bench.",
+    agent: "AegisForge NCP Purple",
+    mode: "purple_benchmark",
+    benchmark: "AgentX-AgentBeats Phase 2 Sprint 4",
+    scenario_family: "agentbeats-selected-opponents",
+    track: "generalist",
+    repository: "https://github.com/ivanjojo369/AegisForge_agent",
+
+    // Pi-Bench Agent Safety track expects the participant role to be `agent`.
+    participant_roles: ["agent"],
+
+    selected_opponent_tracks: [
+      "mcu",
+      "officeqa",
+      "crmarena",
+      "fieldworkarena",
+      "maizebargain",
+      "tau2",
+      "osworld",
+      "pibench",
+      "cybergym",
+      "netarena"
+    ]
+  },
+
+  program: {
+    image: "ghcr.io/ivanjojo369/aegisforge_agent:latest",
+    entrypoint: "python -u -m aegisforge.runner --host 0.0.0.0 --port 8001",
+    env: {
+      PYTHONUNBUFFERED: "1",
+
+      // General routing defaults. Actual benchmark-specific routing is handled
+      // inside AegisForge using the incoming A2A message/card/bootstrap context.
+      AEGISFORGE_TRACK: "generalist",
+      AEGISFORGE_BENCHMARK: "agentbeats",
+      AEGISFORGE_ADAPTER: "auto",
+      AEGISFORGE_SELECTED_OPPONENT_MODE: "1",
+      AEGISFORGE_OUTPUT_PROTOCOL: "auto",
+      AGENT_OUTPUT_PROTOCOL: "auto",
+
+      // Shared OpenAI runtime. Amber injects this from config; do not hardcode keys.
+      OPENAI_API_KEY: "${config.openai_api_key}",
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_MODEL: "gpt-4.1",
+
+      // Pi-Bench runtime hooks copied from the Pi-Bench manifest pattern.
+      PI_BENCH_MODEL: "${config.pi_bench_model}",
+      AEGISFORGE_ENABLE_PIBENCH: "1",
+      AEGISFORGE_PIBENCH_MODE: "1",
+      AEGISFORGE_PIBENCH_POLICY_BOOTSTRAP: "1",
+      AEGISFORGE_PIBENCH_RECORD_DECISION_FINAL: "1",
+
+      // OfficeQA runtime hooks preserved from the OfficeQA manifest.
+      AEGISFORGE_OFFICEQA_MODE: "1",
+      OFFICEQA_AGENT_MODE: "1",
+      OFFICEQA_RESPONSE_PROTOCOL: "final_answer",
+      AEGISFORGE_OFFICEQA_USE_RESPONSES_API: "1",
+      AEGISFORGE_OFFICEQA_CODE_INTERPRETER: "1",
+      AEGISFORGE_OFFICEQA_ENABLE_EVIDENCE_PACKER: "0",
+      AEGISFORGE_OFFICEQA_LLM_TIMEOUT_SECONDS: "24",
+      AEGISFORGE_OFFICEQA_ENABLE_CHAT_FALLBACK: "0",
+      AEGISFORGE_OFFICEQA_MAX_CONTEXT_CHARS: "16000",
+      AEGISFORGE_OFFICEQA_MAX_OUTPUT_TOKENS: "900",
+
+      // Debug artifacts stay off unless explicitly enabled.
+      AEGISFORGE_DEBUG_ARTIFACTS: "0",
+      AEGISFORGE_TRACE_ARTIFACTS: "0"
+    },
+    network: {
+      endpoints: [
+        { name: "a2a_endpoint", port: 8001 }
+      ]
+    }
+  },
+
+  config_schema: {
+    type: "object",
+    properties: {
+      openai_api_key: {
+        type: "string",
+        secret: true,
+        description: "OpenAI API key injected by AgentBeats/Amber at runtime."
+      },
+      pi_bench_model: {
+        type: "string",
+        description: "Model used by the Pi-Bench purple agent path, e.g. gpt-4.1 or gpt-4o-mini."
+      }
+    },
+    required: ["openai_api_key", "pi_bench_model"],
+    additionalProperties: false
+  },
+
+  slots: {},
+
+  provides: {
+    a2a: {
+      kind: "a2a",
+      endpoint: "a2a_endpoint"
+    }
+  },
+
+  exports: {
+    a2a: "a2a"
+  }
+}
