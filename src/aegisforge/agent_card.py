@@ -248,9 +248,21 @@ def _as_response_dict(card: AgentCardPayload, config: AppConfig) -> dict[str, An
     # A2A AgentCard.capabilities is object-shaped. If the legacy card already
     # exposed list-style tags at this key, keep those tags under capability_tags.
     payload["capabilities"] = {
+        # Legacy smoke-test/runtime flags.
+        "a2a": True,
+        "judge-friendly": True,
+        "fresh-state": True,
+        "purple-agent": True,
+
+        # A2A object-shaped runtime capabilities.
         "streaming": True,
+        "pushNotification": False,
         "pushNotifications": False,
         "stateTransitionHistory": False,
+
+        # Pi-Bench discovery hints.
+        "toolCalls": True,
+        "assistantToolCalls": True,
     }
 
     metadata = payload.setdefault("metadata", {})
