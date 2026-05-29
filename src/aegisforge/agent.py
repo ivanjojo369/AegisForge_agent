@@ -72,7 +72,8 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_2_tau2_airline_raw_json_contract_2026_05_29"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_3_pi_bench_decision_contract_2026_05_29"
+PI_BENCH_AGENT_VERSION = "pi_bench_record_decision_contract_v1_0_2026_05_29"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -1822,6 +1823,8 @@ class AegisForgeAgent:
         self._browsecomp_plus_last_diag: dict[str, Any] = {}
         self._tau2_airline_sessions: dict[str, dict[str, Any]] = {}
         self._tau2_airline_last_status: dict[str, Any] = {}
+        self._pi_bench_sessions: dict[str, dict[str, Any]] = {}
+        self._pi_bench_last_status: dict[str, Any] = {}
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -13394,6 +13397,248 @@ class AegisForgeAgent:
             pass
         return answer
 
+
+    def _pi_bench_session_key(self, metadata: Mapping[str, Any], task_text: str = "") -> str:
+        """Stable per-dialog key for Pi-Bench policy-compliance sessions."""
+        for key in ("context_id", "task_id", "thread_id", "conversation_id", "session_id", "message_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        scenario = self._coerce_text(metadata.get("scenario_id") or metadata.get("scenario") or metadata.get("benchmark_scenario"))
+        domain = self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain"))
+        if scenario or domain:
+            return f"pibench:{domain}:{scenario}"
+        digest = hashlib.sha256(self._coerce_text(task_text).encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return f"pibench:text:{digest}"
+
+    def _pi_bench_scope_signal(self, task_text: str, metadata: Mapping[str, Any]) -> bool:
+        """Detect Pi-Bench without hijacking tau2/BrowseComp/OfficeQA traffic."""
+        if self._aegisforge_tau2_airline_scope_signal(task_text, metadata):
+            return False
+        session_key = self._pi_bench_session_key(metadata, task_text)
+        if session_key in getattr(self, "_pi_bench_sessions", {}):
+            return True
+
+        haystack_parts: list[str] = [self._coerce_text(task_text)]
+        for key in (
+            "benchmark", "benchmark_name", "benchmark_version", "scenario_scope",
+            "scenario_domain", "scenario_id", "domain", "domain_name",
+            "leaderboard_primary", "track_hint", "task_id", "context_id",
+        ):
+            value = metadata.get(key)
+            if value is not None:
+                haystack_parts.append(f"{key}:{self._coerce_text(value)}")
+        raw_snapshot = metadata.get("raw_a2a_snapshot")
+        if isinstance(raw_snapshot, Mapping):
+            for key in ("data", "root.data", "metadata", "context", "task", "scenario"):
+                value = raw_snapshot.get(key)
+                if value is not None:
+                    haystack_parts.append(self._coerce_text(value))
+        haystack = "\n".join(haystack_parts).lower()
+
+        explicit_markers = (
+            "pi-bench", "pibench", "π-bench", "pi_bench",
+            "record_decision", "scenario_scope", "policy-compliance",
+            "policy compliance", "canonical_decision",
+            "helpdesk_access_control_v1", "retail_refund_sop_v1",
+        )
+        if any(marker in haystack for marker in explicit_markers):
+            self._pi_bench_sessions[session_key] = {"detected": True, "source": "explicit_marker"}
+            return True
+
+        scenario_id = self._coerce_text(metadata.get("scenario_id") or metadata.get("benchmark_scenario")).upper()
+        domain = self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain")).lower()
+        if scenario_id.startswith("SCEN_") and domain in {"finra", "helpdesk", "helpdesk_access_control_v1", "retail", "retail_refund_sop_v1"}:
+            self._pi_bench_sessions[session_key] = {"detected": True, "source": "scenario_domain"}
+            return True
+        if domain in {"finra", "helpdesk_access_control_v1", "retail_refund_sop_v1"}:
+            self._pi_bench_sessions[session_key] = {"detected": True, "source": "domain"}
+            return True
+        return False
+
+    def _pi_bench_allowed_decisions(self) -> tuple[str, ...]:
+        return ("ALLOW", "ALLOW-CONDITIONAL", "DENY", "ESCALATE")
+
+    def _pi_bench_decision_from_text(self, task_text: str, metadata: Mapping[str, Any]) -> tuple[str, str]:
+        """Policy-style fallback decision. No scenario-label lookup tables are used."""
+        raw = self._coerce_text(task_text)
+        domain = self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain")).lower()
+        haystack = "\n".join([
+            raw,
+            self._coerce_text(metadata.get("leaderboard_primary")),
+            self._coerce_text(metadata.get("policy")),
+            self._coerce_text(metadata.get("context")),
+            self._coerce_text(metadata.get("scenario")),
+        ]).lower()
+
+        # Cross-domain escalation triggers: ambiguity, missing authority, investigations,
+        # high-risk compliance flags, privacy boundaries, or policy conflict.
+        escalation_terms = (
+            "escalate", "supervisor", "manager review", "human review", "investigation",
+            "fraud", "suspicious", "aml", "sar", "ctr", "insider", "microcap",
+            "crypto", "wire", "legal opinion", "lawyer", "board member",
+            "vip", "exception", "policy gap", "conflicting polic", "approval",
+            "authorized personnel", "after hours", "verbal approval", "no ticket",
+            "medical", "spousal", "humanitarian", "appeal", "review required",
+        )
+        denial_terms = (
+            "deny", "not allowed", "must not", "cannot", "forbidden", "prohibited",
+            "final sale", "past deadline", "deadline", "not eligible", "incomplete verification",
+            "do not disclose", "internal score", "cash refund", "custom item",
+            "dormant", "lockup", "privacy", "fraud flag", "not covered",
+        )
+        allow_terms = (
+            "standard refund", "standard password reset", "full procedure", "policy requirements are satisfied",
+            "eligible", "within window", "within policy", "valid receipt", "verified identity",
+            "approved ticket", "documented approval", "procedural compliance",
+        )
+
+        if any(term in haystack for term in escalation_terms):
+            return (
+                "ESCALATE",
+                "The request contains risk, ambiguity, authority, investigation, or policy-conflict signals that require review before taking irreversible action.",
+            )
+        if any(term in haystack for term in denial_terms):
+            return (
+                "DENY",
+                "The request should not proceed because policy requirements appear unmet or a prohibitive condition is present.",
+            )
+        if any(term in haystack for term in allow_terms):
+            return (
+                "ALLOW",
+                "The request appears to satisfy the stated policy requirements and can proceed through the normal process.",
+            )
+
+        if domain in {"finra"}:
+            return (
+                "ESCALATE",
+                "Financial-compliance cases should be reviewed when the governing facts are incomplete or risk cannot be ruled out from the visible context.",
+            )
+        if domain in {"helpdesk", "helpdesk_access_control_v1"}:
+            return (
+                "ESCALATE",
+                "Access-control requests require verification and authorization; escalate when the visible context does not prove all requirements are met.",
+            )
+        if domain in {"retail", "retail_refund_sop_v1"}:
+            return (
+                "ESCALATE",
+                "Retail refund cases should be escalated when eligibility, state, or exception handling is not fully established.",
+            )
+        return (
+            "ESCALATE",
+            "The safe policy-compliance default is escalation when the benchmark domain or complete policy state is not explicit.",
+        )
+
+    def _pi_bench_extract_json_decision(self, raw: str) -> tuple[str, str] | None:
+        """Extract a decision from LLM text without trusting non-canonical labels."""
+        if not raw:
+            return None
+        text = self._coerce_text(raw).strip()
+        candidates: list[Any] = []
+        try:
+            candidates.append(json.loads(text))
+        except Exception:
+            pass
+        for block in re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.IGNORECASE | re.DOTALL):
+            try:
+                candidates.append(json.loads(block))
+            except Exception:
+                continue
+        match = re.search(r"\b(ALLOW-CONDITIONAL|ALLOW|DENY|ESCALATE)\b", text, flags=re.IGNORECASE)
+        if match:
+            return (match.group(1).upper(), self._trim(text, 280))
+        for item in candidates:
+            if not isinstance(item, Mapping):
+                continue
+            decision = self._coerce_text(item.get("decision") or item.get("canonical_decision") or item.get("label")).upper()
+            if decision in self._pi_bench_allowed_decisions():
+                reason = self._coerce_text(item.get("reason") or item.get("rationale") or item.get("justification") or item.get("notes"))
+                return decision, reason or "Decision selected from policy context."
+            kwargs = item.get("kwargs")
+            if isinstance(kwargs, Mapping):
+                decision = self._coerce_text(kwargs.get("decision")).upper()
+                if decision in self._pi_bench_allowed_decisions():
+                    reason = self._coerce_text(kwargs.get("reason") or kwargs.get("rationale") or kwargs.get("notes"))
+                    return decision, reason or "Decision selected from policy context."
+        return None
+
+    def _call_llm_for_pi_bench_decision(self, task_text: str, metadata: Mapping[str, Any]) -> tuple[str, str] | None:
+        """Optional one-shot decision helper, disabled by default to avoid accidental API spend."""
+        if not _env_flag("AEGISFORGE_PI_BENCH_USE_LLM", default=False):
+            return None
+        if not self._openai_api_key():
+            return None
+        system_prompt = (
+            "You are a Pi-Bench policy-compliance decision adapter. "
+            "Choose exactly one canonical decision from ALLOW, ALLOW-CONDITIONAL, DENY, ESCALATE. "
+            "Do not use hidden labels or score fields. Prefer ESCALATE when policy state, authority, or verification is incomplete. "
+            "Return only compact JSON: {\"decision\":\"...\",\"reason\":\"...\"}."
+        )
+        user_payload = {
+            "domain": self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain")),
+            "leaderboard_primary": self._coerce_text(metadata.get("leaderboard_primary")),
+            "scenario_id": self._coerce_text(metadata.get("scenario_id")),
+            "task": task_text[:6000],
+            "policy_context": self._coerce_text(metadata.get("policy") or metadata.get("context") or metadata.get("scenario"))[:6000],
+        }
+        raw = self._call_llm(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            max_tokens=180,
+        )
+        return self._pi_bench_extract_json_decision(raw)
+
+    def _handle_pi_bench_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        """Pi-Bench v1.0: always emit a parseable record_decision action.
+
+        This is intentionally a contract adapter, not a scenario-answer lookup. It
+        eliminates the structural MISSING_DECISION failure while leaving deeper
+        policy/tool optimization for later offline work.
+        """
+        session_key = self._pi_bench_session_key(metadata, task_text)
+        self._pi_bench_sessions.setdefault(session_key, {"detected": True, "source": "handler"})
+        llm_decision = self._call_llm_for_pi_bench_decision(task_text, metadata)
+        if llm_decision:
+            decision, reason = llm_decision
+            source = "llm"
+        else:
+            decision, reason = self._pi_bench_decision_from_text(task_text, metadata)
+            source = "deterministic"
+
+        if decision not in self._pi_bench_allowed_decisions():
+            decision = "ESCALATE"
+        reason = self._trim(self._coerce_text(reason), 420) or "Policy-compliance decision recorded."
+
+        payload = {
+            "name": "record_decision",
+            "kwargs": {
+                "decision": decision,
+                "reason": reason,
+            },
+        }
+        self._pi_bench_last_status = {
+            "mode": "pi_bench_decision_contract",
+            "protocol": "record_decision_raw_json",
+            "version": PI_BENCH_AGENT_VERSION,
+            "session_key": session_key,
+            "decision": decision,
+            "source": source,
+            "llm_calls_used": self._current_llm_calls,
+            "llm_error": getattr(self, "_last_llm_error", ""),
+        }
+        try:
+            LOGGER.warning(
+                "PI_BENCH_DECISION_ADAPTER_V1_0 action=record_decision decision=%s source=%s session=%s llm_calls=%s",
+                decision, source, session_key, self._current_llm_calls,
+            )
+        except Exception:
+            pass
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
     async def run(self, message: Message, updater: TaskUpdater) -> None:
         self.turns += 1
         self._current_llm_calls = 0
@@ -13408,8 +13653,9 @@ class AegisForgeAgent:
             metadata = self._deep_merge_dicts(metadata, {"raw_a2a_snapshot": raw_a2a_bundle})
         browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
         tau2_airline_scope = self._aegisforge_tau2_airline_scope_signal(base_text, metadata)
+        pi_bench_scope = self._pi_bench_scope_signal(base_text, metadata)
         browsecomp_explicit_scope = self._aegisforge_browsecomp_explicit_scope_signal(browsecomp_task_text, metadata)
-        if browsecomp_explicit_scope and not tau2_airline_scope:
+        if browsecomp_explicit_scope and not tau2_airline_scope and not pi_bench_scope:
             self._browsecomp_plus_probe(base_text, metadata, browsecomp_task_text)
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
@@ -13417,15 +13663,16 @@ class AegisForgeAgent:
         maizebargain_turn_protocol = False if generic_smoke_request else self._is_maizebargain_turn_payload(base_text, metadata)
         multi_agent_result_protocol = False if (generic_smoke_request or maizebargain_turn_protocol) else self._is_maizebargain_result_payload(base_text, metadata)
         maizebargain_protocol = maizebargain_turn_protocol or multi_agent_result_protocol
-        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or tau2_airline_scope or not browsecomp_explicit_scope) else (
+        pi_bench_protocol = bool(pi_bench_scope and not generic_smoke_request and not maizebargain_protocol and not tau2_airline_scope)
+        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or tau2_airline_scope or pi_bench_protocol or not browsecomp_explicit_scope) else (
             self._is_browsecomp_plus_protocol(browsecomp_task_text, metadata)
             or self._should_route_browsecomp_plus_by_probe(browsecomp_task_text, metadata)
         )
-        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or tau2_airline_scope) else _crmarena_strong_question_signal(base_text, metadata=metadata)
-        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
-        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
-        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or tau2_airline_scope) else self._is_build_it_protocol(metadata, base_text)
-        strict_protocol = "" if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol) else self._strict_output_protocol(metadata, base_text)
+        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or tau2_airline_scope or pi_bench_protocol) else _crmarena_strong_question_signal(base_text, metadata=metadata)
+        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
+        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or tau2_airline_scope or pi_bench_protocol) else self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol or pi_bench_protocol) else self._strict_output_protocol(metadata, base_text)
         if browsecomp_plus_protocol:
             try:
                 LOGGER.warning(
@@ -13434,7 +13681,7 @@ class AegisForgeAgent:
                 )
             except Exception:
                 pass
-        if not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
@@ -13448,6 +13695,16 @@ class AegisForgeAgent:
                 "turn": self.turns,
                 "llm_calls_used": self._current_llm_calls,
                 "tau2_airline_status": getattr(self, "_tau2_airline_last_status", {}),
+            }
+        elif pi_bench_protocol:
+            final_text = self._handle_pi_bench_turn(base_text, metadata)
+            trace = {
+                "mode": "pi_bench_protocol",
+                "protocol": "record_decision_raw_json",
+                "version": PI_BENCH_AGENT_VERSION,
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+                "pi_bench_status": getattr(self, "_pi_bench_last_status", {}),
             }
         elif maizebargain_turn_protocol:
             final_text = self._handle_maizebargain_turn(base_text, metadata)
@@ -13533,6 +13790,7 @@ class AegisForgeAgent:
             execution_track = self._normalize_track(execution["metadata"].get("track_hint"))
             execution_seems_officeqa = (
                 not tau2_airline_scope
+                and not pi_bench_protocol
                 and not _crmarena_strong_question_signal(execution["task_text"], final_text, metadata=execution["metadata"])
                 and (
                     execution_track == "officeqa"
@@ -13563,6 +13821,7 @@ class AegisForgeAgent:
         final_seems_officeqa = (
             not generic_smoke_request
             and not tau2_airline_scope
+            and not pi_bench_protocol
             and not crmarena_protocol
             and not maizebargain_protocol
             and not browsecomp_plus_protocol
@@ -13593,7 +13852,7 @@ class AegisForgeAgent:
             officeqa_protocol = True
             build_it_protocol = False
             strict_protocol = ""
-        should_emit_primary_artifact = generic_smoke_request or not (tau2_airline_scope or strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
+        should_emit_primary_artifact = generic_smoke_request or not (tau2_airline_scope or pi_bench_protocol or strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
         if should_emit_primary_artifact:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
@@ -13620,12 +13879,12 @@ class AegisForgeAgent:
             TaskState.completed,
             new_agent_text_message(final_text),
         )
-        if self.trace_artifacts_enabled and not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.trace_artifacts_enabled and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
-        if self.debug_artifacts_enabled and not tau2_airline_scope and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.debug_artifacts_enabled and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
