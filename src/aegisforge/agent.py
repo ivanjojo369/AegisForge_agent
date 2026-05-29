@@ -72,7 +72,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
     "negotiation_integrity": "Check whether negotiation actions preserve declared constraints and avoid hidden side deals.",
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
-AEGISFORGE_GENERAL_AGENT_VERSION = "v1_1_tau2_airline_json_contract_adapter_2026_05_29"
+AEGISFORGE_GENERAL_AGENT_VERSION = "v1_2_tau2_airline_raw_json_contract_2026_05_29"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -12363,7 +12363,7 @@ class AegisForgeAgent:
 
     def _tau2_airline_format_action(self, name: str, kwargs: Mapping[str, Any] | None = None) -> str:
         payload = {"name": self._coerce_text(name).strip() or self._tau2_airline_response_name(), "kwargs": dict(kwargs or {})}
-        return "<json>" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "</json>"
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _tau2_airline_valid_tool_names(self, task_text: str) -> set[str]:
         names = set(re.findall(r'''(?is)["']name["']\s*:\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']''', self._coerce_text(task_text)))
@@ -12525,21 +12525,21 @@ class AegisForgeAgent:
         system_prompt = (
             "You are AegisForge's tau2 airline contract adapter. "
             "Return exactly one action for the airline customer-service benchmark. "
-            "The green agent requires text output containing a JSON object wrapped in <json>...</json> tags. "
+            "The green agent requires raw JSON output: a JSON object and nothing else. "
             "The JSON must have exactly two top-level keys: name and kwargs. "
             "Use name='respond' with kwargs={'content': '...'} only when replying to the user. "
             "Otherwise use one airline tool from the provided tool list. "
             "Use at most one tool at a time. Prefer looking up reservation/user/flight data before giving policy decisions. "
-            "Do not include markdown, reasoning, logs, or any text outside the <json> tags."
+            "Do not include markdown, reasoning, logs, XML tags, or any text outside the JSON object."
         )
         user_prompt = (
             "Current tau2 airline turn follows. Produce the next valid action only.\n\n"
             f"Session memory:\n{session_hint}\n\n"
             f"Turn payload:\n{clipped}\n\n"
             "Return format example for a tool call:\n"
-            "<json>{\"name\":\"get_reservation_details\",\"kwargs\":{\"reservation_id\":\"ABC123\"}}</json>\n"
+            "{\"name\":\"get_reservation_details\",\"kwargs\":{\"reservation_id\":\"ABC123\"}}\n"
             "Return format example for a user reply:\n"
-            "<json>{\"name\":\"respond\",\"kwargs\":{\"content\":\"I can help with that.\"}}</json>"
+            "{\"name\":\"respond\",\"kwargs\":{\"content\":\"I can help with that.\"}}"
         )
         return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
@@ -12577,7 +12577,7 @@ class AegisForgeAgent:
             pass
 
         self._tau2_airline_last_status = {
-            "mode": "tau2_airline_json_contract_adapter_v1_1",
+            "mode": "tau2_airline_raw_json_contract_adapter_v1_2",
             "context_key": key,
             "action_name": action.get("name"),
             "used_llm": bool(llm_text),
@@ -12586,7 +12586,7 @@ class AegisForgeAgent:
         }
         try:
             LOGGER.warning(
-                "TAU2_AIRLINE_ADAPTER_V1_1 action=%s fallback=%s used_llm=%s llm_error=%s",
+                "TAU2_AIRLINE_ADAPTER_V1_2 action=%s fallback=%s used_llm=%s llm_error=%s",
                 action.get("name"), fallback.get("name"), int(bool(llm_text)), getattr(self, "_last_llm_error", ""),
             )
         except Exception:
@@ -13443,7 +13443,7 @@ class AegisForgeAgent:
             final_text = self._handle_tau2_airline_turn(base_text, metadata, message=message)
             trace = {
                 "mode": "tau2_airline_protocol",
-                "protocol": "tau2_json_action_contract_v1_1",
+                "protocol": "tau2_raw_json_action_contract_v1_2",
                 "version": AEGISFORGE_GENERAL_AGENT_VERSION,
                 "turn": self.turns,
                 "llm_calls_used": self._current_llm_calls,
