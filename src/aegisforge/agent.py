@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sys
+import uuid
 import zipfile
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ from typing import Any, Mapping, Protocol
 from urllib import error as urllib_error, request as urllib_request
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Message, Part, TaskState, TextPart
+try:
+    from a2a.types import DataPart
+except Exception:  # pragma: no cover - SDK-version compatibility
+    DataPart = None  # type: ignore[assignment]
 from a2a.utils import get_message_text, new_agent_text_message
 from .artifact_policy import ArtifactPolicy
 from .role_policy import RolePolicy
@@ -13424,6 +13429,7 @@ class AegisForgeAgent:
             "benchmark", "benchmark_name", "benchmark_version", "scenario_scope",
             "scenario_domain", "scenario_id", "domain", "domain_name",
             "leaderboard_primary", "track_hint", "task_id", "context_id",
+            "benchmark_context", "tools", "messages", "bootstrap", "run_id",
         ):
             value = metadata.get(key)
             if value is not None:
@@ -13441,6 +13447,8 @@ class AegisForgeAgent:
             "record_decision", "scenario_scope", "policy-compliance",
             "policy compliance", "canonical_decision",
             "helpdesk_access_control_v1", "retail_refund_sop_v1",
+            "benchmark_context", "external benchmark tools", "record decision",
+            "allow-conditional", "policy_understanding", "policy_execution",
         )
         if any(marker in haystack for marker in explicit_markers):
             self._pi_bench_sessions[session_key] = {"detected": True, "source": "explicit_marker"}
@@ -13591,6 +13599,155 @@ class AegisForgeAgent:
         )
         return self._pi_bench_extract_json_decision(raw)
 
+    def _new_agent_data_message(self, data: Mapping[str, Any]) -> Message:
+        """Build an A2A agent Message containing a DataPart.
+
+        Pi-Bench network mode parses tool calls from DataPart.data, not from a
+        TextPart containing JSON. Keep a compatibility fallback for SDK builds
+        that expose pydantic aliases differently.
+        """
+        safe_data = self._normalize_for_json(dict(data))
+        message_id = str(uuid.uuid4())
+        if DataPart is not None:
+            for kwargs in (
+                {"role": "agent", "parts": [Part(root=DataPart(kind="data", data=safe_data))], "message_id": message_id},
+                {"role": "agent", "parts": [Part(root=DataPart(kind="data", data=safe_data))], "messageId": message_id},
+            ):
+                try:
+                    return Message(**kwargs)
+                except Exception:
+                    continue
+        candidates = (
+            {"role": "agent", "parts": [{"kind": "data", "data": safe_data}], "messageId": message_id},
+            {"role": "agent", "parts": [{"root": {"kind": "data", "data": safe_data}}], "messageId": message_id},
+            {"role": "agent", "parts": [{"kind": "data", "data": safe_data}], "message_id": message_id},
+            {"role": "agent", "parts": [{"root": {"kind": "data", "data": safe_data}}], "message_id": message_id},
+        )
+        for payload in candidates:
+            try:
+                validator = getattr(Message, "model_validate", None)
+                if callable(validator):
+                    return validator(payload)
+                return Message(**payload)
+            except Exception:
+                continue
+        # Last resort: never crash the task executor; visible JSON is still useful for diagnostics.
+        return new_agent_text_message(json.dumps(safe_data, ensure_ascii=False, separators=(",", ":")))
+
+    def _pi_bench_tool_call(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Return OpenAI-compatible tool_call shape expected by Pi-Bench A2A adapter."""
+        args = self._normalize_for_json(dict(arguments or {}))
+        return {
+            "id": f"call_{uuid.uuid4().hex}",
+            "type": "function",
+            "function": {
+                "name": self._coerce_text(name) or "record_decision",
+                "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+            },
+        }
+
+    def _pi_bench_bootstrap_signal(self, metadata: Mapping[str, Any]) -> bool:
+        raw = metadata.get("bootstrap")
+        if self._coerce_bool(raw, default=False):
+            return True
+        raw_snapshot = metadata.get("raw_a2a_snapshot")
+        if isinstance(raw_snapshot, Mapping):
+            for key in ("data", "root.data", "metadata", "context"):
+                value = raw_snapshot.get(key)
+                if isinstance(value, Mapping) and self._coerce_bool(value.get("bootstrap"), default=False):
+                    return True
+        return False
+
+    def _pi_bench_bootstrap_response_data(self, metadata: Mapping[str, Any], task_text: str = "") -> dict[str, Any]:
+        context_id = self._coerce_text(metadata.get("context_id") or metadata.get("run_id")) or str(uuid.uuid4())
+        session = {
+            "detected": True,
+            "source": "bootstrap",
+            "benchmark_context": self._normalize_for_json(metadata.get("benchmark_context") or []),
+            "tools": self._normalize_for_json(metadata.get("tools") or []),
+            "domain": self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain")),
+            "task_excerpt": self._trim(task_text, 240),
+        }
+        self._pi_bench_sessions[context_id] = session
+        self._pi_bench_last_status = {
+            "mode": "pi_bench_bootstrap",
+            "protocol": "a2a_data_bootstrap_v1",
+            "version": PI_BENCH_AGENT_VERSION,
+            "session_key": context_id,
+            "tools_seen": len(session.get("tools") or []),
+            "context_nodes_seen": len(session.get("benchmark_context") or []),
+        }
+        try:
+            LOGGER.warning(
+                "PI_BENCH_BOOTSTRAP_V1_4 context_id=%s tools=%s context_nodes=%s",
+                context_id, len(session.get("tools") or []), len(session.get("benchmark_context") or []),
+            )
+        except Exception:
+            pass
+        return {"bootstrapped": True, "context_id": context_id}
+
+    def _pi_bench_context_text(self, metadata: Mapping[str, Any]) -> str:
+        """Collect cached/stateless policy context and tool hints for deterministic decisions."""
+        parts: list[str] = []
+        for key in ("benchmark_context", "policy", "context", "scenario", "task", "tools"):
+            value = metadata.get(key)
+            if value:
+                parts.append(self._coerce_text(value))
+        session_key = self._pi_bench_session_key(metadata, "")
+        session = getattr(self, "_pi_bench_sessions", {}).get(session_key)
+        if isinstance(session, Mapping):
+            for key in ("benchmark_context", "tools", "domain"):
+                value = session.get(key)
+                if value:
+                    parts.append(self._coerce_text(value))
+        return "\n".join(part for part in parts if part)
+
+    def _handle_pi_bench_turn_data(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Pi-Bench v1.4: emit A2A DataPart tool_calls, not visible JSON text.
+
+        The Pi-Bench network adapter parses tool_calls from DataPart.data. A
+        TextPart containing {"name":"record_decision"...} leaves tool_calls=[]
+        and produces MISSING_DECISION.
+        """
+        session_key = self._pi_bench_session_key(metadata, task_text)
+        self._pi_bench_sessions.setdefault(session_key, {"detected": True, "source": "handler"})
+        llm_decision = self._call_llm_for_pi_bench_decision(task_text, metadata)
+        if llm_decision:
+            decision, reason = llm_decision
+            source = "llm"
+        else:
+            context_text = self._pi_bench_context_text(metadata)
+            decision, reason = self._pi_bench_decision_from_text("\n".join([task_text, context_text]).strip(), metadata)
+            source = "deterministic"
+
+        if decision not in self._pi_bench_allowed_decisions():
+            decision = "ESCALATE"
+        reason = self._trim(self._coerce_text(reason), 420) or "Policy-compliance decision recorded."
+        args = {"decision": decision, "reason": reason}
+        tool_call = self._pi_bench_tool_call("record_decision", args)
+        data = {
+            "tool_calls": [tool_call],
+            "content": f"Recording policy decision: {decision}.",
+        }
+        self._pi_bench_last_status = {
+            "mode": "pi_bench_a2a_toolcall_contract",
+            "protocol": "a2a_data_tool_calls_v1_4",
+            "version": PI_BENCH_AGENT_VERSION,
+            "session_key": session_key,
+            "decision": decision,
+            "source": source,
+            "llm_calls_used": self._current_llm_calls,
+            "llm_error": getattr(self, "_last_llm_error", ""),
+        }
+        try:
+            LOGGER.warning(
+                "PI_BENCH_DECISION_ADAPTER_V1_4 action=record_decision decision=%s source=%s session=%s llm_calls=%s",
+                decision, source, session_key, self._current_llm_calls,
+            )
+        except Exception:
+            pass
+        return data
+
     def _handle_pi_bench_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         """Pi-Bench v1.0: always emit a parseable record_decision action.
 
@@ -13621,7 +13778,7 @@ class AegisForgeAgent:
         }
         self._pi_bench_last_status = {
             "mode": "pi_bench_decision_contract",
-            "protocol": "record_decision_raw_json",
+            "protocol": "record_decision_raw_json_legacy",
             "version": PI_BENCH_AGENT_VERSION,
             "session_key": session_key,
             "decision": decision,
@@ -13631,7 +13788,7 @@ class AegisForgeAgent:
         }
         try:
             LOGGER.warning(
-                "PI_BENCH_DECISION_ADAPTER_V1_0 action=record_decision decision=%s source=%s session=%s llm_calls=%s",
+                "PI_BENCH_DECISION_ADAPTER_LEGACY_TEXT action=record_decision decision=%s source=%s session=%s llm_calls=%s",
                 decision, source, session_key, self._current_llm_calls,
             )
         except Exception:
@@ -13651,6 +13808,12 @@ class AegisForgeAgent:
         raw_a2a_bundle = self._officeqa_extract_raw_a2a_bundle(message, base_text=base_text)
         if raw_a2a_bundle:
             metadata = self._deep_merge_dicts(metadata, {"raw_a2a_snapshot": raw_a2a_bundle})
+        if self._pi_bench_bootstrap_signal(metadata):
+            await updater.update_status(
+                TaskState.completed,
+                self._new_agent_data_message(self._pi_bench_bootstrap_response_data(metadata, base_text)),
+            )
+            return
         browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
         tau2_airline_scope = self._aegisforge_tau2_airline_scope_signal(base_text, metadata)
         pi_bench_scope = self._pi_bench_scope_signal(base_text, metadata)
@@ -13697,15 +13860,11 @@ class AegisForgeAgent:
                 "tau2_airline_status": getattr(self, "_tau2_airline_last_status", {}),
             }
         elif pi_bench_protocol:
-            final_text = self._handle_pi_bench_turn(base_text, metadata)
-            trace = {
-                "mode": "pi_bench_protocol",
-                "protocol": "record_decision_raw_json",
-                "version": PI_BENCH_AGENT_VERSION,
-                "turn": self.turns,
-                "llm_calls_used": self._current_llm_calls,
-                "pi_bench_status": getattr(self, "_pi_bench_last_status", {}),
-            }
+            await updater.update_status(
+                TaskState.completed,
+                self._new_agent_data_message(self._handle_pi_bench_turn_data(base_text, metadata)),
+            )
+            return
         elif maizebargain_turn_protocol:
             final_text = self._handle_maizebargain_turn(base_text, metadata)
             trace = {
