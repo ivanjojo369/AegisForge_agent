@@ -6,8 +6,9 @@ Pi-Bench-specific revision:
 - preserves the bounded one-agent-per-context model
 - keeps non-Pi-Bench metadata-aware cache keys
 - stabilizes Pi-Bench cache keys so bootstrap/context is not lost between turns
+- extracts Pi-Bench indicators from message.metadata and nested A2A DataPart payloads
 - injects Pi-Bench policy-bootstrap metadata into the incoming A2A message when
-  the request/card indicates the pibench/agent-safety track
+  the request/card/payload indicates the pibench/agent-safety track
 - does not touch API keys, secrets, authentication, or external network settings
 """
 
@@ -103,6 +104,59 @@ PI_BENCH_METADATA_MARKERS = (
     "record_decision",
     "record-decision",
     PI_BENCH_POLICY_BOOTSTRAP_URN,
+)
+
+# Pi-Bench payloads often arrive as DataPart/root.data rather than message.metadata.
+# These markers intentionally avoid generic words such as "ticket" or "refund" so
+# the executor does not steal unrelated tau2/OfficeQA requests. Tool/domain names
+# below are specific to the observed Pi-Bench AgentBeats scenarios.
+PI_BENCH_DOMAIN_MARKERS = (
+    "helpdesk_access_control_v1",
+    "retail_refund_sop_v1",
+    "finra",
+    "brokerage",
+    "brokerage_compliance",
+    "investment_advice_policy",
+    "aml",
+    "access_control",
+    "employee_account_privacy",
+)
+
+PI_BENCH_TOOL_MARKERS = (
+    "record_decision",
+    "log_ticket",
+    "create_access_request",
+    "provision_vpn_access",
+    "unlock_account",
+    "reset_password",
+    "deny_refund",
+    "process_refund",
+    "apply_store_credit",
+    "escalate_to_manager",
+    "escalate_to_tier2",
+    "query_transaction_history",
+    "lookup_related_account_activity",
+    "lookup_certificate_deposits",
+    "hold_transaction",
+    "create_alert",
+    "open_case",
+    "escalate_to_compliance",
+    "execute_trade",
+    "process_wire_transfer",
+    "journal_security_positions",
+)
+
+PI_BENCH_FIELD_MARKERS = (
+    "scenario_id",
+    "domain",
+    "domain_name",
+    "leaderboard_primary",
+    "benchmark_version",
+    "outcome_checks",
+    "policy_sections_cited",
+    "canonical_decision",
+    "decision_channel",
+    "decision_valid",
 )
 
 PI_BENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
@@ -299,10 +353,215 @@ class Executor(AgentExecutor):
         return f"{safe_context_id}::{digest}"
 
     def _extract_message_metadata(self, message: Any) -> dict[str, Any]:
+        """Extract metadata from message.metadata and A2A DataPart/root.data payloads.
+
+        Pi-Bench has been observed to send the useful scenario/domain/tool schema
+        information in nested A2A parts instead of the top-level metadata field.
+        The old executor only inspected message.metadata, which let Pi-Bench fall
+        through as a generic task. This method keeps existing metadata intact and
+        adds a bounded, JSON-safe summary of deeply nested payloads so the agent
+        and cache router can reliably see the Pi-Bench track.
+        """
+        extracted: dict[str, Any] = {}
+
         metadata = getattr(message, "metadata", None)
         if isinstance(metadata, Mapping):
-            return dict(metadata)
-        return {}
+            extracted = self._deep_merge_dicts(extracted, dict(metadata))
+
+        payloads = self._extract_message_payloads(message)
+        bounded_payloads: list[Any] = []
+        for payload in payloads:
+            bounded = self._bounded_json_like(payload, max_depth=4, max_items=24)
+            if bounded not in bounded_payloads:
+                bounded_payloads.append(bounded)
+
+            if isinstance(payload, Mapping):
+                extracted = self._deep_merge_dicts(
+                    extracted,
+                    self._promote_payload_metadata(payload),
+                )
+
+        if bounded_payloads:
+            extracted.setdefault("aegisforge_a2a_payloads", bounded_payloads[:8])
+            extracted.setdefault(
+                "aegisforge_a2a_payload_text",
+                self._json_snippet(bounded_payloads[:8], max_chars=12000),
+            )
+
+        # If the deep payload clearly looks like Pi-Bench, force a track hint early.
+        # This is deliberately done in the executor boundary so the downstream agent
+        # does not accidentally route retail/helpdesk/FINRA Pi-Bench tasks through
+        # tau2-airline just because words like "ticket" or "refund" appear.
+        deep_text = str(extracted.get("aegisforge_a2a_payload_text", ""))
+        if self._is_pi_bench_request(extracted, deep_text):
+            extracted.setdefault("track_hint", "pibench")
+            extracted.setdefault("track", "pibench")
+            extracted.setdefault("benchmark", "Pi-Bench")
+            extracted.setdefault("agentbeats_category", "agent_safety")
+
+        return extracted
+
+    def _promote_payload_metadata(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        promoted: dict[str, Any] = {}
+
+        # Directly useful fields.
+        interesting_keys = {
+            "track",
+            "track_hint",
+            "arena",
+            "benchmark",
+            "category",
+            "agentbeats_category",
+            "domain",
+            "domain_name",
+            "scenario",
+            "scenario_id",
+            "task_id",
+            "id",
+            "leaderboard_primary",
+            "benchmark_version",
+            "prompt",
+            "instruction",
+            "query",
+            "user_request",
+            "required_tool_calls",
+            "tools",
+            "available_tools",
+            "tool_calls",
+            "functions",
+            "policy",
+            "policy_sections",
+            "policy_sections_cited",
+            "outcome_checks",
+            "messages",
+            "conversation",
+            "state",
+        }
+
+        for key, value in payload.items():
+            key_text = str(key)
+            if key_text in interesting_keys:
+                promoted[key_text] = self._bounded_json_like(value, max_depth=3, max_items=24)
+
+        # Common nested containers used by A2A/AgentBeats-style messages.
+        for nested_key in ("metadata", "context", "params", "config", "configuration", "task", "scenario", "input", "payload"):
+            nested = payload.get(nested_key)
+            if isinstance(nested, Mapping):
+                promoted = self._deep_merge_dicts(promoted, self._promote_payload_metadata(nested))
+
+        # Promote benchmark-specific track hints from domain/tool/schema names.
+        payload_text = self._json_snippet(payload, max_chars=12000).lower().replace("_", "-")
+        marker_groups = (
+            PI_BENCH_METADATA_MARKERS,
+            PI_BENCH_DOMAIN_MARKERS,
+            PI_BENCH_TOOL_MARKERS,
+        )
+        if any(marker.replace("_", "-").lower() in payload_text for group in marker_groups for marker in group):
+            promoted.setdefault("track_hint", "pibench")
+            promoted.setdefault("track", "pibench")
+            promoted.setdefault("benchmark", "Pi-Bench")
+            promoted.setdefault("agentbeats_category", "agent_safety")
+
+        return promoted
+
+    def _extract_message_payloads(self, message: Any) -> list[Any]:
+        payloads: list[Any] = []
+        seen: set[int] = set()
+
+        def add_payload(value: Any) -> None:
+            if isinstance(value, (Mapping, list, tuple)):
+                bounded = self._bounded_json_like(value, max_depth=4, max_items=24)
+                if bounded not in payloads:
+                    payloads.append(bounded)
+
+        def visit(obj: Any, depth: int = 0) -> None:
+            if obj is None or depth > 6 or len(seen) > 300:
+                return
+
+            if isinstance(obj, (str, bytes, int, float, bool)):
+                return
+
+            obj_id = id(obj)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+
+            if isinstance(obj, Mapping):
+                add_payload(obj)
+                for key, value in list(obj.items())[:80]:
+                    if str(key) in {
+                        "data",
+                        "metadata",
+                        "context",
+                        "params",
+                        "config",
+                        "configuration",
+                        "task",
+                        "scenario",
+                        "input",
+                        "payload",
+                        "messages",
+                        "conversation",
+                        "parts",
+                        "content",
+                        "tool_calls",
+                        "tools",
+                        "available_tools",
+                        "functions",
+                    }:
+                        visit(value, depth + 1)
+                return
+
+            if isinstance(obj, (list, tuple, set)):
+                for item in list(obj)[:80]:
+                    visit(item, depth + 1)
+                return
+
+            # A2A Part usually wraps TextPart/DataPart under .root. DataPart carries
+            # .data; TextPart carries .text. Some SDK versions expose direct attrs.
+            for attr in (
+                "root",
+                "data",
+                "metadata",
+                "context",
+                "params",
+                "config",
+                "configuration",
+                "task",
+                "scenario",
+                "input",
+                "payload",
+                "message",
+                "messages",
+                "parts",
+                "content",
+                "contents",
+                "tool_calls",
+                "tools",
+                "available_tools",
+                "functions",
+            ):
+                try:
+                    value = getattr(obj, attr)
+                except Exception:
+                    continue
+                visit(value, depth + 1)
+
+            # Pydantic v2/v1 fallback. Avoid dumping the whole top-level Message at
+            # depth 0 because it can duplicate everything; use this for nested parts.
+            if depth > 0:
+                try:
+                    if hasattr(obj, "model_dump"):
+                        dumped = obj.model_dump(mode="json", exclude_none=True)  # type: ignore[attr-defined]
+                        visit(dumped, depth + 1)
+                    elif hasattr(obj, "dict"):
+                        dumped = obj.dict(exclude_none=True)  # type: ignore[attr-defined]
+                        visit(dumped, depth + 1)
+                except Exception:
+                    pass
+
+        visit(message)
+        return payloads
 
     def _attach_pi_bench_bootstrap_metadata(
         self,
@@ -313,8 +572,12 @@ class Executor(AgentExecutor):
         task_id: str,
     ) -> dict[str, Any]:
         merged = self._deep_merge_dicts(dict(PI_BENCH_BOOTSTRAP_METADATA), dict(metadata))
-        merged.setdefault("track_hint", "pibench")
-        merged.setdefault("track", "pibench")
+        merged["track_hint"] = "pibench"
+        merged["track"] = "pibench"
+        merged["benchmark"] = "Pi-Bench"
+        merged["agentbeats_category"] = "agent_safety"
+        merged["pi_bench_protocol"] = True
+        merged["force_pibench_protocol"] = True
         merged.setdefault("context_id", context_id)
         merged.setdefault("task_id", task_id)
         merged.setdefault(
@@ -323,6 +586,13 @@ class Executor(AgentExecutor):
                 "cache_policy": "stable_per_context_for_pibench",
                 "cache_suffix": PI_BENCH_CACHE_SUFFIX,
                 "pi_bench_policy_bootstrap": PI_BENCH_POLICY_BOOTSTRAP_URN,
+                "metadata_sources": [
+                    "message.metadata",
+                    "message.parts",
+                    "Part.root.data",
+                    "DataPart.data",
+                    "nested_payloads",
+                ],
             },
         )
 
@@ -342,42 +612,158 @@ class Executor(AgentExecutor):
         haystacks: list[str] = []
 
         if isinstance(metadata, Mapping):
-            for key, value in metadata.items():
-                haystacks.append(str(key))
-                if isinstance(value, (str, int, float, bool)):
-                    haystacks.append(str(value))
-                elif isinstance(value, Mapping):
-                    haystacks.extend(str(k) for k in value.keys())
-                    for nested_value in value.values():
-                        if isinstance(nested_value, (str, int, float, bool)):
-                            haystacks.append(str(nested_value))
-                elif isinstance(value, (list, tuple, set)):
-                    haystacks.extend(str(item) for item in list(value)[:20] if not isinstance(item, Mapping))
-
-        if text:
-            haystacks.append(text[:5000])
-
-        combined = " ".join(haystacks).lower().replace("_", "-")
-        if any(marker.replace("_", "-").lower() in combined for marker in PI_BENCH_METADATA_MARKERS):
-            return True
-
-        track = ""
-        if isinstance(metadata, Mapping):
+            # First respect explicit track fields.
             track = self._normalize_track(
                 metadata.get("track_hint")
                 or metadata.get("track")
                 or metadata.get("arena")
                 or metadata.get("benchmark")
                 or metadata.get("category")
+                or metadata.get("agentbeats_category")
             )
-        return track == "pibench"
+            if track == "pibench":
+                return True
+
+            haystacks.append(self._json_snippet(metadata, max_chars=16000))
+
+        if text:
+            haystacks.append(text[:16000])
+
+        combined = " ".join(haystacks).lower().replace("_", "-")
+
+        if any(marker.replace("_", "-").lower() in combined for marker in PI_BENCH_METADATA_MARKERS):
+            return True
+        if any(marker.replace("_", "-").lower() in combined for marker in PI_BENCH_DOMAIN_MARKERS):
+            return True
+        if any(marker.replace("_", "-").lower() in combined for marker in PI_BENCH_TOOL_MARKERS):
+            return True
+
+        # Pi-Bench scenario payloads frequently contain SCEN_* ids plus benchmark
+        # fields even when the string "Pi-Bench" is absent.
+        has_scenario_id = "scenario-id" in combined or "scen-" in combined or "scen_" in combined
+        has_benchmark_shape = any(marker.replace("_", "-") in combined for marker in PI_BENCH_FIELD_MARKERS)
+        return bool(has_scenario_id and has_benchmark_shape)
 
     @staticmethod
     def _safe_message_text(message: Any) -> str:
+        fragments: list[str] = []
         try:
-            return str(get_message_text(message) or "")
+            base = str(get_message_text(message) or "")
+            if base:
+                fragments.append(base)
         except Exception:
-            return ""
+            pass
+
+        seen: set[int] = set()
+
+        def visit(obj: Any, depth: int = 0) -> None:
+            if obj is None or depth > 5 or len(seen) > 240:
+                return
+
+            if isinstance(obj, str):
+                if obj and len(" ".join(fragments)) < 20000:
+                    fragments.append(obj[:4000])
+                return
+            if isinstance(obj, (bytes, int, float, bool)):
+                return
+
+            obj_id = id(obj)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+
+            if isinstance(obj, Mapping):
+                for key, value in list(obj.items())[:80]:
+                    key_text = str(key)
+                    if key_text in {
+                        "text",
+                        "content",
+                        "prompt",
+                        "instruction",
+                        "query",
+                        "user_request",
+                        "domain",
+                        "domain_name",
+                        "scenario_id",
+                        "benchmark",
+                    }:
+                        visit(value, depth + 1)
+                    elif key_text in {
+                        "data",
+                        "metadata",
+                        "context",
+                        "params",
+                        "task",
+                        "scenario",
+                        "payload",
+                        "messages",
+                        "conversation",
+                        "tools",
+                        "available_tools",
+                        "tool_calls",
+                    }:
+                        try:
+                            fragments.append(Executor._json_snippet(value, max_chars=6000))
+                        except Exception:
+                            pass
+                        visit(value, depth + 1)
+                return
+
+            if isinstance(obj, (list, tuple, set)):
+                for item in list(obj)[:80]:
+                    visit(item, depth + 1)
+                return
+
+            for attr in ("root", "text", "data", "metadata", "parts", "content", "contents", "payload", "messages"):
+                try:
+                    value = getattr(obj, attr)
+                except Exception:
+                    continue
+                visit(value, depth + 1)
+
+        visit(message)
+        return "\n".join(fragment for fragment in fragments if fragment)[:24000]
+
+    @classmethod
+    def _bounded_json_like(cls, value: Any, *, max_depth: int = 4, max_items: int = 24) -> Any:
+        if max_depth < 0:
+            return "..."
+
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+
+        if isinstance(value, Mapping):
+            out: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= max_items:
+                    out["..."] = f"truncated:{len(value) - max_items}"
+                    break
+                out[str(key)] = cls._bounded_json_like(item, max_depth=max_depth - 1, max_items=max_items)
+            return out
+
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+            out = [cls._bounded_json_like(item, max_depth=max_depth - 1, max_items=max_items) for item in items[:max_items]]
+            if len(items) > max_items:
+                out.append(f"... truncated:{len(items) - max_items}")
+            return out
+
+        try:
+            if hasattr(value, "model_dump"):
+                return cls._bounded_json_like(value.model_dump(mode="json", exclude_none=True), max_depth=max_depth - 1, max_items=max_items)  # type: ignore[attr-defined]
+            if hasattr(value, "dict"):
+                return cls._bounded_json_like(value.dict(exclude_none=True), max_depth=max_depth - 1, max_items=max_items)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        return str(value)[:1000]
+
+    @staticmethod
+    def _json_snippet(value: Any, *, max_chars: int = 8000) -> str:
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)[:max_chars]
+        except Exception:
+            return str(value)[:max_chars]
 
     @classmethod
     def _deep_merge_dicts(cls, base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

@@ -78,7 +78,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 }
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_5_pibench_a2a_toolcall_bridge_2026_05_29"
-PI_BENCH_AGENT_VERSION = "pi_bench_assistant_toolcall_contract_v1_5_2026_05_29"
+PI_BENCH_AGENT_VERSION = "pi_bench_assistant_toolcall_contract_v1_6_2026_05_30"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -12280,6 +12280,14 @@ class AegisForgeAgent:
         """
         if self._aegisforge_browsecomp_explicit_scope_signal(task_text, metadata):
             return False
+
+        # Pi-Bench safety scenarios use words such as "ticket", "refund",
+        # "cancel", and "access request". Those generic terms previously made
+        # tau2/airline capture Pi-Bench turns and produced airline-reservation
+        # responses in the benchmark. Give strong Pi-Bench markers priority.
+        if self._pi_bench_strong_scope_signal(task_text, metadata):
+            return False
+
         combined = self._aegisforge_v1_scope_text(task_text, metadata)
         lowered = combined.lower()
         compact = re.sub(r"[^a-z0-9]+", "", lowered)
@@ -13416,12 +13424,107 @@ class AegisForgeAgent:
         digest = hashlib.sha256(self._coerce_text(task_text).encode("utf-8", errors="ignore")).hexdigest()[:16]
         return f"pibench:text:{digest}"
 
+    def _pi_bench_strong_scope_signal(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> bool:
+        """Return True for high-confidence Pi-Bench/agent-safety payloads.
+
+        This helper deliberately does not call the tau2 scope gate, so it can be
+        used as a priority guard before airline/tau2 routing. It checks benchmark,
+        domain, scenario, tool, and protocol markers rather than generic words
+        like "ticket" or "refund".
+        """
+        haystack_parts: list[str] = [self._coerce_text(task_text)]
+
+        def collect(value: Any, *, depth: int = 0) -> None:
+            if value is None or depth > 5:
+                return
+            if isinstance(value, Mapping):
+                for key, item in list(value.items())[:160]:
+                    key_s = self._coerce_text(key)
+                    key_l = key_s.lower()
+                    if any(blocked in key_l for blocked in ("answer_key", "ground_truth", "oracle", "secret", "credential", "api_key", "authorization")):
+                        continue
+                    haystack_parts.append(key_s)
+                    if isinstance(item, (str, int, float, bool)):
+                        haystack_parts.append(self._coerce_text(item))
+                    else:
+                        collect(item, depth=depth + 1)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in list(value)[:120]:
+                    collect(item, depth=depth + 1)
+                return
+            root = getattr(value, "root", None)
+            if root is not None and root is not value:
+                collect(root, depth=depth + 1)
+            data = getattr(value, "data", None)
+            if data is not None:
+                collect(data, depth=depth + 1)
+            meta = getattr(value, "metadata", None)
+            if meta is not None:
+                collect(meta, depth=depth + 1)
+
+        if isinstance(metadata, Mapping):
+            collect(metadata)
+
+        combined = "\n".join(haystack_parts).lower().replace("_", "-")
+        compact = re.sub(r"[^a-z0-9]+", "", combined)
+
+        strong_markers = (
+            "pi-bench",
+            "pibench",
+            "π-bench",
+            "agent-safety",
+            "policy-bootstrap",
+            "record-decision",
+            "recorddecision",
+            "canonical-decision",
+            "canonicaldecision",
+            "decision-error",
+            "missing-decision",
+            "benchmark-context",
+            "external benchmark tools",
+            "helpdesk-access-control-v1",
+            "retail-refund-sop-v1",
+            "finra",
+            "policy-understanding",
+            "policy-execution",
+            "allow-conditional",
+        )
+        if any(marker in combined or marker in compact for marker in strong_markers):
+            return True
+
+        if "scen-" in combined or re.search(r"\bSCEN[_-]\d+", self._coerce_text(task_text), flags=re.IGNORECASE):
+            if any(domain in combined for domain in ("helpdesk-access-control-v1", "retail-refund-sop-v1", "finra", "domain:helpdesk", "domain:retail")):
+                return True
+
+        tool_names = self._pi_bench_available_tool_names(metadata or {}, task_text)
+        pi_tool_markers = {
+            "record_decision",
+            "log_ticket",
+            "create_access_request",
+            "deny_refund",
+            "apply_store_credit",
+            "escalate_to_tier2",
+            "escalate_to_manager",
+            "hold_transaction",
+            "open_case",
+            "create_alert",
+            "escalate_to_compliance",
+            "file_sar",
+            "process_wire_transfer",
+            "deny_wire_transfer",
+            "provision_vpn_access",
+        }
+        return bool(tool_names.intersection(pi_tool_markers))
+
     def _pi_bench_scope_signal(self, task_text: str, metadata: Mapping[str, Any]) -> bool:
-        """Detect Pi-Bench without hijacking tau2/BrowseComp/OfficeQA traffic."""
-        if self._aegisforge_tau2_airline_scope_signal(task_text, metadata):
-            return False
+        """Detect Pi-Bench without letting tau2-airline hijack safety scenarios."""
         session_key = self._pi_bench_session_key(metadata, task_text)
         if session_key in getattr(self, "_pi_bench_sessions", {}):
+            return True
+
+        if self._pi_bench_strong_scope_signal(task_text, metadata):
+            self._pi_bench_sessions[session_key] = {"detected": True, "source": "strong_marker"}
             return True
 
         haystack_parts: list[str] = [self._coerce_text(task_text)]
@@ -13430,25 +13533,26 @@ class AegisForgeAgent:
             "scenario_domain", "scenario_id", "domain", "domain_name",
             "leaderboard_primary", "track_hint", "task_id", "context_id",
             "benchmark_context", "tools", "messages", "bootstrap", "run_id",
+            "agentbeats_category", "pi_bench_protocol", "pi_bench_policy_bootstrap",
         ):
             value = metadata.get(key)
             if value is not None:
                 haystack_parts.append(f"{key}:{self._coerce_text(value)}")
         raw_snapshot = metadata.get("raw_a2a_snapshot")
         if isinstance(raw_snapshot, Mapping):
-            for key in ("data", "root.data", "metadata", "context", "task", "scenario"):
+            for key in ("data", "root.data", "metadata", "context", "task", "scenario", "tools"):
                 value = raw_snapshot.get(key)
                 if value is not None:
                     haystack_parts.append(self._coerce_text(value))
-        haystack = "\n".join(haystack_parts).lower()
+        haystack = "\n".join(haystack_parts).lower().replace("_", "-")
 
         explicit_markers = (
-            "pi-bench", "pibench", "π-bench", "pi_bench",
-            "record_decision", "scenario_scope", "policy-compliance",
-            "policy compliance", "canonical_decision",
-            "helpdesk_access_control_v1", "retail_refund_sop_v1",
-            "benchmark_context", "external benchmark tools", "record decision",
-            "allow-conditional", "policy_understanding", "policy_execution",
+            "pi-bench", "pibench", "π-bench", "agent-safety",
+            "record-decision", "policy-compliance", "policy compliance",
+            "canonical-decision", "helpdesk-access-control-v1",
+            "retail-refund-sop-v1", "benchmark-context",
+            "external benchmark tools", "record decision",
+            "allow-conditional", "policy-understanding", "policy-execution",
         )
         if any(marker in haystack for marker in explicit_markers):
             self._pi_bench_sessions[session_key] = {"detected": True, "source": "explicit_marker"}
@@ -13501,6 +13605,20 @@ class AegisForgeAgent:
             "approved ticket", "documented approval", "procedural compliance",
         )
 
+        hard_denial_terms = (
+            "must deny", "should deny", "deny the request", "not allowed",
+            "must not", "cannot", "forbidden", "prohibited", "do not disclose",
+            "do not grant", "do not process", "without a ticket", "no ticket",
+            "missing ticket", "incomplete verification", "privacy", "spousal",
+            "fraud flag", "cash refund", "custom item", "final sale",
+            "past deadline", "not eligible", "dormant", "lockup",
+            "manager approval alone", "verbal approval alone",
+        )
+        if any(term in haystack for term in hard_denial_terms):
+            return (
+                "DENY",
+                "The request should not proceed because a required policy condition is missing or a prohibitive condition is present.",
+            )
         if any(term in haystack for term in escalation_terms):
             return (
                 "ESCALATE",
@@ -13619,7 +13737,16 @@ class AegisForgeAgent:
             "role": "assistant",
             "decision_channel": "assistant.tool_calls",
             "tool_calls": tool_calls if isinstance(tool_calls, list) else [],
+            "toolCalls": tool_calls if isinstance(tool_calls, list) else [],
             "assistant_message": assistant_message if isinstance(assistant_message, Mapping) else {},
+            "message": assistant_message if isinstance(assistant_message, Mapping) else {},
+            "messages": safe_data.get("messages", []) if isinstance(safe_data, Mapping) else [],
+            "choices": safe_data.get("choices", []) if isinstance(safe_data, Mapping) else [],
+            "name": safe_data.get("name") if isinstance(safe_data, Mapping) else None,
+            "kwargs": safe_data.get("kwargs") if isinstance(safe_data, Mapping) else None,
+            "decision": safe_data.get("decision") if isinstance(safe_data, Mapping) else None,
+            "planned_tool_names": safe_data.get("planned_tool_names", []) if isinstance(safe_data, Mapping) else [],
+            "openai_compatible_response": safe_data,
         }
 
         if DataPart is not None:
@@ -13722,6 +13849,286 @@ class AegisForgeAgent:
                     parts.append(self._coerce_text(value))
         return "\n".join(part for part in parts if part)
 
+    def _pi_bench_available_tool_names(self, metadata: Mapping[str, Any], task_text: str = "") -> set[str]:
+        """Extract available Pi-Bench tool names from nested metadata/DataPart text."""
+        names: set[str] = set()
+
+        def add_name(value: Any) -> None:
+            candidate = self._coerce_text(value).strip()
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]{1,80}$", candidate):
+                names.add(candidate)
+
+        name_pattern = r"[\"'](?:name|tool|function_name)[\"']\s*:\s*[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']"
+
+        def collect(value: Any, *, depth: int = 0) -> None:
+            if value is None or depth > 6:
+                return
+            if isinstance(value, Mapping):
+                direct_name = value.get("name") or value.get("tool") or value.get("function_name")
+                if direct_name:
+                    add_name(direct_name)
+                function = value.get("function")
+                if isinstance(function, Mapping):
+                    add_name(function.get("name"))
+                for key, item in list(value.items())[:180]:
+                    key_s = self._coerce_text(key)
+                    if key_s in {"tools", "available_tools", "tool_schemas", "functions", "actions"}:
+                        collect(item, depth=depth + 1)
+                    elif isinstance(item, Mapping):
+                        collect(item, depth=depth + 1)
+                    elif isinstance(item, (list, tuple, set)):
+                        collect(item, depth=depth + 1)
+                    elif isinstance(item, str):
+                        for match in re.findall(name_pattern, item):
+                            add_name(match)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for child in list(value)[:120]:
+                    collect(child, depth=depth + 1)
+                return
+            if isinstance(value, str):
+                for match in re.findall(name_pattern, value):
+                    add_name(match)
+                return
+            root = getattr(value, "root", None)
+            if root is not None and root is not value:
+                collect(root, depth=depth + 1)
+            data = getattr(value, "data", None)
+            if data is not None:
+                collect(data, depth=depth + 1)
+
+        collect(metadata)
+        collect(task_text)
+        known_pi_tools = {
+            "record_decision", "log_ticket", "create_access_request",
+            "deny_refund", "apply_store_credit", "process_refund",
+            "escalate_to_tier2", "escalate_to_manager", "unlock_account",
+            "reset_password", "provision_vpn_access", "hold_transaction",
+            "open_case", "create_alert", "escalate_to_compliance",
+            "file_sar", "process_wire_transfer", "deny_wire_transfer",
+            "document_case", "notify_customer", "close_ticket",
+        }
+        haystack = "\n".join([self._coerce_text(task_text), self._coerce_text(metadata)])
+        for tool in known_pi_tools:
+            if re.search(rf"\b{re.escape(tool)}\b", haystack):
+                names.add(tool)
+        return names
+
+    def _pi_bench_id_bundle(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Best-effort identifier extraction for tool arguments."""
+        haystack = "\n".join([
+            self._coerce_text(task_text),
+            self._coerce_text(metadata.get("data")),
+            self._coerce_text(metadata.get("raw_a2a_snapshot")),
+            self._coerce_text(metadata.get("context")),
+            self._coerce_text(metadata.get("task")),
+            self._coerce_text(metadata.get("scenario")),
+        ])
+        ids: dict[str, Any] = {}
+
+        for key in (
+            "employee_id", "request_id", "order_id", "customer_id",
+            "account_id", "transaction_id", "ticket_id", "case_id",
+            "resource_id", "system_id", "user_id",
+        ):
+            value = metadata.get(key)
+            if value:
+                ids[key] = self._coerce_text(value)
+
+        patterns = {
+            "employee_id": r"\bEMP[_-]?\d+\b",
+            "request_id": r"\bREQ[_-]?\d+(?:[_-]\d+)?\b",
+            "order_id": r"\b(?:ORD|ORDER)[_-]?[A-Z0-9]+\b",
+            "customer_id": r"\b(?:CUST|CUSTOMER)[_-]?[A-Z0-9]+\b",
+            "account_id": r"\b(?:ACC|ACCT|ACCOUNT)[_-]?[A-Z0-9]+\b",
+            "transaction_id": r"\b(?:TXN|TRX|WIRE)[_-]?[A-Z0-9]+\b",
+            "ticket_id": r"\b(?:TICKET|TCKT)[_-]?[A-Z0-9]+\b",
+            "case_id": r"\bCASE[_-]?[A-Z0-9]+\b",
+        }
+        for key, pattern in patterns.items():
+            if key not in ids:
+                match = re.search(pattern, haystack, flags=re.IGNORECASE)
+                if match:
+                    ids[key] = match.group(0).replace("-", "_").upper()
+
+        access_match = re.search(r"\b(?:database|db|vpn|admin|payroll|finance|hr|crm|repository|repo)\b", haystack, flags=re.IGNORECASE)
+        if access_match and "resource_id" not in ids:
+            ids["resource_id"] = access_match.group(0).lower()
+
+        return ids
+
+    def _pi_bench_log_ticket_category(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        haystack = "\n".join([self._coerce_text(task_text), self._coerce_text(metadata)]).lower()
+        if "employee account" in haystack or "privacy" in haystack or "spousal" in haystack:
+            return "Employee Account Privacy"
+        if "database" in haystack or "data-handling" in haystack or "data handling" in haystack:
+            return "Database Access"
+        if "vpn" in haystack:
+            return "VPN Access"
+        if "refund" in haystack or "return" in haystack:
+            return "Refund Policy"
+        if "wire" in haystack or "finra" in haystack or "aml" in haystack:
+            return "Financial Compliance"
+        return "Policy Compliance"
+
+    def _pi_bench_tool_arguments(
+        self,
+        name: str,
+        *,
+        decision: str,
+        rationale: str,
+        task_text: str,
+        metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        ids = self._pi_bench_id_bundle(task_text, metadata)
+        haystack = "\n".join([self._coerce_text(task_text), self._coerce_text(metadata)]).lower()
+        args: dict[str, Any] = {}
+
+        if name == "record_decision":
+            args = {"decision": decision, "rationale": rationale}
+            for key in ("request_id", "employee_id", "order_id", "transaction_id", "account_id"):
+                if ids.get(key):
+                    args[key] = ids[key]
+            return args
+
+        if name == "log_ticket":
+            if ids.get("employee_id"):
+                args["employee_id"] = ids["employee_id"]
+            if ids.get("ticket_id"):
+                args["ticket_id"] = ids["ticket_id"]
+            args.setdefault("category", self._pi_bench_log_ticket_category(task_text, metadata))
+            args.setdefault("status", "denied" if decision == "DENY" else ("escalated" if decision == "ESCALATE" else "approved"))
+            args.setdefault("reason", self._trim(rationale, 240))
+            return args
+
+        if name in {"deny_refund", "apply_store_credit", "process_refund"}:
+            for key in ("request_id", "order_id", "customer_id"):
+                if ids.get(key):
+                    args[key] = ids[key]
+            if name == "apply_store_credit":
+                args.setdefault("status", "offered")
+            elif name == "deny_refund":
+                args.setdefault("status", "denied")
+            else:
+                args.setdefault("status", "approved")
+            args.setdefault("reason", self._trim(rationale, 240))
+            return args
+
+        if name in {"create_access_request", "provision_vpn_access", "unlock_account", "reset_password"}:
+            for key in ("employee_id", "user_id", "request_id", "resource_id", "account_id"):
+                if ids.get(key):
+                    args[key] = ids[key]
+            args.setdefault("status", "approved")
+            args.setdefault("reason", self._trim(rationale, 240))
+            return args
+
+        if name in {"escalate_to_tier2", "escalate_to_manager", "escalate_to_compliance", "open_case", "create_alert", "file_sar", "hold_transaction", "deny_wire_transfer", "process_wire_transfer", "document_case", "notify_customer", "close_ticket"}:
+            for key in ("request_id", "transaction_id", "account_id", "customer_id", "case_id", "employee_id"):
+                if ids.get(key):
+                    args[key] = ids[key]
+            args.setdefault("status", "escalated" if decision == "ESCALATE" else ("denied" if decision == "DENY" else "approved"))
+            args.setdefault("reason", self._trim(rationale, 240))
+            if name == "file_sar" and "sar" not in haystack:
+                args.setdefault("basis", "suspicious activity review required")
+            return args
+
+        return dict(ids)
+
+    def _pi_bench_policy_action_names(self, *, decision: str, task_text: str, metadata: Mapping[str, Any], available_tools: set[str]) -> list[str]:
+        """Choose non-decision Pi-Bench tools from visible domain/tool context."""
+        haystack = "\n".join([self._coerce_text(task_text), self._coerce_text(metadata)]).lower()
+        domain = self._coerce_text(metadata.get("domain") or metadata.get("domain_name") or metadata.get("scenario_domain")).lower()
+        actions: list[str] = []
+
+        def available(name: str) -> bool:
+            return name in available_tools
+
+        def add(name: str) -> None:
+            if available(name) and name not in actions:
+                actions.append(name)
+
+        helpdesk_like = domain in {"helpdesk", "helpdesk_access_control_v1"} or "helpdesk_access_control_v1" in haystack or "database access" in haystack or "employee account" in haystack
+        retail_like = domain in {"retail", "retail_refund_sop_v1"} or "retail_refund_sop_v1" in haystack or "refund" in haystack or "return" in haystack
+        finra_like = domain == "finra" or "finra" in haystack or "wire transfer" in haystack or "lockup" in haystack or "aml" in haystack
+
+        if helpdesk_like:
+            if decision in {"DENY", "ESCALATE"}:
+                add("log_ticket")
+                if decision == "ESCALATE":
+                    add("escalate_to_tier2")
+                    add("escalate_to_manager")
+            elif decision in {"ALLOW", "ALLOW-CONDITIONAL"}:
+                add("create_access_request")
+                if "vpn" in haystack:
+                    add("provision_vpn_access")
+
+        if retail_like:
+            if decision == "DENY":
+                add("deny_refund")
+                if "store credit" in haystack or "store_credit" in haystack or "apply_store_credit" in available_tools:
+                    add("apply_store_credit")
+            elif decision == "ESCALATE":
+                add("escalate_to_tier2")
+                add("escalate_to_manager")
+            elif decision in {"ALLOW", "ALLOW-CONDITIONAL"}:
+                add("process_refund")
+
+        if finra_like:
+            if decision == "ESCALATE":
+                if any(term in haystack for term in ("suspicious", "aml", "sar", "fraud", "alert")):
+                    add("create_alert")
+                    add("open_case")
+                    add("escalate_to_compliance")
+                    if "sar" in haystack:
+                        add("file_sar")
+                if "wire" in haystack or "transaction" in haystack:
+                    add("hold_transaction")
+            elif decision == "DENY":
+                add("deny_wire_transfer")
+            elif decision in {"ALLOW", "ALLOW-CONDITIONAL"}:
+                add("process_wire_transfer")
+
+        safe_for_deny = {"log_ticket", "deny_refund", "apply_store_credit", "deny_wire_transfer", "document_case", "close_ticket"}
+        safe_for_escalate = {"log_ticket", "escalate_to_tier2", "escalate_to_manager", "escalate_to_compliance", "open_case", "create_alert", "hold_transaction", "file_sar", "document_case", "notify_customer"}
+        safe_for_allow = {"create_access_request", "provision_vpn_access", "process_refund", "process_wire_transfer", "document_case", "notify_customer", "close_ticket"}
+        safe = safe_for_deny if decision == "DENY" else (safe_for_escalate if decision == "ESCALATE" else safe_for_allow)
+        for name in sorted(available_tools):
+            if name == "record_decision" or name in actions:
+                continue
+            if name in safe and re.search(rf"\b{re.escape(name)}\b", haystack):
+                add(name)
+
+        return actions
+
+    def _pi_bench_plan_tool_calls(self, *, task_text: str, metadata: Mapping[str, Any], decision: str, rationale: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Build ordered assistant tool_calls for Pi-Bench.
+
+        The final call is always record_decision. Earlier calls are selected from
+        available tool declarations and visible policy/domain signals, preserving
+        temporal checks such as log_ticket before record_decision.
+        """
+        available_tools = self._pi_bench_available_tool_names(metadata, task_text)
+        if not available_tools:
+            available_tools = {"record_decision"}
+        elif "record_decision" not in available_tools:
+            available_tools = set(available_tools)
+            available_tools.add("record_decision")
+
+        action_names = self._pi_bench_policy_action_names(
+            decision=decision,
+            task_text=task_text,
+            metadata=metadata,
+            available_tools=available_tools,
+        )
+        tool_calls: list[dict[str, Any]] = []
+        for name in action_names:
+            args = self._pi_bench_tool_arguments(name, decision=decision, rationale=rationale, task_text=task_text, metadata=metadata)
+            tool_calls.append(self._pi_bench_tool_call(name, args))
+
+        record_args = self._pi_bench_tool_arguments("record_decision", decision=decision, rationale=rationale, task_text=task_text, metadata=metadata)
+        tool_calls.append(self._pi_bench_tool_call("record_decision", record_args))
+        return tool_calls, record_args
+
     def _handle_pi_bench_turn_data(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
         """Pi-Bench v1.5: emit assistant/tool_calls contract data.
 
@@ -13746,18 +14153,22 @@ class AegisForgeAgent:
         if decision not in self._pi_bench_allowed_decisions():
             decision = "ESCALATE"
         rationale = self._trim(self._coerce_text(rationale), 700) or "Policy-compliance decision recorded."
-        args = {"decision": decision, "rationale": rationale}
-        tool_call = self._pi_bench_tool_call("record_decision", args)
+        tool_calls, args = self._pi_bench_plan_tool_calls(
+            task_text=task_text,
+            metadata=metadata,
+            decision=decision,
+            rationale=rationale,
+        )
         assistant_message = {
             "role": "assistant",
             "content": "",
-            "tool_calls": [tool_call],
+            "tool_calls": tool_calls,
         }
         data = {
             # Primary OpenAI-compatible shape.
             "role": "assistant",
             "content": "",
-            "tool_calls": [tool_call],
+            "tool_calls": tool_calls,
             # Mirrored shapes for A2A/Pi-Bench harness variants.
             "assistant_message": assistant_message,
             "message": assistant_message,
@@ -13768,11 +14179,15 @@ class AegisForgeAgent:
             "kwargs": args,
             "decision": decision,
             "rationale": rationale,
+            "planned_tool_names": [
+                self._coerce_text(((call.get("function") or {}).get("name"))) for call in tool_calls if isinstance(call, Mapping)
+            ],
             "pi_bench_contract": {
                 "decision_channel": "assistant.tool_calls",
                 "tool_name": "record_decision",
                 "arguments_field": "function.arguments",
                 "visible_text_is_not_decision": True,
+                "record_decision_is_last": True,
             },
         }
         self._pi_bench_last_status = {
@@ -13861,8 +14276,8 @@ class AegisForgeAgent:
             )
             return
         browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
-        tau2_airline_scope = self._aegisforge_tau2_airline_scope_signal(base_text, metadata)
         pi_bench_scope = self._pi_bench_scope_signal(base_text, metadata)
+        tau2_airline_scope = False if pi_bench_scope else self._aegisforge_tau2_airline_scope_signal(base_text, metadata)
         browsecomp_explicit_scope = self._aegisforge_browsecomp_explicit_scope_signal(browsecomp_task_text, metadata)
         if browsecomp_explicit_scope and not tau2_airline_scope and not pi_bench_scope:
             self._browsecomp_plus_probe(base_text, metadata, browsecomp_task_text)
