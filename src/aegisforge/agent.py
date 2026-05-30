@@ -13950,11 +13950,30 @@ class AegisForgeAgent:
             "resource_id", "system_id", "user_id", "amount",
             "refund_amount", "total_amount_usd", "policy_sections_cited",
         }
+        placeholder_values = {
+            "EMPLOYEE", "EMPLOYEE_ID", "REQUEST", "REQUEST_ID", "ORDER", "ORDER_ID",
+            "CUSTOMER", "CUSTOMER_ID", "ACCOUNT", "ACCOUNT_ID", "TRANSACTION",
+            "TRANSACTION_ID", "TICKET", "TICKET_ID", "CASE", "CASE_ID", "RESOURCE",
+            "RESOURCE_ID", "SYSTEM", "SYSTEM_ID", "USER", "USER_ID",
+        }
+
+        def is_placeholder_identifier(value: Any) -> bool:
+            text = self._coerce_text(value).strip().upper()
+            text = re.sub(r"[^A-Z0-9_]+", "_", text).strip("_")
+            return text in placeholder_values
+
+        def normalize_identifier(value: Any) -> str:
+            text = self._coerce_text(value).strip().strip('"\'`.,;:()[]{}')
+            text = re.sub(r"\s+", "-", text)
+            text = text.replace("_", "-")
+            return text.upper()
 
         def remember(key: str, value: Any) -> None:
             norm = self._coerce_text(key).strip().lower().replace("-", "_")
             norm = re.sub(r"[^a-z0-9_]+", "_", norm).strip("_")
-            if norm not in canonical_keys or norm in ids or value is None:
+            if norm not in canonical_keys or value is None:
+                return
+            if norm in ids and not is_placeholder_identifier(ids.get(norm)):
                 return
             if norm == "policy_sections_cited":
                 if isinstance(value, (list, tuple, set)):
@@ -13972,8 +13991,8 @@ class AegisForgeAgent:
                     ids[norm] = amount
                 return
             text_value = self._coerce_text(value).strip()
-            if text_value:
-                ids[norm] = text_value
+            if text_value and not is_placeholder_identifier(text_value):
+                ids[norm] = normalize_identifier(text_value) if norm.endswith("_id") else text_value
 
         def collect(value: Any, *, depth: int = 0) -> None:
             if value is None or depth > 7:
@@ -14009,21 +14028,60 @@ class AegisForgeAgent:
 
         collect(metadata)
 
-        patterns = {
-            "employee_id": r"\bEMP[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "request_id": r"\bREQ[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "order_id": r"\b(?:ORD|ORDER)[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "customer_id": r"\b(?:CUST|CUSTOMER)[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "account_id": r"\b(?:ACC|ACCT|ACCOUNT)[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "transaction_id": r"\b(?:TXN|TRX|WIRE)[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "ticket_id": r"\b(?:TICKET|TCKT)[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
-            "case_id": r"\bCASE[_-]?[A-Z0-9]+(?:[_-][A-Z0-9]+)*\b",
+        explicit_id_patterns = {
+            "employee_id": [
+                r"\b(?:employee_id|employee|emp)\b\s*(?:[:=#-]|id)?\s*(EMP[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "request_id": [
+                r"\b(?:request_id|request|req)\b\s*(?:[:=#-]|id)?\s*(REQ[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "order_id": [
+                r"\b(?:order_id|order)\b\s*(?:[:=#-]|id)?\s*(ORD[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "customer_id": [
+                r"\b(?:customer_id|customer)\b\s*(?:[:=#-]|id)?\s*(CUST[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "account_id": [
+                r"\b(?:account_id|account|acct)\b\s*(?:[:=#-]|id)?\s*((?:ACC|ACCT)[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "transaction_id": [
+                r"\b(?:transaction_id|transaction|txn|wire)\b\s*(?:[:=#-]|id)?\s*((?:TXN|TRX|WIRE)[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "ticket_id": [
+                r"\b(?:ticket_id|ticket)\b\s*(?:[:=#-]|id)?\s*((?:TICK|TCKT|TICKET)[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
+            "case_id": [
+                r"\b(?:case_id|case)\b\s*(?:[:=#-]|id)?\s*(CASE[-_ ]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*)\b",
+            ],
         }
-        for key, pat in patterns.items():
-            if key not in ids:
+        token_patterns = {
+            "employee_id": r"\bEMP[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "request_id": r"\bREQ[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "order_id": r"\bORD[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "customer_id": r"\bCUST[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "account_id": r"\b(?:ACC|ACCT)[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "transaction_id": r"\b(?:TXN|TRX|WIRE)[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "ticket_id": r"\b(?:TICK|TCKT|TICKET)[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+            "case_id": r"\bCASE[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*\b",
+        }
+        for key, patterns_for_key in explicit_id_patterns.items():
+            if key in ids and not is_placeholder_identifier(ids.get(key)):
+                continue
+            for pat in patterns_for_key:
                 match = re.search(pat, haystack, flags=re.IGNORECASE)
                 if match:
-                    ids[key] = match.group(0).replace("-", "_").upper()
+                    value = normalize_identifier(match.group(1))
+                    if value and not is_placeholder_identifier(value):
+                        ids[key] = value
+                        break
+        for key, pat in token_patterns.items():
+            if key in ids and not is_placeholder_identifier(ids.get(key)):
+                continue
+            match = re.search(pat, haystack, flags=re.IGNORECASE)
+            if match:
+                value = normalize_identifier(match.group(0))
+                if value and not is_placeholder_identifier(value):
+                    ids[key] = value
 
         sections = self._pi_bench_extract_policy_sections(haystack)
         if sections and "policy_sections_cited" not in ids:
