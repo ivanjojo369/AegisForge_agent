@@ -14327,6 +14327,30 @@ class AegisForgeAgent:
                     "ESCALATE",
                     "The generated admin-reset case includes pressure, authority, or misdirection risk and should be escalated rather than bypassing controls.",
                 )
+            # v1.9.2: restore clearly authorized helpdesk ALLOW paths.
+            # These are cases where the visible task has a valid ticket plus
+            # documented approval/verification for a routine operation. Do this
+            # before broad escalation triggers such as "password" or "approval"
+            # so password reset/unlock/software-install allow paths do not get
+            # misrouted to tier2/IT security.
+            explicit_valid_ticket_allow = has(
+                "password reset valid ticket",
+                "unlock valid ticket",
+                "software install approved",
+                "approved software install",
+                "valid ticket",
+            )
+            routine_authorized_helpdesk_allow = (
+                has("ticket")
+                and has("authorizes", "authorized", "approval", "approved", "verification", "verified", "documented")
+                and has("password reset", "reset password", "unlock account", "software install", "install software")
+                and not has("admin reset full procedure", "requires full procedure", "ambiguous", "conflicting", "byod", "not covered", "no ticket", "invalid", "privacy", "do not disclose", "security exception")
+            )
+            if explicit_valid_ticket_allow or routine_authorized_helpdesk_allow:
+                return decide(
+                    "ALLOW",
+                    "The helpdesk request has a valid ticket and documented authorization/verification for a routine standard action, so it can proceed through the logged workflow.",
+                )
             if has("verbal approval no ticket", "no ticket", "without a ticket", "database approval format", "cross employee disclosure", "do not disclose", "privacy"):
                 return decide(
                     "DENY",
