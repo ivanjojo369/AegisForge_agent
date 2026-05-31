@@ -170,7 +170,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_5_error_patch_guided_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_6_nonregression_assimp_collada_arvo_stress_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -318,7 +318,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.5 prioritizes harness/target signals and patch/error-guided PoC shaping before generic parser-family scores.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.6 preserves v0.5 ARVO assembly_stress and restores v0.2 Assimp Collada fallback.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -326,7 +326,7 @@ class Executor(AgentExecutor):
         """Detect CyberGym task messages without stealing MALT/Pi-Bench traffic.
 
         CyberGym normally sends task attachments such as repo-vul.tar.gz,
-        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. v0.5 also
+        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. v0.6 also
         respects explicit CyberGym track metadata so fallback routed tasks can
         still produce the required PoC artifact instead of prose.
         """
@@ -570,7 +570,7 @@ class Executor(AgentExecutor):
         encodings, and relocation-like expressions more aggressively than v0.4.
         """
         return (
-            b"# AegisForge CyberGym v0.5 harness-first GNU as stress seed\n"
+            b"# AegisForge CyberGym v0.6 harness-first GNU as stress seed\n"
             b".text\n"
             b".globl _start\n"
             b".type _start, @function\n"
@@ -662,7 +662,7 @@ class Executor(AgentExecutor):
         immediate-handling paths.
         """
         return (
-            b"# AegisForge AegisForge CyberGym v0.5 ARVO GNU/x86 assembly seed\n"
+            b"# AegisForge CyberGym v0.6 ARVO GNU/x86 assembly seed\n"
             b".text\n"
             b".globl _start\n"
             b"_start:\n"
@@ -879,9 +879,10 @@ class Executor(AgentExecutor):
         ):
             return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
-        # Assimp's fuzzer often receives /tmp/poc with no extension. Prefer a
-        # content-signature format (PLY) over XML/Collada as the default because
-        # the last logs showed "No suitable reader found" for the previous path.
+        # Assimp's fuzzer often receives /tmp/poc with no extension. The v0.2
+        # executor had the safer answer for one Assimp task by falling back to
+        # Collada/XML instead of the later FBX signature probe. Keep explicit
+        # STL/PLY/FBX/Collada signals, but restore Collada as the no-hint default.
         if self._cybergym_contains_any(
             low,
             (
@@ -899,8 +900,8 @@ class Executor(AgentExecutor):
             if "collada" in low or ".dae" in low:
                 # Keep Collada only when the task strongly points there.
                 return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
-            # Default to a strong binary FBX signature for extensionless /tmp/poc.
-            return self._cybergym_seed_assimp_signature_probe()[:CYBERGYM_MAX_POC_BYTES]
+            # v0.6 non-regression: restore v0.2's extensionless Assimp fallback.
+            return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
 
         if self._cybergym_contains_any(
             low,
@@ -1061,9 +1062,10 @@ class Executor(AgentExecutor):
             elif "collada" in low or ".dae" in low:
                 poc = self._cybergym_seed_collada()
             else:
-                # No extension is available in CyberGym's /tmp/poc path. Prefer a
-                # binary FBX signature so Assimp's signature detection is reached.
-                poc = self._cybergym_seed_assimp_signature_probe()
+                # v0.6 non-regression: restore v0.2's extensionless Assimp fallback.
+                # This preserves the older task that preferred Collada/XML while
+                # keeping v0.5's ARVO assembly_stress path intact.
+                poc = self._cybergym_seed_collada()
             return poc[:CYBERGYM_MAX_POC_BYTES]
 
         if any(marker in combined for marker in ("fuzz_as", "assembler", "assembly", "asm", "opcode", "mnemonic", "arvo")):
@@ -1091,7 +1093,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_5\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_6\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1147,7 +1149,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.5: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.6: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
