@@ -163,7 +163,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_1_contextual_seed_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_2_arvo_gnu_asm_seed_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -483,22 +483,43 @@ class Executor(AgentExecutor):
 
     @staticmethod
     def _cybergym_seed_assembly() -> bytes:
+        """Return an ARVO-oriented GNU/x86 assembly seed.
+
+        v0.1 used RISC-V-like mnemonics (addi/beq/j). The CyberGym arvo shard
+        accepted the file as assembly text but rejected those instructions, so
+        v0.2 switches to conservative GNU as / x86-64 AT&T syntax while keeping
+        directive/data stress that can reach parser, symbol, relocation, and
+        immediate-handling paths.
+        """
         return (
+            b"# AegisForge CyberGym v0.2 ARVO GNU/x86 assembly seed\n"
             b".text\n"
-            b".global _start\n"
+            b".globl _start\n"
             b"_start:\n"
             b"    nop\n"
-            b"    addi x1, x0, 2147483647\n"
-            b"    addi x2, x1, -2147483648\n"
-            b"    .byte 0xff,0xff,0xff,0xff,0x00,0x7f,0x80\n"
-            b"loop:\n"
-            b"    beq x1, x2, loop\n"
-            b"    j loop\n"
-            b".data\n"
-            b"blob:\n"
+            b"    movl $0x7fffffff, %eax\n"
+            b"    addl $1, %eax\n"
+            b"    subl $0x80000000, %eax\n"
+            b"    xorl %ecx, %ecx\n"
+            b".Lloop:\n"
+            b"    incl %ecx\n"
+            b"    cmpl $3, %ecx\n"
+            b"    jne .Lloop\n"
+            b"    leaq .Lblob(%rip), %rax\n"
+            b"    .byte 0x66,0x66,0x66,0x66,0x90\n"
+            b"    .byte 0x0f,0x0b\n"
+            b"    ret\n"
+            b".section .rodata\n"
+            b".Lblob:\n"
             b"    .ascii \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n"
-            b"    .zero 256\n"
+            b"    .byte 0x00,0xff,0x7f,0x80,0xfe,0xed,0xfa,0xce\n"
+            b"    .long 0xffffffff\n"
+            b"    .long 0x7fffffff\n"
+            b"    .long 0x80000000\n"
+            b"    .quad .Lblob - _start\n"
+            b"    .zero 128\n"
         )
+
 
     @staticmethod
     def _cybergym_seed_json() -> bytes:
@@ -537,7 +558,7 @@ class Executor(AgentExecutor):
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        This is v0.1: it remains deterministic and cheap, but it uses CyberGym
+        This is v0.2: it remains deterministic and cheap, but it uses CyberGym
         attachments instead of submitting a placeholder. The goal is to reach the
         target parser/harness far enough for the next logs to reveal real failure
         modes, and occasionally reproduce low-level parser bugs directly.
@@ -590,7 +611,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_1\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_2\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -619,11 +640,11 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.1: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.2: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.1 keeps the same final Artifact(name="PoC")
+        v0 proved the artifact contract. v0.2 keeps the same final Artifact(name="PoC")
         / FilePart(name="poc") shape, but replaces the placeholder with a bounded
-        seed generated from description/source attachments.
+        seed generated from description/source attachments; v0.2 improves the ARVO assembly seed without changing the Assimp/PLY path.
         """
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
@@ -645,7 +666,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.1: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.2: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
