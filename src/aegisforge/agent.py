@@ -79,7 +79,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_7_pibench_decision_balance_2026_05_30"
 PI_BENCH_AGENT_VERSION = "pi_bench_stable_toolcall_v1_9_2026_05_30"
-NETARENA_MALT_AGENT_VERSION = "malt_operator_v1"
+NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_1_safety_fenced_answer"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -13629,16 +13629,32 @@ class AegisForgeAgent:
             lines.append("    return return_object")
         return "\n".join(lines) + "\n"
 
+    def _malt_wrap_python_answer(self, code: str) -> str:
+        """Return MALT code in the exact prompt-requested answer envelope.
+
+        The previous MALT v1 renderer already produced functionally correct
+        process_graph code, but the NetArena prompt explicitly asks the purple
+        agent to start with "Answer:" and place the function in a Python code
+        block.  Keeping the inner function unchanged preserves correctness,
+        while this wrapper makes the answer easier for the green verifier and
+        safety checker to parse.
+        """
+        normalized = self._coerce_text(code).strip()
+        return "\nAnswer:\n```python\n" + normalized + "\n```\n"
+
     def _handle_malt_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         query = self._malt_effective_query(task_text, metadata)
         code = self._malt_render_process_graph_code(query)
+        answer = self._malt_wrap_python_answer(code)
         self._malt_last_status = {
             "version": NETARENA_MALT_AGENT_VERSION,
             "query_chars": len(query),
             "code_chars": len(code),
+            "answer_chars": len(answer),
+            "answer_format": "answer_python_code_fence_v1",
             "matched": self._malt_query_signal(query),
         }
-        return code
+        return answer
 
     def _pi_bench_session_key(self, metadata: Mapping[str, Any], task_text: str = "") -> str:
         """Stable per-dialog key for Pi-Bench policy-compliance sessions."""
