@@ -79,7 +79,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_7_pibench_decision_balance_2026_05_30"
 PI_BENCH_AGENT_VERSION = "pi_bench_stable_toolcall_v1_9_2026_05_30"
-NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_1_safety_fenced_answer"
+NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_2_safety_conformant_graph_copy"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -13592,16 +13592,20 @@ class AegisForgeAgent:
     def _malt_render_process_graph_code(self, query: str) -> str:
         query = self._coerce_text(query).strip()
         lines: list[str] = ["def process_graph(graph_data):"]
+        lines.append("    graph_copy = graph_data.copy()")
         add_spec = self._malt_extract_add(query)
         remove_name = self._malt_extract_remove(query)
         if add_spec:
             new_name, new_type, parent = add_spec
             lines.append(f"    new_node = {{'name': {self._malt_safe_literal(new_name)}, 'type': {self._malt_safe_literal(new_type)}}}")
             lines.append(f"    parent_node_name = {self._malt_safe_literal(parent)}")
-            lines.append("    graph_data = solid_step_add_node_to_graph(graph_data, new_node, parent_node_name)")
+            lines.append("    graph_copy = solid_step_add_node_to_graph(graph_copy, new_node, parent_node_name)")
         if remove_name:
             lines.append(f"    child_node_name = {self._malt_safe_literal(remove_name)}")
-            lines.append("    graph_data = solid_step_remove_node_from_graph(graph_data, child_node_name)")
+            lines.append("    graph_copy = solid_step_remove_node_from_graph(graph_copy, child_node_name)")
+        lines.append("    graph_json = graph_copy")
+        lines.append("    if 'nx' in globals():")
+        lines.append("        graph_json = nx.readwrite.json_graph.node_link_data(graph_copy)")
         count_spec = self._malt_extract_count(query)
         rank_parent = self._malt_extract_rank_parent(query)
         list_parent = self._malt_extract_list_parent(query)
@@ -13610,34 +13614,32 @@ class AegisForgeAgent:
             parent_type = self._malt_node_type_from_name(parent, child_type=child_type)
             lines.append(f"    node1 = {{'type': {self._malt_safe_literal(parent_type)}, 'name': {self._malt_safe_literal(parent)}}}")
             lines.append(f"    node2 = {{'type': {self._malt_safe_literal(child_type)}, 'name': None}}")
-            lines.append("    count = solid_step_counting_query(graph_data, node1, node2)")
-            lines.append("    return_object = {'type': 'text', 'data': count}")
+            lines.append("    count = solid_step_counting_query(graph_copy, node1, node2)")
+            lines.append("    return_object = {'type': 'text', 'data': count, 'updated_graph': graph_json}")
             lines.append("    return return_object")
         elif rank_parent:
             lines.append(f"    parent_node_name = {self._malt_safe_literal(rank_parent)}")
-            lines.append("    ranked_child_nodes = solid_step_rank_child_nodes(graph_data, parent_node_name)")
-            lines.append("    return_object = {'type': 'list', 'data': ranked_child_nodes}")
+            lines.append("    ranked_child_nodes = solid_step_rank_child_nodes(graph_copy, parent_node_name)")
+            lines.append("    return_object = {'type': 'list', 'data': ranked_child_nodes, 'updated_graph': graph_json}")
             lines.append("    return return_object")
         elif list_parent:
             node_type = self._malt_node_type_from_name(list_parent)
             lines.append(f"    node = {{'type': {self._malt_safe_literal(node_type)}, 'name': {self._malt_safe_literal(list_parent)}}}")
-            lines.append("    child_nodes = solid_step_list_child_nodes(graph_data, node)")
-            lines.append("    return_object = {'type': 'list', 'data': child_nodes}")
+            lines.append("    child_nodes = solid_step_list_child_nodes(graph_copy, node)")
+            lines.append("    return_object = {'type': 'list', 'data': child_nodes, 'updated_graph': graph_json}")
             lines.append("    return return_object")
         else:
-            lines.append("    return_object = {'type': 'graph', 'data': graph_data}")
+            lines.append("    return_object = {'type': 'graph', 'data': graph_copy, 'updated_graph': graph_json}")
             lines.append("    return return_object")
         return "\n".join(lines) + "\n"
 
     def _malt_wrap_python_answer(self, code: str) -> str:
         """Return MALT code in the exact prompt-requested answer envelope.
 
-        The previous MALT v1 renderer already produced functionally correct
-        process_graph code, but the NetArena prompt explicitly asks the purple
-        agent to start with "Answer:" and place the function in a Python code
-        block.  Keeping the inner function unchanged preserves correctness,
-        while this wrapper makes the answer easier for the green verifier and
-        safety checker to parse.
+        MALT v1 produced functionally correct process_graph code. v1.1 added
+        the prompt-requested answer fence. v1.2 keeps that envelope and makes
+        the generated function conform to the safety prompt: operate on a graph
+        copy, return one object, avoid imports, and include updated_graph.
         """
         normalized = self._coerce_text(code).strip()
         return "\nAnswer:\n```python\n" + normalized + "\n```\n"
@@ -13652,6 +13654,7 @@ class AegisForgeAgent:
             "code_chars": len(code),
             "answer_chars": len(answer),
             "answer_format": "answer_python_code_fence_v1",
+            "safety_shape": "graph_copy_updated_graph_no_imports_v1",
             "matched": self._malt_query_signal(query),
         }
         return answer
