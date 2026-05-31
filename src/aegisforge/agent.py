@@ -79,6 +79,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_7_pibench_decision_balance_2026_05_30"
 PI_BENCH_AGENT_VERSION = "pi_bench_stable_toolcall_v1_9_2026_05_30"
+NETARENA_MALT_AGENT_VERSION = "malt_operator_v1"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -1830,6 +1831,7 @@ class AegisForgeAgent:
         self._tau2_airline_last_status: dict[str, Any] = {}
         self._pi_bench_sessions: dict[str, dict[str, Any]] = {}
         self._pi_bench_last_status: dict[str, Any] = {}
+        self._malt_last_status: dict[str, Any] = {}
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -13411,6 +13413,233 @@ class AegisForgeAgent:
         return answer
 
 
+
+    def _malt_collect_text_candidates(self, value: Any, *, depth: int = 0) -> list[str]:
+        if depth > 5:
+            return []
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return [cleaned] if cleaned else []
+        if isinstance(value, Mapping):
+            candidates: list[str] = []
+            preferred_keys = (
+                "query",
+                "prompt",
+                "instruction",
+                "task",
+                "question",
+                "input",
+                "user_message",
+                "content",
+                "text",
+            )
+            for key in preferred_keys:
+                if key in value:
+                    candidates.extend(self._malt_collect_text_candidates(value.get(key), depth=depth + 1))
+            for key, item in value.items():
+                if key in preferred_keys:
+                    continue
+                if isinstance(item, (Mapping, list, tuple)):
+                    candidates.extend(self._malt_collect_text_candidates(item, depth=depth + 1))
+            return self._dedupe(candidates)
+        if isinstance(value, (list, tuple)):
+            candidates: list[str] = []
+            for item in value:
+                candidates.extend(self._malt_collect_text_candidates(item, depth=depth + 1))
+            return self._dedupe(candidates)
+        return []
+
+    def _malt_effective_query(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        candidates = [self._coerce_text(task_text).strip()]
+        candidates.extend(self._malt_collect_text_candidates(metadata))
+        for candidate in candidates:
+            if self._malt_query_signal(candidate):
+                return candidate.strip()
+        for candidate in candidates:
+            if candidate.strip():
+                return candidate.strip()
+        return self._coerce_text(task_text).strip()
+
+    def _malt_query_signal(self, text: str) -> bool:
+        q = self._coerce_text(text).strip()
+        if not q:
+            return False
+        ql = q.lower()
+        if "process_graph" in ql and "def " in ql:
+            return False
+        graph_terms = (
+            "return a graph",
+            "return a list",
+            "return the count",
+            "physical_capacity_bps",
+            "child nodes",
+            "direct child nodes",
+            "updated graph",
+        )
+        operation_terms = (
+            "add new node",
+            "add new_ek_",
+            "add node with name",
+            "remove ",
+            "rank all child nodes",
+            "rank direct child nodes",
+            "list all the child nodes",
+            "list direct child nodes",
+            "count the ek_",
+        )
+        return any(term in ql for term in operation_terms) and any(term in ql for term in graph_terms)
+
+    def _malt_scope_signal(self, task_text: str, metadata: Mapping[str, Any]) -> bool:
+        if self._malt_query_signal(task_text):
+            return True
+        blob = " ".join(self._malt_collect_text_candidates(metadata)).lower()
+        if self._malt_query_signal(blob):
+            return True
+        metadata_blob = self._to_json(metadata).lower() if metadata else ""
+        return any(marker in metadata_blob for marker in ("malt_operator", "netarena", "capacity planning")) and any(
+            marker in metadata_blob for marker in ("process_graph", "physical_capacity_bps", "child nodes", "return a graph")
+        )
+
+    def _malt_safe_literal(self, value: str) -> str:
+        return repr(self._coerce_text(value).strip())
+
+    def _malt_node_type_from_name(self, node_name: str, *, child_type: str = "") -> str:
+        name = self._coerce_text(node_name).strip()
+        if not name:
+            return "EK_AGG_BLOCK"
+        upper = name.upper()
+        if "EK_PORT" in upper or re.search(r"\.p\d+$", name):
+            return "EK_PORT"
+        if "EK_PACKET_SWITCH" in upper or re.search(r"\.s\d+c\d+$", name):
+            return "EK_PACKET_SWITCH"
+        if name.endswith(".dom") or re.search(r"^ju\d+\.s\d+\.dom$", name):
+            return "EK_CONTROL_DOMAIN"
+        if child_type == "EK_PACKET_SWITCH" and re.search(r"^ju\d+\.a\d+\.m\d+$", name):
+            return "EK_AGG_BLOCK"
+        if re.search(r"^ju\d+\.a\d+\.m\d+$", name):
+            return "EK_AGG_BLOCK"
+        return "EK_AGG_BLOCK"
+
+    def _malt_new_node_type(self, node_name: str, explicit_type: str = "") -> str:
+        explicit = self._coerce_text(explicit_type).strip()
+        if explicit:
+            return explicit
+        match = re.search(r"(EK_[A-Z_]+?)(?:_\d+)?$", self._coerce_text(node_name).strip())
+        if match:
+            return match.group(1)
+        return self._malt_node_type_from_name(node_name)
+
+    def _malt_extract_add(self, query: str) -> tuple[str, str, str] | None:
+        patterns = (
+            r"Add\s+new\s+node\s+with\s+name\s+'?(?P<name>new_[A-Za-z0-9_]+)'?\s+type\s+(?P<type>EK_[A-Z_]+),?\s+to\s+(?P<parent>[A-Za-z0-9_.]+)",
+            r"Add\s+node\s+with\s+name\s+'(?P<name>new_[A-Za-z0-9_]+)'\s+to\s+(?P<parent>[A-Za-z0-9_.]+)",
+            r"Add\s+(?P<name>new_[A-Za-z0-9_]+)\s+to\s+(?P<parent>[A-Za-z0-9_.]+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, query, flags=re.IGNORECASE)
+            if not match:
+                continue
+            name = match.group("name")
+            explicit_type = match.groupdict().get("type") or ""
+            node_type = self._malt_new_node_type(name, explicit_type)
+            parent = match.group("parent").rstrip(".")
+            return name, node_type, parent
+        return None
+
+    def _malt_extract_remove(self, query: str) -> str:
+        match = re.search(r"Remove\s+(?P<name>[A-Za-z0-9_.]+)\s+from\s+the\s+graph", query, flags=re.IGNORECASE)
+        return match.group("name").rstrip(".") if match else ""
+
+    def _malt_extract_rank_parent(self, query: str) -> str:
+        patterns = (
+            r"Rank\s+all\s+child\s+nodes\s+of\s+EK_[A-Z_]+\s+type\s+(?P<parent>[A-Za-z0-9_.]+)\s+based",
+            r"Rank\s+direct\s+child\s+nodes\s+of\s+(?P<parent>[A-Za-z0-9_.]+)\s+in\s+the\s+updated\s+graph",
+            r"Rank\s+direct\s+child\s+nodes\s+of\s+(?P<parent>[A-Za-z0-9_.]+)\s+based",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, query, flags=re.IGNORECASE)
+            if match:
+                return match.group("parent").rstrip(".")
+        return ""
+
+    def _malt_extract_list_parent(self, query: str) -> str:
+        patterns = (
+            r"List\s+all\s+the\s+child\s+nodes\s+of\s+(?P<parent>[A-Za-z0-9_.]+)",
+            r"List\s+direct\s+child\s+nodes\s+of\s+(?P<parent>[A-Za-z0-9_.]+)\s+in\s+the\s+updated\s+graph",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, query, flags=re.IGNORECASE)
+            if match:
+                return match.group("parent").rstrip(".")
+        return ""
+
+    def _malt_extract_count(self, query: str) -> tuple[str, str] | None:
+        match = re.search(
+            r"Count\s+the\s+(?P<child_type>EK_[A-Z_]+)\s+in\s+(?P<parent>[A-Za-z0-9_.]+)\s+in\s+the\s+updated\s+graph",
+            query,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            match = re.search(
+                r"Count\s+the\s+(?P<child_type>EK_[A-Z_]+)\s+in\s+(?P<parent>[A-Za-z0-9_.]+)",
+                query,
+                flags=re.IGNORECASE,
+            )
+        if not match:
+            return None
+        return match.group("child_type"), match.group("parent").rstrip(".")
+
+    def _malt_render_process_graph_code(self, query: str) -> str:
+        query = self._coerce_text(query).strip()
+        lines: list[str] = ["def process_graph(graph_data):"]
+        add_spec = self._malt_extract_add(query)
+        remove_name = self._malt_extract_remove(query)
+        if add_spec:
+            new_name, new_type, parent = add_spec
+            lines.append(f"    new_node = {{'name': {self._malt_safe_literal(new_name)}, 'type': {self._malt_safe_literal(new_type)}}}")
+            lines.append(f"    parent_node_name = {self._malt_safe_literal(parent)}")
+            lines.append("    graph_data = solid_step_add_node_to_graph(graph_data, new_node, parent_node_name)")
+        if remove_name:
+            lines.append(f"    child_node_name = {self._malt_safe_literal(remove_name)}")
+            lines.append("    graph_data = solid_step_remove_node_from_graph(graph_data, child_node_name)")
+        count_spec = self._malt_extract_count(query)
+        rank_parent = self._malt_extract_rank_parent(query)
+        list_parent = self._malt_extract_list_parent(query)
+        if count_spec:
+            child_type, parent = count_spec
+            parent_type = self._malt_node_type_from_name(parent, child_type=child_type)
+            lines.append(f"    node1 = {{'type': {self._malt_safe_literal(parent_type)}, 'name': {self._malt_safe_literal(parent)}}}")
+            lines.append(f"    node2 = {{'type': {self._malt_safe_literal(child_type)}, 'name': None}}")
+            lines.append("    count = solid_step_counting_query(graph_data, node1, node2)")
+            lines.append("    return_object = {'type': 'text', 'data': count}")
+            lines.append("    return return_object")
+        elif rank_parent:
+            lines.append(f"    parent_node_name = {self._malt_safe_literal(rank_parent)}")
+            lines.append("    ranked_child_nodes = solid_step_rank_child_nodes(graph_data, parent_node_name)")
+            lines.append("    return_object = {'type': 'list', 'data': ranked_child_nodes}")
+            lines.append("    return return_object")
+        elif list_parent:
+            node_type = self._malt_node_type_from_name(list_parent)
+            lines.append(f"    node = {{'type': {self._malt_safe_literal(node_type)}, 'name': {self._malt_safe_literal(list_parent)}}}")
+            lines.append("    child_nodes = solid_step_list_child_nodes(graph_data, node)")
+            lines.append("    return_object = {'type': 'list', 'data': child_nodes}")
+            lines.append("    return return_object")
+        else:
+            lines.append("    return_object = {'type': 'graph', 'data': graph_data}")
+            lines.append("    return return_object")
+        return "\n".join(lines) + "\n"
+
+    def _handle_malt_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        query = self._malt_effective_query(task_text, metadata)
+        code = self._malt_render_process_graph_code(query)
+        self._malt_last_status = {
+            "version": NETARENA_MALT_AGENT_VERSION,
+            "query_chars": len(query),
+            "code_chars": len(code),
+            "matched": self._malt_query_signal(query),
+        }
+        return code
+
     def _pi_bench_session_key(self, metadata: Mapping[str, Any], task_text: str = "") -> str:
         """Stable per-dialog key for Pi-Bench policy-compliance sessions."""
         for key in ("context_id", "task_id", "thread_id", "conversation_id", "session_id", "message_id"):
@@ -14994,6 +15223,12 @@ class AegisForgeAgent:
             await updater.update_status(
                 TaskState.completed,
                 self._new_agent_data_message(self._pi_bench_bootstrap_response_data(metadata, base_text)),
+            )
+            return
+        if self._malt_scope_signal(base_text, metadata):
+            await updater.update_status(
+                TaskState.completed,
+                new_agent_text_message(self._handle_malt_turn(base_text, metadata)),
             )
             return
         browsecomp_task_text = self._browsecomp_plus_effective_task_text(base_text, metadata)
