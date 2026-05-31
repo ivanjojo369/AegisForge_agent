@@ -170,7 +170,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_4_harness_first_seed_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_5_error_patch_guided_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -318,7 +318,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.4 prioritizes harness/target signals before generic parser-family scores.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.5 prioritizes harness/target signals and patch/error-guided PoC shaping before generic parser-family scores.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -326,7 +326,7 @@ class Executor(AgentExecutor):
         """Detect CyberGym task messages without stealing MALT/Pi-Bench traffic.
 
         CyberGym normally sends task attachments such as repo-vul.tar.gz,
-        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. v0.3 also
+        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. v0.5 also
         respects explicit CyberGym track metadata so fallback routed tasks can
         still produce the required PoC artifact instead of prose.
         """
@@ -515,18 +515,154 @@ class Executor(AgentExecutor):
             b"4 0 1 2 2147483647\n"
         )
 
+
+    @staticmethod
+    def _cybergym_seed_stl_ascii() -> bytes:
+        """Assimp-friendly ASCII STL seed with content signature at byte 0."""
+        return (
+            b"solid aegisforge_cybergym\n"
+            b" facet normal 0 0 1\n"
+            b"  outer loop\n"
+            b"   vertex 0 0 0\n"
+            b"   vertex 1 0 0\n"
+            b"   vertex 0 1 0\n"
+            b"  endloop\n"
+            b" endfacet\n"
+            b" facet normal 0 0 -1\n"
+            b"  outer loop\n"
+            b"   vertex 0 0 0\n"
+            b"   vertex 2147483647 -2147483648 0\n"
+            b"   vertex 0 1 0\n"
+            b"  endloop\n"
+            b" endfacet\n"
+            b"endsolid aegisforge_cybergym\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_assimp_signature_probe() -> bytes:
+        """Assimp default seed: use a strong FBX binary signature.
+
+        The recent logs showed Assimp falling out at signature detection with
+        "No suitable reader found". PLY/Collada can be extension-sensitive in
+        some Assimp paths, while binary FBX starts with a well-known magic header.
+        """
+        body = bytearray()
+        body.extend(b"Kaydara FBX Binary  \x00\x1a\x00")
+        body.extend((7400).to_bytes(4, "little", signed=False))
+        # Minimal-ish node records. This is intentionally not a complete model;
+        # the goal is to pass content sniffing and reach FBX parser logic.
+        body.extend(b"Objects\x00")
+        body.extend(b"Geometry\x00")
+        body.extend(b"Model\x00")
+        body.extend(b"Vertices\x00")
+        body.extend(b"PolygonVertexIndex\x00")
+        body.extend(b"\x00\x00\x00\x00" * 8)
+        body.extend(b"A" * 512)
+        body.extend(b"\xff" * 256)
+        return bytes(body[:CYBERGYM_MAX_POC_BYTES])
+
+    @staticmethod
+    def _cybergym_seed_assembly_stress() -> bytes:
+        """GNU as/x86-64 stress seed for /out/fuzz_as.
+
+        This remains valid AT&T syntax, but exercises macros, repetition,
+        symbol arithmetic, local labels, string parsing, alignment, LEB128
+        encodings, and relocation-like expressions more aggressively than v0.4.
+        """
+        return (
+            b"# AegisForge CyberGym v0.5 harness-first GNU as stress seed\n"
+            b".text\n"
+            b".globl _start\n"
+            b".type _start, @function\n"
+            b".macro EMIT_BLOCK idx\n"
+            b".Lblk\\idx:\n"
+            b"    nop\n"
+            b"    leaq .Ldata\\idx(%rip), %rax\n"
+            b"    movabsq $0x7fffffffffffffff, %rbx\n"
+            b"    addq $1, %rbx\n"
+            b"    .byte 0x66,0x67,0x2e,0x3e,0x64,0x65,0x90\n"
+            b"    .p2align 4, 0x90\n"
+            b".endm\n"
+            b"_start:\n"
+            b"    xorl %eax, %eax\n"
+            b"    EMIT_BLOCK 0\n"
+            b"    EMIT_BLOCK 1\n"
+            b"    EMIT_BLOCK 2\n"
+            b"    .rept 16\n"
+            b"    nop\n"
+            b"    .endr\n"
+            b"    jmp .Ldone\n"
+            b".section .rodata,\"a\",@progbits\n"
+            b".Ldata0:\n"
+            b"    .ascii \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n"
+            b"    .string \"\\\\377\\\\200\\\\000%p%999999999999999999999s\"\n"
+            b"    .byte 0x00,0x7f,0x80,0xff,0xfe,0xed,0xfa,0xce\n"
+            b"    .short -1, 0, 1, 32767, -32768\n"
+            b"    .long -1, 0, 1, 0x7fffffff, 0x80000000\n"
+            b"    .quad -1, 0, 1, 0x7fffffffffffffff\n"
+            b"    .uleb128 0x7fffffff\n"
+            b"    .sleb128 -2147483648\n"
+            b".Ldata1:\n"
+            b"    .fill 64,1,0x41\n"
+            b".Ldata2:\n"
+            b"    .quad .Ldata2 - .Ldata0\n"
+            b".text\n"
+            b".Ldone:\n"
+            b"    ret\n"
+            b".comm AEGISFORGE_LONG_COMMON_SYMBOL_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,64,32\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_patch_error_features(blob: str) -> dict[str, list[str]]:
+        """Extract bounded, non-secret PoC-shaping hints from patch/error text."""
+        limited = str(blob or "")[:48000]
+        paths = sorted(set(re.findall(r"(?:^|\s)([A-Za-z0-9_./+\-]+?\.(?:c|cc|cpp|h|hpp|y|l|S|s|asm|xml|dae|fbx|ply|stl))", limited, flags=re.MULTILINE)))[:24]
+        functions = sorted(set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]{2,64})\s*\(", limited)))[:32]
+        quoted = sorted(set(match.group(1) for match in re.finditer(r'"([^"\n]{3,80})"', limited)))[:24]
+        hexes = sorted(set(re.findall(r"\b0x[0-9a-fA-F]{2,16}\b", limited)))[:24]
+        decimals = sorted(set(re.findall(r"(?<![A-Za-z0-9_])-?(?:2147483647|2147483648|4294967295|9223372036854775807|\d{4,10})(?![A-Za-z0-9_])", limited)))[:24]
+        return {
+            "paths": paths,
+            "functions": functions,
+            "quoted": quoted,
+            "hexes": hexes,
+            "decimals": decimals,
+        }
+
+    def _cybergym_patch_guided_poc(self, combined: str, features: Mapping[str, list[str]]) -> bytes | None:
+        """Use patch/error clues to choose safer targeted seeds after harness routing."""
+        low = combined.lower()
+        paths = " ".join(features.get("paths", [])).lower()
+        funcs = " ".join(features.get("functions", [])).lower()
+        quoted = " ".join(features.get("quoted", [])).lower()
+        hints = f"{low}\n{paths}\n{funcs}\n{quoted}"
+
+        if self._cybergym_contains_any(hints, ("tc-i386", "read_a_source_file", "s_scrub", "input-file.c", "expr.c", "write.c", "symbols.c")):
+            return self._cybergym_seed_assembly_stress()
+
+        if self._cybergym_contains_any(hints, ("fbx", "fbxconverter", "fbximporter", "kaydarafbx")):
+            return self._cybergym_seed_assimp_signature_probe()
+        if self._cybergym_contains_any(hints, ("stl", "stlimporter", "solid ")):
+            return self._cybergym_seed_stl_ascii()
+        if self._cybergym_contains_any(hints, ("ply", "plyparser", "plyloader")):
+            return self._cybergym_seed_ply()
+        if self._cybergym_contains_any(hints, ("collada", "daeimporter", "colladaparser")):
+            return self._cybergym_seed_collada()
+
+        return None
+
     @staticmethod
     def _cybergym_seed_assembly() -> bytes:
         """Return an ARVO-oriented GNU/x86 assembly seed.
 
         v0.1 used RISC-V-like mnemonics (addi/beq/j). The CyberGym arvo shard
         accepted the file as assembly text but rejected those instructions, so
-        v0.2 switched to conservative GNU as / x86-64; v0.4 keeps that AT&T syntax while keeping
+        v0.2 switched to conservative GNU as / x86-64; v0.5 keeps that AT&T syntax while adding broader directive stress and keeping
         directive/data stress that can reach parser, symbol, relocation, and
         immediate-handling paths.
         """
         return (
-            b"# AegisForge CyberGym v0.4 ARVO GNU/x86 assembly seed\n"
+            b"# AegisForge AegisForge CyberGym v0.5 ARVO GNU/x86 assembly seed\n"
             b".text\n"
             b".globl _start\n"
             b"_start:\n"
@@ -741,7 +877,7 @@ class Executor(AgentExecutor):
                 "read_a_source_file",
             ),
         ):
-            return self._cybergym_seed_assembly()[:CYBERGYM_MAX_POC_BYTES]
+            return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
         # Assimp's fuzzer often receives /tmp/poc with no extension. Prefer a
         # content-signature format (PLY) over XML/Collada as the default because
@@ -756,12 +892,15 @@ class Executor(AgentExecutor):
                 "assimp::importer",
             ),
         ):
-            if "fbx" in low:
-                return self._cybergym_seed_fbx()[:CYBERGYM_MAX_POC_BYTES]
+            if "stl" in low:
+                return self._cybergym_seed_stl_ascii()[:CYBERGYM_MAX_POC_BYTES]
+            if "ply" in low:
+                return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
             if "collada" in low or ".dae" in low:
                 # Keep Collada only when the task strongly points there.
                 return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
-            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+            # Default to a strong binary FBX signature for extensionless /tmp/poc.
+            return self._cybergym_seed_assimp_signature_probe()[:CYBERGYM_MAX_POC_BYTES]
 
         if self._cybergym_contains_any(
             low,
@@ -808,11 +947,11 @@ class Executor(AgentExecutor):
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        v0.4 keeps the proven CyberGym artifact contract but makes target
-        selection harness-first. The previous v0.3 path could route an assembler
+        v0.5 keeps the proven CyberGym artifact contract but makes target
+        selection harness-first and patch/error-aware. The previous v0.3 path could route an assembler
         harness to HTTP because weak source words outranked the actual target.
-        v0.4 first checks concrete harness names such as /out/fuzz_as and
-        /out/assimp_fuzzer, then falls back to parser-family scoring. The result
+        v0.5 first checks concrete harness names such as /out/fuzz_as and
+        /out/assimp_fuzzer, then uses patch/error clues before parser-family scoring. The result
         remains deterministic, offline, and cheap.
         """
         files = self._cybergym_extract_files(message)
@@ -829,11 +968,17 @@ class Executor(AgentExecutor):
         low = probe_blob.lower()
         names_blob = " ".join(files.keys()).lower()
         source_names_blob = " ".join(source_probe.keys()).lower()
-        combined = f"{low}\n{names_blob}\n{source_names_blob}"
+        features = self._cybergym_patch_error_features("\n".join([description, error_text, patch_text]))
+        feature_blob = self._json_snippet(features, max_chars=8000).lower()
+        combined = f"{low}\n{names_blob}\n{source_names_blob}\n{feature_blob}"
 
         harness_poc = self._cybergym_harness_first_poc(combined)
         if harness_poc is not None:
             return harness_poc[:CYBERGYM_MAX_POC_BYTES]
+
+        patch_poc = self._cybergym_patch_guided_poc(combined, features)
+        if patch_poc is not None:
+            return patch_poc[:CYBERGYM_MAX_POC_BYTES]
 
         # Highest-confidence families from observed CyberGym/ARVO logs. These
         # are intentionally weaker than the harness-first route above.
@@ -909,19 +1054,20 @@ class Executor(AgentExecutor):
 
         # Existing broad families remain after targeted log families.
         if "assimp" in low or "assimp" in names_blob or "assimp" in source_names_blob:
-            if "fbx" in low:
-                poc = self._cybergym_seed_fbx()
+            if "stl" in low:
+                poc = self._cybergym_seed_stl_ascii()
+            elif "ply" in low:
+                poc = self._cybergym_seed_ply()
             elif "collada" in low or ".dae" in low:
                 poc = self._cybergym_seed_collada()
             else:
-                # No extension is available in CyberGym's /tmp/poc path. PLY has
-                # a simple content header and is more likely to be recognized than
-                # XML/Collada when the fuzzer receives a nameless /tmp/poc.
-                poc = self._cybergym_seed_ply()
+                # No extension is available in CyberGym's /tmp/poc path. Prefer a
+                # binary FBX signature so Assimp's signature detection is reached.
+                poc = self._cybergym_seed_assimp_signature_probe()
             return poc[:CYBERGYM_MAX_POC_BYTES]
 
         if any(marker in combined for marker in ("fuzz_as", "assembler", "assembly", "asm", "opcode", "mnemonic", "arvo")):
-            return self._cybergym_seed_assembly()[:CYBERGYM_MAX_POC_BYTES]
+            return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
         if any(marker in low for marker in ("collada", ".dae", "<collada")):
             return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
@@ -945,7 +1091,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_4\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_5\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -975,11 +1121,11 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.4: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.5: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.3 keeps the same final Artifact(name="PoC")
+        v0 proved the artifact contract. v0.5 keeps the same final Artifact(name="PoC")
         / FilePart(name="poc") shape, but replaces the placeholder with a bounded
-        seed generated from description/source attachments; v0.4 adds harness-first routing while preserving the proven PoC artifact shape.
+        seed generated from description/source attachments; v0.5 adds patch/error-guided target shaping while preserving the proven PoC artifact shape.
         """
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
@@ -1001,7 +1147,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.4: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.5: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
