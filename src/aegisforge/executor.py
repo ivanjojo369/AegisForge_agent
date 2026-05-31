@@ -84,9 +84,16 @@ TRACK_ALIASES = {
     "record-decision": "pibench",
     "record_decision": "pibench",
     "cybergym-green": "cybergym",
+    "cyber-gym": "cybergym",
+    "cyber_gym": "cybergym",
     "cybersecurity": "cybergym",
     "cybersecurity-agent": "cybergym",
     "cybersecurity_agent": "cybergym",
+    "staticshipscam": "cybergym",
+    "gymjailbreak": "cybergym",
+    "arvo": "cybergym",
+    "oss-fuzz": "cybergym",
+    "oss_fuzz": "cybergym",
     "net-arena": "netarena",
     "net_arena": "netarena",
     "coding-agent": "netarena",
@@ -163,7 +170,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_2_arvo_gnu_asm_seed_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_3_patchdiff_targeted_seed_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -311,31 +318,58 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
     def _is_cybergym_request(self, message: Any, metadata: Any, text: str = "") -> bool:
         """Detect CyberGym task messages without stealing MALT/Pi-Bench traffic.
 
-        CyberGym sends binary task attachments such as repo-vul.tar.gz,
-        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. The v0
-        handler only intercepts messages that carry CyberGym file markers or
-        explicitly identify CyberGym/ARVO/OSS-Fuzz while carrying attachments.
+        CyberGym normally sends task attachments such as repo-vul.tar.gz,
+        description.txt, error.txt, repo-fix.tar.gz, and patch.diff. v0.3 also
+        respects explicit CyberGym track metadata so fallback routed tasks can
+        still produce the required PoC artifact instead of prose.
         """
         filenames = self._cybergym_file_names(message)
         if filenames & CYBERGYM_FILE_MARKERS:
             return True
 
-        if not filenames:
-            return False
-
         haystack = ""
         if isinstance(metadata, Mapping):
-            haystack += " " + self._json_snippet(metadata, max_chars=12000)
+            track = self._normalize_track(
+                metadata.get("track_hint")
+                or metadata.get("track")
+                or metadata.get("arena")
+                or metadata.get("benchmark")
+                or metadata.get("category")
+                or metadata.get("agentbeats_category")
+            )
+            if track == "cybergym":
+                return True
+            haystack += " " + self._json_snippet(metadata, max_chars=16000)
+
         haystack += " " + str(text or "")
         normalized = haystack.lower().replace("_", "-")
-        return "cybergym" in normalized or "oss-fuzz" in normalized or "arvo:" in normalized
+
+        explicit_markers = (
+            "cybergym",
+            "cyber-gym",
+            "oss-fuzz",
+            "arvo:",
+            "repo-vul.tar.gz",
+            "repo-fix.tar.gz",
+            "description.txt",
+            "patch.diff",
+            "/tmp/poc",
+            "proof-of-concept",
+            "proof of concept",
+        )
+        if any(marker in normalized for marker in explicit_markers):
+            return True
+
+        # Without attachments or explicit track markers, avoid stealing general
+        # cybersecurity/NetArena/MALT traffic.
+        return False
 
     def _cybergym_file_names(self, message: Any) -> set[str]:
         names: set[str] = set()
@@ -487,12 +521,12 @@ class Executor(AgentExecutor):
 
         v0.1 used RISC-V-like mnemonics (addi/beq/j). The CyberGym arvo shard
         accepted the file as assembly text but rejected those instructions, so
-        v0.2 switches to conservative GNU as / x86-64 AT&T syntax while keeping
+        v0.2 switched to conservative GNU as / x86-64; v0.3 keeps that AT&T syntax while keeping
         directive/data stress that can reach parser, symbol, relocation, and
         immediate-handling paths.
         """
         return (
-            b"# AegisForge CyberGym v0.2 ARVO GNU/x86 assembly seed\n"
+            b"# AegisForge CyberGym v0.3 ARVO GNU/x86 assembly seed\n"
             b".text\n"
             b".globl _start\n"
             b"_start:\n"
@@ -555,13 +589,130 @@ class Executor(AgentExecutor):
             b"\x00\x00\x00\x00IEND\xaeB`\x82"
         )
 
+
+    @staticmethod
+    def _cybergym_seed_http_request() -> bytes:
+        """HTTP parser seed for lwan/nginx-like request targets."""
+        return (
+            b"GET /" + b"A" * 768 + b"?q=%ff%fe%00 HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Connection: keep-alive, Upgrade, , close\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"Content-Length: 4294967295\r\n"
+            b"X-Aegis: " + b"B" * 2048 + b"\r\n"
+            b"Range: bytes=-1-9223372036854775807\r\n"
+            b"\r\n"
+            b"10\r\n0123456789abcdef\r\n0\r\n\r\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_ucl() -> bytes:
+        """libucl-style config parser seed."""
+        return (
+            b"# AegisForge UCL parser seed\n"
+            b"root = {\n"
+            b"  key = \"" + b"A" * 1024 + b"\";\n"
+            b"  nums = [ -1, 0, 1, 255, 256, 65535, 2147483647, 4294967295 ];\n"
+            b"  nested = " + b"{ a = [" * 32 + b" null " + b"]; }" * 32 + b";\n"
+            b"  regex = /([A-Z]+)+$/;\n"
+            b"  dup = true; dup = false;\n"
+            b"}\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_yara_rule() -> bytes:
+        """YARA rules_fuzzer seed."""
+        return (
+            b"rule AegisForge_CyberGym_Seed {\n"
+            b"  meta:\n"
+            b"    n = 2147483647\n"
+            b"    s = \"" + b"A" * 512 + b"\"\n"
+            b"  strings:\n"
+            b"    $a = { 00 01 02 FF [0-2147483647] 41 42 43 }\n"
+            b"    $b = /([A-Za-z0-9_]{1,64})+/\n"
+            b"    $c = \"MZ\" wide ascii nocase\n"
+            b"  condition:\n"
+            b"    any of them or for any i in (0..filesize) : ( uint8(i) == 0xff )\n"
+            b"}\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_file_magic_input() -> bytes:
+        """file/softmagic-oriented data file seed."""
+        return (
+            b"\x7fELF\x02\x01\x01\x00"
+            + b"\x00" * 8
+            + b"\xff" * 64
+            + b"MZ" + b"\x00" * 58 + b"PE\x00\x00"
+            + b"\n#!" + b"/bin/sh\n"
+            + b"A" * 2048
+            + b"\x00\x7f\x80\xff"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_icc_profile() -> bytes:
+        """ICC profile parser seed with acsp signature at the standard offset."""
+        buf = bytearray(512)
+        buf[0:4] = (512).to_bytes(4, "big", signed=False)
+        buf[4:8] = b"AEGF"
+        buf[8:12] = b"\x04\x30\x00\x00"
+        buf[12:16] = b"mntr"
+        buf[16:20] = b"RGB "
+        buf[20:24] = b"XYZ "
+        buf[36:40] = b"acsp"
+        buf[64:68] = (3).to_bytes(4, "big", signed=False)
+        # Deliberately odd tag table: offsets near boundaries are useful for
+        # sanitizer-guided parser crashes while still remaining deterministic.
+        buf[68:80] = b"desc" + (508).to_bytes(4, "big") + (64).to_bytes(4, "big")
+        buf[80:92] = b"rXYZ" + (128).to_bytes(4, "big") + (4096).to_bytes(4, "big")
+        buf[92:104] = b"bTRC" + (0).to_bytes(4, "big") + (0xffffffff).to_bytes(4, "big")
+        return bytes(buf[:CYBERGYM_MAX_POC_BYTES])
+
+    @staticmethod
+    def _cybergym_seed_jq_program() -> bytes:
+        """jq parser seed: this targets jq program parsing, not JSON data parsing."""
+        return (
+            b"def f($x): if $x == 0 then . else [., ., .] | f($x - 1) end;\n"
+            b"reduce range(0; 64) as $i (.; . + {($i|tostring): [., -1, 2147483647, 4294967295]})\n"
+            b"| try (.. | select(type == \"number\") | . + 1) catch .\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_svg_xml() -> bytes:
+        """XML/SVG parser seed with internal-only entities and deep attributes."""
+        return (
+            b'<?xml version="1.0"?>\n'
+            b'<!DOCTYPE svg [<!ENTITY a "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">]>\n'
+            b'<svg xmlns="http://www.w3.org/2000/svg" width="2147483647" height="-1">\n'
+            b'  <g id="' + b"A" * 1024 + b'">\n'
+            b'    <path d="M 0 0 L 1 1 L 2147483647 -2147483648 Z">&a;&a;&a;</path>\n'
+            b'  </g>\n'
+            b'</svg>\n'
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_libarchive_like() -> bytes:
+        """Small archive/header cocktail for generic binary parser harnesses."""
+        return (
+            b"ustar\x00"
+            + b"A" * 512
+            + b"PK\x03\x04" + b"\x14\x00\x00\x00\x08\x00" + b"B" * 256
+            + b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03" + b"C" * 512
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_signal_score(blob: str, needles: tuple[str, ...]) -> int:
+        low = blob.lower()
+        return sum(1 for needle in needles if needle in low)
+
+
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        This is v0.2: it remains deterministic and cheap, but it uses CyberGym
-        attachments instead of submitting a placeholder. The goal is to reach the
-        target parser/harness far enough for the next logs to reveal real failure
-        modes, and occasionally reproduce low-level parser bugs directly.
+        v0.3 keeps the proven CyberGym artifact contract but improves target
+        selection. It ranks parser families using description.txt, error.txt,
+        patch.diff, attachment names, and a bounded source probe from repo-vul /
+        repo-fix archives. The result is still deterministic, offline, and cheap.
         """
         files = self._cybergym_extract_files(message)
         description = self._cybergym_decode_text(files.get("description.txt", b""))
@@ -572,19 +723,93 @@ class Executor(AgentExecutor):
         for archive_name in ("repo-vul.tar.gz", "repo-fix.tar.gz"):
             source_probe.update(self._cybergym_tar_text_probe(files.get(archive_name, b"")))
 
-        probe_blob = "\n".join(
-            [description, error_text, patch_text]
-            + [f"\n# {name}\n{text[:6000]}" for name, text in list(source_probe.items())[:16]]
-        )
+        source_sections = [f"\n# {name}\n{text[:6000]}" for name, text in list(source_probe.items())[:20]]
+        probe_blob = "\n".join([description, error_text, patch_text] + source_sections)
         low = probe_blob.lower()
         names_blob = " ".join(files.keys()).lower()
+        combined = f"{low}\n{names_blob}"
 
-        # Known high-level families first.
+        # Highest-confidence families from observed CyberGym/ARVO logs.
+        family_scores: list[tuple[int, str, bytes]] = [
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    (
+                        "lwan-request.c",
+                        "lwan_request",
+                        "parse_request",
+                        "http request",
+                        "http/1.",
+                        "headers",
+                        "transfer-encoding",
+                        "content-length",
+                    ),
+                ),
+                "http",
+                self._cybergym_seed_http_request(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("libucl", "ucl_parser", "ucl_object", "ucl_hash", ".ucl", "schema", "config"),
+                ),
+                "ucl",
+                self._cybergym_seed_ucl(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("yara", "rules_fuzzer", "yr_parser", "yr_compile", "rule ", "condition:"),
+                ),
+                "yara",
+                self._cybergym_seed_yara_rule(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("softmagic.c", "file-fuzzer", "file_fuzzer", "magic_buffer", "libmagic", "file command"),
+                ),
+                "file_magic",
+                self._cybergym_seed_file_magic_input(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("icc", "iccp", "lcms", "cmsopenprofilefrommem", "acsp", "profile"),
+                ),
+                "icc",
+                self._cybergym_seed_icc_profile(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("jq_fuzz_parse", "jq_compile", "jv_parse", "jq parser", "libjq", "lexer.l"),
+                ),
+                "jq",
+                self._cybergym_seed_jq_program(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    ("libxml2", "xmlreadmemory", "xmlreader", "htmlreadmemory", "svg", "<!doctype"),
+                ),
+                "svg_xml",
+                self._cybergym_seed_svg_xml(),
+            ),
+        ]
+
+        best_score, _family, best_poc = max(family_scores, key=lambda item: item[0])
+        if best_score > 0:
+            return best_poc[:CYBERGYM_MAX_POC_BYTES]
+
+        # Existing broad families remain after targeted log families.
         if "assimp" in low or "assimp" in names_blob:
             if "fbx" in low:
                 poc = self._cybergym_seed_fbx()
             elif "ply" in low:
                 poc = self._cybergym_seed_ply()
+            elif "collada" in low or ".dae" in low:
+                poc = self._cybergym_seed_collada()
             else:
                 # No extension is available in CyberGym's /tmp/poc path, so use a
                 # format with content-signature/header detection rather than OBJ.
@@ -605,13 +830,18 @@ class Executor(AgentExecutor):
         if "json" in low:
             return self._cybergym_seed_json()
         if "xml" in low or "html" in low or "svg" in low:
-            return self._cybergym_seed_xml()
+            return self._cybergym_seed_svg_xml()
+
+        # If source names suggest binary/archive format parsing, prefer a compact
+        # magic-header cocktail over pure ASCII.
+        if any(marker in combined for marker in ("archive", "zip", "tar", "gzip", "zlib", "header", "magic")):
+            return self._cybergym_seed_libarchive_like()
 
         # Generic source-aware byte cocktail. Prefer constants seen in source
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_2\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_3\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -624,6 +854,7 @@ class Executor(AgentExecutor):
                 "context_id": str(context_id or ""),
                 "task_id": str(task_id or ""),
                 "files": sorted(files.keys()),
+                "source_probe_files": sorted(source_probe.keys())[:24],
                 "version": CYBERGYM_CONTRACT_VERSION,
             },
             sort_keys=True,
@@ -640,11 +871,11 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.2: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.3: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.2 keeps the same final Artifact(name="PoC")
+        v0 proved the artifact contract. v0.3 keeps the same final Artifact(name="PoC")
         / FilePart(name="poc") shape, but replaces the placeholder with a bounded
-        seed generated from description/source attachments; v0.2 improves the ARVO assembly seed without changing the Assimp/PLY path.
+        seed generated from description/source attachments; v0.3 adds patch/error-targeted parser families while preserving the proven PoC artifact shape.
         """
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
@@ -666,7 +897,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.2: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.3: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
