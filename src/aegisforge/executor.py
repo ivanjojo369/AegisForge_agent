@@ -171,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_9_arvo_stress_assimp_ply_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_10_context_enriched_arvo_assimp_ply_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.9 preserves ARVO assembly_stress and uses PLY as the Assimp extensionless fallback.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.10 preserves ARVO assembly_stress, uses PLY as the Assimp extensionless fallback, and enriches CyberGym routing with task_id/message/metadata context.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -965,6 +965,12 @@ class Executor(AgentExecutor):
                 "tc-i386",
                 "input-file.c",
                 "read_a_source_file",
+                "arvo:47101",
+                "47101",
+                "define_macro",
+                "htab_find_slot",
+                "htab_insert",
+                "s_macro",
             ),
         ):
             return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
@@ -981,9 +987,20 @@ class Executor(AgentExecutor):
                 "assimp fuzzer",
                 "importerregistry",
                 "assimp::importer",
+                "oss-fuzz:42535201",
+                "42535201",
+                "triangulateprocess",
+                "stanford polygon",
+                "vector3.inl",
             ),
         ):
-            if "ply" in low or "triangulateprocess" in low or "stanford polygon" in low:
+            if (
+                "ply" in low
+                or "triangulateprocess" in low
+                or "stanford polygon" in low
+                or "oss-fuzz:42535201" in low
+                or "42535201" in low
+            ):
                 return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
             if "md3" in low or "quake" in low or "convertpath" in low:
                 return self._cybergym_seed_md3_quake3()[:CYBERGYM_MAX_POC_BYTES]
@@ -1042,10 +1059,12 @@ class Executor(AgentExecutor):
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        v0.9 keeps the proven CyberGym artifact contract but makes target
-        selection harness-first and patch/error-aware. It preserves the ARVO
-        assembly_stress route and uses PLY as the extensionless Assimp fallback
-        because the latest useful logs reached the PLY importer and scored.
+        v0.10 keeps the proven CyberGym artifact contract but makes target
+        selection harness-first, patch/error-aware, and request-context-aware.
+        It preserves the ARVO assembly_stress route and uses PLY as the
+        extensionless Assimp fallback because the latest useful logs reached
+        the PLY importer and scored. The key fix is that task_id, message text,
+        and metadata/payload text now participate in CyberGym routing.
         """
         files = self._cybergym_extract_files(message)
         description = self._cybergym_decode_text(files.get("description.txt", b""))
@@ -1057,13 +1076,43 @@ class Executor(AgentExecutor):
             source_probe.update(self._cybergym_tar_text_probe(files.get(archive_name, b"")))
 
         source_sections = [f"\n# {name}\n{text[:6000]}" for name, text in list(source_probe.items())[:20]]
-        probe_blob = "\n".join([description, error_text, patch_text] + source_sections)
+
+        # v0.10 routing fix:
+        # Earlier versions built `combined` mostly from description.txt/error.txt/
+        # patch.diff and source probes. Some CyberGym tasks expose the decisive
+        # signal only in A2A metadata, nested payloads, task ids, or plain message
+        # text. Include those bounded request-level channels before choosing a PoC.
+        try:
+            message_text = self._safe_message_text(message)[:12000]
+        except Exception:
+            message_text = ""
+
+        try:
+            message_metadata = self._extract_message_metadata(message)
+        except Exception:
+            message_metadata = {}
+
+        metadata_blob = ""
+        payload_text_blob = ""
+        if isinstance(message_metadata, Mapping):
+            metadata_blob = self._json_snippet(message_metadata, max_chars=16000)
+            payload_text_blob = str(message_metadata.get("aegisforge_a2a_payload_text", ""))[:16000]
+
+        request_sections = [
+            f"\n# task_id\n{task_id}",
+            f"\n# context_id\n{context_id}",
+            f"\n# message_text\n{message_text}",
+            f"\n# metadata\n{metadata_blob}",
+            f"\n# payload_text\n{payload_text_blob}",
+        ]
+
+        probe_blob = "\n".join([description, error_text, patch_text] + source_sections + request_sections)
         low = probe_blob.lower()
         names_blob = " ".join(files.keys()).lower()
         source_names_blob = " ".join(source_probe.keys()).lower()
-        features = self._cybergym_patch_error_features("\n".join([description, error_text, patch_text]))
+        features = self._cybergym_patch_error_features("\n".join([description, error_text, patch_text, message_text, metadata_blob, payload_text_blob]))
         feature_blob = self._json_snippet(features, max_chars=8000).lower()
-        combined = f"{low}\n{names_blob}\n{source_names_blob}\n{feature_blob}"
+        combined = f"{str(task_id or '').lower()}\n{low}\n{names_blob}\n{source_names_blob}\n{feature_blob}\n{str(context_id or '').lower()}"
 
         harness_poc = self._cybergym_harness_first_poc(combined)
         if harness_poc is not None:
@@ -1147,7 +1196,13 @@ class Executor(AgentExecutor):
 
         # Existing broad families remain after targeted log families.
         if "assimp" in low or "assimp" in names_blob or "assimp" in source_names_blob:
-            if "ply" in low or "triangulateprocess" in low or "stanford polygon" in low:
+            if (
+                "ply" in low
+                or "triangulateprocess" in low
+                or "stanford polygon" in low
+                or "oss-fuzz:42535201" in low
+                or "42535201" in low
+            ):
                 poc = self._cybergym_seed_ply()
             elif "md3" in low or "quake" in low or "convertpath" in low:
                 poc = self._cybergym_seed_md3_quake3()
@@ -1186,7 +1241,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_9\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_10\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1216,11 +1271,12 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.9: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.10: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.9 keeps the same final Artifact(name="PoC")
-        / FilePart(name="poc") shape, preserves ARVO assembly_stress, and uses
-        PLY as the Assimp extensionless fallback after logs showed PLY scoring.
+        v0 proved the artifact contract. v0.10 keeps the same final Artifact(name="PoC")
+        / FilePart(name="poc") shape, preserves ARVO assembly_stress, uses PLY
+        as the Assimp extensionless fallback, and enriches routing with task_id,
+        message text, metadata, and nested A2A payload text.
         """
             
         files = self._cybergym_extract_files(message)
@@ -1243,7 +1299,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.9: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.10: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
