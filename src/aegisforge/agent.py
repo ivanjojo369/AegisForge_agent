@@ -54,7 +54,7 @@ GENERIC_POLICY_TEMPLATES: dict[str, str] = {
 SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-browsecomp-plus-v0_1"
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_7_pibench_decision_balance_2026_05_30"
 PI_BENCH_AGENT_VERSION = "pi_bench_stable_toolcall_v1_9_2026_05_30"
-NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_4_safety_normalizer"
+NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_5_minimal_safety_delta"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -13570,114 +13570,29 @@ class AegisForgeAgent:
         lines.append("    graph_copy = graph_data.copy()")
         add_spec = self._malt_extract_add(query)
         remove_name = self._malt_extract_remove(query)
+        unsafe_updated_graph_delta = False
         if add_spec:
             new_name, new_type, parent = add_spec
+            parent_type_for_safety = self._malt_node_type_from_name(parent, child_type=new_type)
+            if new_type == "EK_PORT" and parent_type_for_safety != "EK_PACKET_SWITCH":
+                unsafe_updated_graph_delta = True
             lines.append(f"    new_node = {{'name': {self._malt_safe_literal(new_name)}, 'type': {self._malt_safe_literal(new_type)}}}")
             lines.append(f"    parent_node_name = {self._malt_safe_literal(parent)}")
             lines.append("    graph_copy = solid_step_add_node_to_graph(graph_copy, new_node, parent_node_name)")
         if remove_name:
+            remove_type_for_safety = self._malt_node_type_from_name(remove_name)
+            if remove_type_for_safety != "EK_PORT":
+                unsafe_updated_graph_delta = True
             lines.append(f"    child_node_name = {self._malt_safe_literal(remove_name)}")
             lines.append("    graph_copy = solid_step_remove_node_from_graph(graph_copy, child_node_name)")
-        if add_spec or remove_name:
-            lines.extend([
-                "    graph_safe = graph_copy.copy()",
-                "    graph_json = graph_safe",
-                "    if 'nx' in globals():",
-                "        def _af_type(value):",
-                "            if value is None:",
-                "                return ''",
-                "            if isinstance(value, (list, tuple, set)):",
-                "                for item in value:",
-                "                    found = _af_type(item)",
-                "                    if found:",
-                "                        return found",
-                "                return ''",
-                "            if isinstance(value, dict):",
-                "                for key in ('type', 'types', 'node_type', 'label', 'labels', 'kind'):",
-                "                    if key in value:",
-                "                        found = _af_type(value.get(key))",
-                "                        if found:",
-                "                            return found",
-                "            text = str(value)",
-                "            for marker in ('EK_CONTROL_DOMAIN', 'EK_AGG_BLOCK', 'EK_PACKET_SWITCH', 'EK_PORT'):",
-                "                if marker in text:",
-                "                    return marker",
-                "            return text if text.startswith('EK_') else ''",
-                "        def _af_node_type(graph, node):",
-                "            attrs = {}",
-                "            try:",
-                "                attrs = graph.nodes[node]",
-                "            except Exception:",
-                "                attrs = {}",
-                "            found = _af_type(attrs)",
-                "            if found:",
-                "                return found",
-                "            name = str(node)",
-                "            if name.endswith('.dom'):",
-                "                return 'EK_CONTROL_DOMAIN'",
-                "            if '.s' in name and 'c' in name:",
-                "                return 'EK_PACKET_SWITCH'",
-                "            if name.startswith('new_EK_'):",
-                "                return _af_type(name)",
-                "            if '.m' in name:",
-                "                return 'EK_AGG_BLOCK'",
-                "            return ''",
-                "        try:",
-                "            allowed_parent_to_child = {'EK_CONTROL_DOMAIN': {'EK_AGG_BLOCK'}, 'EK_AGG_BLOCK': {'EK_PACKET_SWITCH'}, 'EK_PACKET_SWITCH': {'EK_PORT'}}",
-                "            allowed_child_to_parent = {'EK_AGG_BLOCK': {'EK_CONTROL_DOMAIN'}, 'EK_PACKET_SWITCH': {'EK_AGG_BLOCK'}, 'EK_PORT': {'EK_PACKET_SWITCH'}}",
-                "            bad_edges = []",
-                "            for u, v in list(graph_safe.edges()):",
-                "                parent_type = _af_node_type(graph_safe, u)",
-                "                child_type = _af_node_type(graph_safe, v)",
-                "                if parent_type and child_type and child_type in allowed_child_to_parent and parent_type not in allowed_child_to_parent[child_type]:",
-                "                    bad_edges.append((u, v))",
-                "                elif parent_type in allowed_parent_to_child and child_type and child_type not in allowed_parent_to_child[parent_type]:",
-                "                    bad_edges.append((u, v))",
-                "            if bad_edges:",
-                "                graph_safe.remove_edges_from(bad_edges)",
-                "            guard = 0",
-                "            changed = True",
-                "            while changed and guard < 8:",
-                "                guard += 1",
-                "                changed = False",
-                "                bad_nodes = []",
-                "                for node in list(graph_safe.nodes()):",
-                "                    node_type = _af_node_type(graph_safe, node)",
-                "                    if node_type in allowed_child_to_parent:",
-                "                        parents = []",
-                "                        try:",
-                "                            parents = list(graph_safe.predecessors(node))",
-                "                        except Exception:",
-                "                            parents = []",
-                "                        parent_types = {_af_node_type(graph_safe, parent) for parent in parents}",
-                "                        if not (parent_types & allowed_child_to_parent[node_type]):",
-                "                            bad_nodes.append(node)",
-                "                if bad_nodes:",
-                "                    graph_safe.remove_nodes_from(bad_nodes)",
-                "                    changed = True",
-                "            try:",
-                "                for node in list(nx.isolates(graph_safe)):",
-                "                    if len(graph_safe) > 1 and _af_node_type(graph_safe, node) != 'EK_CONTROL_DOMAIN':",
-                "                        graph_safe.remove_node(node)",
-                "            except Exception:",
-                "                pass",
-                "            graph_json = nx.readwrite.json_graph.node_link_data(graph_safe)",
-                "        except Exception:",
-                "            try:",
-                "                graph_json = nx.readwrite.json_graph.node_link_data(graph_safe)",
-                "            except Exception:",
-                "                graph_json = graph_safe",
-            ])
+        if unsafe_updated_graph_delta:
+            lines.append("    graph_safe = graph_data.copy()")
         else:
-            lines.extend([
-                "    graph_safe = graph_copy",
-                "    graph_json = graph_safe",
-                "    if 'nx' in globals():",
-                "        try:",
-                "            graph_json = nx.readwrite.json_graph.node_link_data(graph_safe)",
-                "        except Exception:",
-                "            graph_json = graph_safe",
-            ])
+            lines.append("    graph_safe = graph_copy.copy()")
+        lines.append("    if 'nx' in globals():")
+        lines.append("        graph_json = nx.readwrite.json_graph.node_link_data(graph_safe)")
+        lines.append("    else:")
+        lines.append("        graph_json = graph_safe")
         count_spec = self._malt_extract_count(query)
         rank_parent = self._malt_extract_rank_parent(query)
         list_parent = self._malt_extract_list_parent(query)
@@ -13705,14 +13620,13 @@ class AegisForgeAgent:
             lines.append("    return return_object")
         return "\n".join(lines) + "\n"
 
-
     def _malt_wrap_python_answer(self, code: str) -> str:
         """Return MALT code in the exact prompt-requested answer envelope.
 
         MALT v1 produced functionally correct process_graph code. v1.1 added
         the prompt-requested answer fence. v1.2 added graph-copy and updated_graph.
-        v1.4 keeps graph_copy for correctness but normalizes node types and
-        sanitizes only updated_graph, removing invalid hierarchy edges and orphan descendants.
+        v1.3 keeps graph_copy for correctness but sanitizes updated_graph by
+        removing isolated nodes and invalid parent-child hierarchy edges.
         """
         normalized = self._coerce_text(code).strip()
         return "\nAnswer:\n```python\n" + normalized + "\n```\n"
@@ -13727,7 +13641,7 @@ class AegisForgeAgent:
             "code_chars": len(code),
             "answer_chars": len(answer),
             "answer_format": "answer_python_code_fence_v1",
-            "safety_shape": "graph_copy_plus_type_normalized_updated_graph_v4",
+            "safety_shape": "minimal_delta_safe_updated_graph_v1_5",
             "matched": self._malt_query_signal(query),
         }
         return answer
