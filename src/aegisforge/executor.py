@@ -15,8 +15,11 @@ Pi-Bench-specific revision:
 from collections import OrderedDict
 import base64
 import hashlib
+import io
 import json
 import os
+import re
+import tarfile
 from typing import Any, Mapping
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -160,7 +163,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_final_poc_artifact"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_1_contextual_seed_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -169,6 +172,11 @@ CYBERGYM_FILE_MARKERS = {
     "error.txt",
     "patch.diff",
 }
+
+CYBERGYM_MAX_TAR_MEMBERS = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TAR_MEMBERS", "160"))
+CYBERGYM_MAX_TEXT_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TEXT_BYTES", "24000"))
+CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "16384"))
+
 
 PI_BENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
     "track_hint": "pibench",
@@ -341,6 +349,268 @@ class Executor(AgentExecutor):
                 names.add(str(name).strip())
         return names
 
+    def _cybergym_extract_files(self, message: Any) -> dict[str, bytes]:
+        """Return CyberGym attachments as {filename: raw_bytes}.
+
+        The A2A SDK exposes file bytes as base64-encoded FileWithBytes.bytes.
+        This helper is intentionally stdlib-only so CyberGym does not depend on
+        OpenAI, HuggingFace, or additional Docker image packages.
+        """
+        files: dict[str, bytes] = {}
+        for part in getattr(message, "parts", []) or []:
+            root = getattr(part, "root", part)
+            file_obj = getattr(root, "file", None)
+            if file_obj is None:
+                continue
+            name = str(getattr(file_obj, "name", "") or f"attachment_{len(files)}").strip()
+            raw_value = getattr(file_obj, "bytes", b"")
+            if isinstance(raw_value, str):
+                try:
+                    raw = base64.b64decode(raw_value)
+                except Exception:
+                    raw = raw_value.encode("utf-8", errors="replace")
+            elif isinstance(raw_value, bytes):
+                try:
+                    raw = base64.b64decode(raw_value)
+                except Exception:
+                    raw = raw_value
+            else:
+                continue
+            if name:
+                files[name] = raw
+        return files
+
+    @staticmethod
+    def _cybergym_decode_text(data: bytes, *, limit: int = CYBERGYM_MAX_TEXT_BYTES) -> str:
+        if not data:
+            return ""
+        text = data[:limit].decode("utf-8", errors="replace")
+        return text.replace("\x00", "\\0")
+
+    def _cybergym_tar_text_probe(self, tar_bytes: bytes) -> dict[str, str]:
+        """Extract a bounded text/source probe from a .tar.gz attachment."""
+        out: dict[str, str] = {}
+        if not tar_bytes:
+            return out
+        try:
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*") as tar:
+                for member in tar.getmembers()[:CYBERGYM_MAX_TAR_MEMBERS]:
+                    if not member.isfile():
+                        continue
+                    name = str(member.name or "")
+                    low = name.lower()
+                    if not low.endswith((
+                        ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+                        ".rs", ".go", ".py", ".java", ".js", ".ts",
+                        ".txt", ".md", ".cmake", "makefile",
+                    )):
+                        continue
+                    handle = tar.extractfile(member)
+                    if handle is None:
+                        continue
+                    raw = handle.read(min(int(member.size or 0), CYBERGYM_MAX_TEXT_BYTES + 1))
+                    if b"\x00" in raw[:4096]:
+                        continue
+                    text = self._cybergym_decode_text(raw, limit=CYBERGYM_MAX_TEXT_BYTES)
+                    if text:
+                        out[name] = text
+                    if len(out) >= 24:
+                        break
+        except Exception:
+            return out
+        return out
+
+    @staticmethod
+    def _cybergym_collect_magic_tokens(blob: str) -> list[bytes]:
+        """Pull a few protocol/file-format constants out of source snippets."""
+        tokens: list[bytes] = []
+        seen: set[str] = set()
+        for match in re.finditer(r'"([A-Za-z0-9_./:+\-]{3,32})"', blob):
+            value = match.group(1)
+            if value in seen:
+                continue
+            seen.add(value)
+            lowered = value.lower()
+            if lowered in {"error", "failed", "input", "data", "size", "file", "name"}:
+                continue
+            if any(ch.isdigit() for ch in value) or any(ch.isupper() for ch in value) or lowered in {
+                "collada", "ply", "fbx", "gltf", "obj", "solid", "xof",
+            }:
+                tokens.append(value.encode("utf-8", errors="ignore"))
+            if len(tokens) >= 16:
+                break
+        return tokens
+
+    @staticmethod
+    def _cybergym_seed_collada() -> bytes:
+        return (
+            b'<?xml version="1.0" encoding="utf-8"?>\n'
+            b'<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n'
+            b'  <asset><contributor><authoring_tool>AegisForge</authoring_tool></contributor>'
+            b'<created>1970-01-01T00:00:00Z</created><modified>1970-01-01T00:00:00Z</modified>'
+            b'<unit name="meter" meter="1"/><up_axis>Y_UP</up_axis></asset>\n'
+            b'  <library_geometries><geometry id="g" name="g"><mesh>\n'
+            b'    <source id="positions"><float_array id="positions-array" count="9">'
+            b'0 0 0 1 0 0 0 1 0</float_array><technique_common><accessor source="#positions-array" count="3" stride="3">'
+            b'<param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>'
+            b'</accessor></technique_common></source>\n'
+            b'    <vertices id="verts"><input semantic="POSITION" source="#positions"/></vertices>\n'
+            b'    <triangles count="1"><input semantic="VERTEX" source="#verts" offset="0"/><p>0 1 2147483647</p></triangles>\n'
+            b'  </mesh></geometry></library_geometries>\n'
+            b'  <library_visual_scenes><visual_scene id="s"><node id="n"><instance_geometry url="#g"/></node></visual_scene></library_visual_scenes>\n'
+            b'  <scene><instance_visual_scene url="#s"/></scene>\n'
+            b'</COLLADA>\n'
+        )
+
+    @staticmethod
+    def _cybergym_seed_fbx() -> bytes:
+        return (
+            b"Kaydara FBX Binary  \x00\x1a\x00"
+            + b"\x00" * 27
+            + b"Objects\x00Geometry\x00Vertices\x00PolygonVertexIndex\x00"
+            + (b"\xff" * 256)
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_ply() -> bytes:
+        return (
+            b"ply\nformat ascii 1.0\n"
+            b"element vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+            b"element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+            b"0 0 0\n1 0 0\n0 1 0\n"
+            b"4 0 1 2 2147483647\n"
+        )
+
+    @staticmethod
+    def _cybergym_seed_assembly() -> bytes:
+        return (
+            b".text\n"
+            b".global _start\n"
+            b"_start:\n"
+            b"    nop\n"
+            b"    addi x1, x0, 2147483647\n"
+            b"    addi x2, x1, -2147483648\n"
+            b"    .byte 0xff,0xff,0xff,0xff,0x00,0x7f,0x80\n"
+            b"loop:\n"
+            b"    beq x1, x2, loop\n"
+            b"    j loop\n"
+            b".data\n"
+            b"blob:\n"
+            b"    .ascii \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n"
+            b"    .zero 256\n"
+        )
+
+    @staticmethod
+    def _cybergym_seed_json() -> bytes:
+        return (
+            b'{"a":[' + b"[" * 96 + b'{"len":-1,"size":2147483647,"data":"'
+            + b"A" * 1024
+            + b'"}'
+            + b"]" * 96
+            + b"]}\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_xml() -> bytes:
+        return (
+            b'<?xml version="1.0"?><root>'
+            + b"<a>" * 256
+            + b"A" * 1024
+            + b"</a>" * 256
+            + b"</root>\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_png() -> bytes:
+        # Minimal PNG-like structure with intentionally inconsistent chunk content.
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x7f\xff\xff\xff\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+            b"\x00\x00\x00\x08IDAT"
+            b"\x78\x9c\x63\x00\x00\x00\x02\x00\x01"
+            b"\x00\x00\x00\x00"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+    def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
+        """Generate a stdlib-only contextual seed PoC.
+
+        This is v0.1: it remains deterministic and cheap, but it uses CyberGym
+        attachments instead of submitting a placeholder. The goal is to reach the
+        target parser/harness far enough for the next logs to reveal real failure
+        modes, and occasionally reproduce low-level parser bugs directly.
+        """
+        files = self._cybergym_extract_files(message)
+        description = self._cybergym_decode_text(files.get("description.txt", b""))
+        error_text = self._cybergym_decode_text(files.get("error.txt", b""))
+        patch_text = self._cybergym_decode_text(files.get("patch.diff", b""))
+
+        source_probe: dict[str, str] = {}
+        for archive_name in ("repo-vul.tar.gz", "repo-fix.tar.gz"):
+            source_probe.update(self._cybergym_tar_text_probe(files.get(archive_name, b"")))
+
+        probe_blob = "\n".join(
+            [description, error_text, patch_text]
+            + [f"\n# {name}\n{text[:6000]}" for name, text in list(source_probe.items())[:16]]
+        )
+        low = probe_blob.lower()
+        names_blob = " ".join(files.keys()).lower()
+
+        # Known high-level families first.
+        if "assimp" in low or "assimp" in names_blob:
+            if "fbx" in low:
+                poc = self._cybergym_seed_fbx()
+            elif "ply" in low:
+                poc = self._cybergym_seed_ply()
+            else:
+                # No extension is available in CyberGym's /tmp/poc path, so use a
+                # format with content-signature/header detection rather than OBJ.
+                poc = self._cybergym_seed_collada()
+            return poc[:CYBERGYM_MAX_POC_BYTES]
+
+        if any(marker in low for marker in ("assembler", "assembly", "asm", "opcode", "mnemonic", "arvo")):
+            return self._cybergym_seed_assembly()[:CYBERGYM_MAX_POC_BYTES]
+
+        if any(marker in low for marker in ("collada", ".dae", "<collada")):
+            return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
+        if "fbx" in low:
+            return self._cybergym_seed_fbx()[:CYBERGYM_MAX_POC_BYTES]
+        if "ply" in low:
+            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+        if "png" in low:
+            return self._cybergym_seed_png()[:CYBERGYM_MAX_POC_BYTES]
+        if "json" in low:
+            return self._cybergym_seed_json()
+        if "xml" in low or "html" in low or "svg" in low:
+            return self._cybergym_seed_xml()
+
+        # Generic source-aware byte cocktail. Prefer constants seen in source
+        # over a fixed placeholder so the input has a chance to pass early gates.
+        magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
+        generic = bytearray()
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_1\n")
+        for token in magic_tokens:
+            generic.extend(token[:64] + b"\n")
+        generic.extend(
+            b"\x00\xff\x7f\x80"
+            + b"A" * 512
+            + b"\n-1 0 1 255 256 1024 2147483647 4294967295\n"
+        )
+        digest_seed = json.dumps(
+            {
+                "context_id": str(context_id or ""),
+                "task_id": str(task_id or ""),
+                "files": sorted(files.keys()),
+                "version": CYBERGYM_CONTRACT_VERSION,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        generic.extend(hashlib.sha256(digest_seed).digest())
+        return bytes(generic[:CYBERGYM_MAX_POC_BYTES])
+
     async def _submit_cybergym_contract_poc(
         self,
         message: Any,
@@ -349,29 +619,33 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0: satisfy the final-PoC artifact contract.
+        """CyberGym v0.1: submit a final-PoC artifact with contextual bytes.
 
-        This first version is intentionally conservative. It does not try to
-        solve the vulnerability yet; it guarantees that CyberGym receives a
-        final artifact named PoC containing a FilePart named poc. That removes
-        the automatic zero caused by "Agent did not submit a final PoC."
+        v0 proved the artifact contract. v0.1 keeps the same final Artifact(name="PoC")
+        / FilePart(name="poc") shape, but replaces the placeholder with a bounded
+        seed generated from description/source attachments.
         """
-        filenames = sorted(self._cybergym_file_names(message))
-        seed = {
-            "agent": "AegisForge",
-            "operator": CYBERGYM_CONTRACT_VERSION,
-            "files": filenames,
-            "context_id": str(context_id or ""),
-            "task_id": str(task_id or ""),
-        }
-        payload = json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest().encode("ascii")
-        poc = b"AEGISFORGE_CYBERGYM_POC_V0\n" + digest + b"\n"
+        files = self._cybergym_extract_files(message)
+        filenames = sorted(files.keys() or self._cybergym_file_names(message))
+        poc = self._cybergym_generate_contextual_poc(message, context_id=context_id, task_id=task_id)
+        if not poc:
+            payload = json.dumps(
+                {
+                    "agent": "AegisForge",
+                    "operator": CYBERGYM_CONTRACT_VERSION,
+                    "files": filenames,
+                    "context_id": str(context_id or ""),
+                    "task_id": str(task_id or ""),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            poc = b"AEGISFORGE_CYBERGYM_FALLBACK\n" + hashlib.sha256(payload).hexdigest().encode("ascii") + b"\n"
 
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0: submitting final PoC artifact ({len(poc)} bytes).",
+                f"CyberGym contract v0.1: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
