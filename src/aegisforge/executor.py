@@ -171,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_10_context_enriched_arvo_assimp_ply_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_11_route_diagnostic_arvo_assimp_ply_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.10 preserves ARVO assembly_stress, uses PLY as the Assimp extensionless fallback, and enriches CyberGym routing with task_id/message/metadata context.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.11 preserves ARVO assembly_stress, uses PLY as the Assimp extensionless fallback, enriches routing context, and emits route diagnostics.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -936,6 +936,53 @@ class Executor(AgentExecutor):
         low = blob.lower()
         return any(needle in low for needle in needles)
 
+    @staticmethod
+    def _cybergym_route_label_for_poc(poc: bytes) -> str:
+        """Classify the selected CyberGym PoC bytes for bounded diagnostics."""
+        if not poc:
+            return "empty"
+
+        head = bytes(poc[:4096]).lower()
+        if head.startswith(b"ply\nformat ascii 1.0"):
+            return "assimp_ply"
+        if b".macro emit_block" in head or b"aegisforge_long_common_symbol" in head:
+            return "arvo_assembly_stress"
+        if head.startswith(b"idp3"):
+            return "assimp_md3"
+        if head.startswith(b"kaydara fbx binary"):
+            return "assimp_fbx"
+        if head.startswith(b"solid "):
+            return "assimp_stl"
+        if b"<collada" in head:
+            return "assimp_collada"
+        if b"aegisforge_cybergym_contextual_seed" in head:
+            return "generic_contextual"
+        if b"aegisforge_cybergym_fallback" in head:
+            return "fallback_hash"
+        return "unknown"
+
+    @staticmethod
+    def _cybergym_add_route_diagnostic_marker(poc: bytes, route: str) -> bytes:
+        """Embed a format-safe diagnostic marker when it should not alter routing.
+
+        The marker is only added to PLY, where comments are valid after the format
+        line. ARVO assembly is intentionally left byte-for-byte unchanged because
+        it is already the non-regression path for arvo:47101.
+        """
+        if not poc:
+            return poc
+
+        if route == "assimp_ply" and poc.startswith(b"ply\nformat ascii 1.0\n"):
+            marker = b"comment AEGISFORGE_ROUTE_ASSIMP_PLY_V0_11\n"
+            if marker not in poc[:512]:
+                return poc.replace(
+                    b"ply\nformat ascii 1.0\n",
+                    b"ply\nformat ascii 1.0\n" + marker,
+                    1,
+                )[:CYBERGYM_MAX_POC_BYTES]
+
+        return poc
+
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
 
@@ -1241,7 +1288,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_10\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_11\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1271,17 +1318,22 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.10: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.11: submit a final-PoC artifact with contextual bytes.
 
-        v0 proved the artifact contract. v0.10 keeps the same final Artifact(name="PoC")
+        v0 proved the artifact contract. v0.11 keeps the same final Artifact(name="PoC")
         / FilePart(name="poc") shape, preserves ARVO assembly_stress, uses PLY
-        as the Assimp extensionless fallback, and enriches routing with task_id,
-        message text, metadata, and nested A2A payload text.
+        as the Assimp extensionless fallback, enriches routing context, and adds
+        controlled route diagnostics for confirming which PoC family reached /tmp/poc.
         """
             
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
         poc = self._cybergym_generate_contextual_poc(message, context_id=context_id, task_id=task_id)
+        route = self._cybergym_route_label_for_poc(poc)
+        if poc:
+            poc = self._cybergym_add_route_diagnostic_marker(poc, route)
+            route = self._cybergym_route_label_for_poc(poc)
+
         if not poc:
             payload = json.dumps(
                 {
@@ -1295,11 +1347,14 @@ class Executor(AgentExecutor):
                 separators=(",", ":"),
             ).encode("utf-8")
             poc = b"AEGISFORGE_CYBERGYM_FALLBACK\n" + hashlib.sha256(payload).hexdigest().encode("ascii") + b"\n"
+            route = self._cybergym_route_label_for_poc(poc)
+
+        poc_sha256 = hashlib.sha256(poc).hexdigest()[:16]
 
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.10: submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.11: route={route}; poc_sha256={poc_sha256}; submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
