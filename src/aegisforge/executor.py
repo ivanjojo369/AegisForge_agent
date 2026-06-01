@@ -171,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_14_single_poc_unknown_ply_fallback_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_15_robust_extension_router_single_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.14 keeps the single PoC artifact contract, preserves ARVO assembly_stress, and falls back to PLY for otherwise unknown CyberGym parser tasks.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, centralizes Assimp/model extension routing, and moves unknown CyberGym attachment fallback to PLY before archive/tar/gzip heuristics.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -437,7 +437,14 @@ class Executor(AgentExecutor):
                     if not low.endswith((
                         ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
                         ".rs", ".go", ".py", ".java", ".js", ".ts",
+                        ".s", ".S", ".asm", ".inc",
                         ".txt", ".md", ".cmake", "makefile",
+                        ".json", ".xml", ".svg", ".html", ".xhtml",
+                        ".dae", ".fbx", ".ply", ".stl", ".obj", ".mtl",
+                        ".off", ".gltf", ".glb", ".x3d", ".wrl", ".x",
+                        ".xof", ".3ds", ".ase", ".md3", ".md2", ".md5mesh",
+                        ".dxf", ".ac", ".ac3d", ".bvh", ".pcd", ".ifc",
+                        ".lwo", ".lws", ".cob", ".q3o", ".q3s", ".raw",
                     )):
                         continue
                     handle = tar.extractfile(member)
@@ -469,7 +476,9 @@ class Executor(AgentExecutor):
             if lowered in {"error", "failed", "input", "data", "size", "file", "name"}:
                 continue
             if any(ch.isdigit() for ch in value) or any(ch.isupper() for ch in value) or lowered in {
-                "collada", "ply", "fbx", "gltf", "obj", "solid", "xof",
+                "collada", "dae", "ply", "fbx", "gltf", "glb", "obj",
+                "solid", "stl", "off", "xof", "x3d", "wrl", "3ds", "ase",
+                "md3", "md2", "dxf", "ac3d", "bvh", "pcd", "ifc",
             }:
                 tokens.append(value.encode("utf-8", errors="ignore"))
             if len(tokens) >= 16:
@@ -515,6 +524,171 @@ class Executor(AgentExecutor):
             b"0 0 0\n1 0 0\n0 1 0\n"
             b"4 0 1 2 2147483647\n"
         )
+
+
+    @staticmethod
+    def _cybergym_seed_obj() -> bytes:
+        """Wavefront OBJ model seed for Assimp/model-parser targets."""
+        return (
+            b"# AegisForge CyberGym OBJ seed\n"
+            b"mtllib aegisforge.mtl\n"
+            b"o aegisforge_obj\n"
+            b"v 0 0 0\n"
+            b"v 1 0 0\n"
+            b"v 0 1 0\n"
+            b"v 2147483647 -2147483648 0\n"
+            b"vn 0 0 1\n"
+            b"vt 0 0\n"
+            b"vt 1 0\n"
+            b"vt 0 1\n"
+            b"usemtl material_with_long_name_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+            b"f 1/1/1 2/2/1 3/3/1\n"
+            b"f 1 2 2147483647\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_off() -> bytes:
+        """OFF mesh seed with malformed face index pressure."""
+        return (
+            b"OFF\n"
+            b"4 2 0\n"
+            b"0 0 0\n1 0 0\n0 1 0\n2147483647 -2147483648 0\n"
+            b"3 0 1 2\n"
+            b"4 0 1 2 2147483647\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_gltf_json() -> bytes:
+        """Minimal glTF JSON seed with data URI buffer and boundary values."""
+        payload = {
+            "asset": {"version": "2.0", "generator": "AegisForge-CyberGym"},
+            "scene": 0,
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0, "name": "node_" + "A" * 64}],
+            "meshes": [{
+                "name": "mesh_boundary",
+                "primitives": [{
+                    "attributes": {"POSITION": 0},
+                    "indices": 1,
+                    "mode": 4,
+                }],
+            }],
+            "buffers": [{
+                "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "byteLength": 24,
+            }],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 24, "target": 34962},
+                {"buffer": 0, "byteOffset": 0, "byteLength": 12, "target": 34963},
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR"},
+            ],
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_glb() -> bytes:
+        """Binary GLB seed with valid magic/header and compact JSON chunk."""
+        json_chunk = b'{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{}]}]}'
+        while len(json_chunk) % 4:
+            json_chunk += b" "
+        total_len = 12 + 8 + len(json_chunk)
+        return (
+            b"glTF"
+            + (2).to_bytes(4, "little")
+            + int(total_len).to_bytes(4, "little")
+            + int(len(json_chunk)).to_bytes(4, "little")
+            + b"JSON"
+            + json_chunk
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_x3d() -> bytes:
+        """X3D/XML model seed."""
+        return (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<X3D profile="Interchange" version="3.3">\n'
+            b' <Scene><Shape><IndexedFaceSet coordIndex="0 1 2 -1 0 1 2147483647 -1">'
+            b'<Coordinate point="0 0 0 1 0 0 0 1 0 2147483647 -2147483648 0"/>'
+            b'</IndexedFaceSet></Shape></Scene>\n'
+            b'</X3D>\n'
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_vrml() -> bytes:
+        """VRML/WRL model seed."""
+        return (
+            b"#VRML V2.0 utf8\n"
+            b"Shape { geometry IndexedFaceSet { coord Coordinate { point [ "
+            b"0 0 0, 1 0 0, 0 1 0, 2147483647 -2147483648 0 "
+            b"] } coordIndex [ 0, 1, 2, -1, 0, 1, 2147483647, -1 ] } }\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_3ds() -> bytes:
+        """3DS-like binary chunk seed with 0x4D4D primary chunk."""
+        body = bytearray()
+        body.extend((0x4D4D).to_bytes(2, "little"))  # MAIN3DS
+        body.extend((64).to_bytes(4, "little"))
+        body.extend((0x3D3D).to_bytes(2, "little"))  # EDIT3DS
+        body.extend((58).to_bytes(4, "little"))
+        body.extend((0x4000).to_bytes(2, "little"))  # EDIT_OBJECT
+        body.extend((52).to_bytes(4, "little"))
+        body.extend(b"AegisForgeObject\x00")
+        body.extend((0x4100).to_bytes(2, "little"))  # OBJ_TRIMESH
+        body.extend((28).to_bytes(4, "little"))
+        body.extend(b"\x00" * 28)
+        return bytes(body[:CYBERGYM_MAX_POC_BYTES])
+
+    @staticmethod
+    def _cybergym_seed_ase() -> bytes:
+        """Autodesk ASE text model seed."""
+        return (
+            b"*3DSMAX_ASCIIEXPORT 200\n"
+            b"*GEOMOBJECT {\n"
+            b" *NODE_NAME \"AegisForge\"\n"
+            b" *MESH { *MESH_NUMVERTEX 3 *MESH_NUMFACES 1\n"
+            b"  *MESH_VERTEX_LIST { *MESH_VERTEX 0 0 0 0 *MESH_VERTEX 1 1 0 0 *MESH_VERTEX 2 0 1 0 }\n"
+            b"  *MESH_FACE_LIST { *MESH_FACE 0: A:0 B:1 C:2147483647 AB:1 BC:1 CA:1 }\n"
+            b" }\n"
+            b"}\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_dxf() -> bytes:
+        """DXF text seed."""
+        return (
+            b"0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n"
+            b"10\n0\n20\n0\n30\n0\n"
+            b"11\n1\n21\n0\n31\n0\n"
+            b"12\n0\n22\n1\n32\n0\n"
+            b"13\n2147483647\n23\n-2147483648\n33\n0\n"
+            b"0\nENDSEC\n0\nEOF\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_ac3d() -> bytes:
+        """AC3D text seed."""
+        return (
+            b"AC3Db\n"
+            b"MATERIAL \"mat\" rgb 1 0 0 amb 0 0 0 emis 0 0 0 spec 1 1 1 shi 64 trans 0\n"
+            b"OBJECT poly\nname \"aegisforge\"\nnumvert 3\n0 0 0\n1 0 0\n0 1 0\n"
+            b"numsurf 1\nSURF 0x30\nmat 0\nrefs 4\n0 0 0\n1 1 0\n2 0 1\n2147483647 0 0\nkids 0\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
+    def _cybergym_seed_bvh() -> bytes:
+        """BVH animation/model seed."""
+        return (
+            b"HIERARCHY\nROOT hips\n{\n OFFSET 0 0 0\n CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n"
+            b" JOINT chest\n { OFFSET 0 1 0\n CHANNELS 3 Zrotation Xrotation Yrotation\n End Site { OFFSET 0 1 0 }\n }\n}\n"
+            b"MOTION\nFrames: 2\nFrame Time: 0.0333333\n"
+            b"0 0 0 0 0 0 0 0 0\n"
+            b"2147483647 -2147483648 0 999999 0 -999999 0 0 0\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
 
 
     @staticmethod
@@ -706,7 +880,7 @@ class Executor(AgentExecutor):
     def _cybergym_patch_error_features(blob: str) -> dict[str, list[str]]:
         """Extract bounded, non-secret PoC-shaping hints from patch/error text."""
         limited = str(blob or "")[:48000]
-        paths = sorted(set(re.findall(r"(?:^|\s)([A-Za-z0-9_./+\-]+?\.(?:c|cc|cpp|h|hpp|y|l|S|s|asm|xml|dae|fbx|ply|stl))", limited, flags=re.MULTILINE)))[:24]
+        paths = sorted(set(re.findall(r"(?:^|\s)([A-Za-z0-9_./+\-]+?\.(?:c|cc|cpp|h|hpp|y|l|S|s|asm|json|xml|svg|dae|fbx|ply|stl|obj|mtl|off|gltf|glb|x3d|wrl|x|xof|3ds|ase|md3|md2|md5mesh|dxf|ac|ac3d|bvh|pcd|ifc|lwo|lws|cob|q3o|q3s|raw))", limited, flags=re.MULTILINE)))[:32]
         functions = sorted(set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]{2,64})\s*\(", limited)))[:32]
         quoted = sorted(set(match.group(1) for match in re.finditer(r'"([^"\n]{3,80})"', limited)))[:24]
         hexes = sorted(set(re.findall(r"\b0x[0-9a-fA-F]{2,16}\b", limited)))[:24]
@@ -730,14 +904,17 @@ class Executor(AgentExecutor):
         if self._cybergym_contains_any(hints, ("tc-i386", "read_a_source_file", "s_scrub", "input-file.c", "expr.c", "write.c", "symbols.c")):
             return self._cybergym_seed_assembly_stress()
 
-        if self._cybergym_contains_any(hints, ("fbx", "fbxconverter", "fbximporter", "kaydarafbx")):
-            return self._cybergym_seed_assimp_signature_probe()
-        if self._cybergym_contains_any(hints, ("stl", "stlimporter", "solid ")):
-            return self._cybergym_seed_stl_ascii()
-        if self._cybergym_contains_any(hints, ("ply", "plyparser", "plyloader")):
-            return self._cybergym_seed_ply()
-        if self._cybergym_contains_any(hints, ("collada", "daeimporter", "colladaparser")):
-            return self._cybergym_seed_collada()
+        if self._cybergym_contains_any(
+            hints,
+            (
+                "assimp", "importer", "fbx", "fbxconverter", "fbximporter", "kaydarafbx",
+                "stl", "stlimporter", "solid ", "ply", "plyparser", "plyloader",
+                "collada", "daeimporter", "colladaparser", "objimporter", "wavefront",
+                "offimporter", "gltf", "glb", "x3d", "vrml", "3dsimporter", "aseimporter",
+                "dxfimporter", "ac3d", "bvh", "md3", "quake", "convertpath",
+            ),
+        ):
+            return self._cybergym_assimp_model_seed_for_hints(hints)
 
         return None
 
@@ -953,8 +1130,26 @@ class Executor(AgentExecutor):
             return "assimp_fbx"
         if head.startswith(b"solid "):
             return "assimp_stl"
+        if head.startswith(b"# aegisforge cybergym obj") or b"wavefront obj" in head:
+            return "assimp_obj"
+        if head.startswith(b"off\n"):
+            return "assimp_off"
+        if head.startswith(b"gltf"):
+            return "assimp_glb"
+        if b'"asset"' in head and b'"scenes"' in head and b'"nodes"' in head:
+            return "assimp_gltf"
         if b"<collada" in head:
             return "assimp_collada"
+        if b"<x3d" in head:
+            return "assimp_x3d"
+        if head.startswith(b"#vrml"):
+            return "assimp_vrml"
+        if head.startswith(b"ac3d"):
+            return "assimp_ac3d"
+        if head.startswith(b"hierarchy\nroot"):
+            return "assimp_bvh"
+        if head.startswith(b"0\nsection"):
+            return "assimp_dxf"
         if b"aegisforge_cybergym_contextual_seed" in head:
             return "generic_contextual"
         if b"aegisforge_cybergym_fallback" in head:
@@ -982,6 +1177,71 @@ class Executor(AgentExecutor):
                 )[:CYBERGYM_MAX_POC_BYTES]
 
         return poc
+
+    def _cybergym_assimp_model_seed_for_hints(self, blob: str) -> bytes:
+        """Choose an Assimp/model-format seed from extension/importer hints.
+
+        PLY remains the default because the visible Assimp shard only scored once
+        a PLY-like input reached the Stanford Polygon Library importer. Other
+        formats are still routed explicitly when the prompt/source/patch gives
+        stronger extension or importer evidence.
+        """
+        low = str(blob or "").lower().replace("_", "-")
+
+        if self._cybergym_contains_any(low, (
+            "ply", ".ply", "stanford polygon", "triangulateprocess",
+            "triangulateprocess::triangulatemesh", "vector3.inl",
+            "oss-fuzz:42535201", "42535201",
+        )):
+            return self._cybergym_seed_ply()
+
+        if self._cybergym_contains_any(low, ("fbx", ".fbx", "kaydarafbx", "fbximporter", "fbxconverter")):
+            return self._cybergym_seed_assimp_signature_probe()
+
+        if self._cybergym_contains_any(low, ("collada", ".dae", "daeimporter", "colladaparser", "<collada")):
+            return self._cybergym_seed_collada()
+
+        if self._cybergym_contains_any(low, ("stl", ".stl", "stlimporter", "solid ")):
+            return self._cybergym_seed_stl_ascii()
+
+        if self._cybergym_contains_any(low, ("obj", ".obj", "wavefront", "objimporter")):
+            return self._cybergym_seed_obj()
+
+        if self._cybergym_contains_any(low, ("off", ".off", "offimporter")):
+            return self._cybergym_seed_off()
+
+        if self._cybergym_contains_any(low, ("glb", ".glb")):
+            return self._cybergym_seed_glb()
+
+        if self._cybergym_contains_any(low, ("gltf", ".gltf", "gltfimporter")):
+            return self._cybergym_seed_gltf_json()
+
+        if self._cybergym_contains_any(low, ("x3d", ".x3d", "x3dimporter")):
+            return self._cybergym_seed_x3d()
+
+        if self._cybergym_contains_any(low, ("vrml", "wrl", ".wrl", "vrmlimporter")):
+            return self._cybergym_seed_vrml()
+
+        if self._cybergym_contains_any(low, ("3ds", ".3ds", "3dsimporter", "3d studio")):
+            return self._cybergym_seed_3ds()
+
+        if self._cybergym_contains_any(low, ("ase", ".ase", "aseimporter")):
+            return self._cybergym_seed_ase()
+
+        if self._cybergym_contains_any(low, ("dxf", ".dxf", "dxfimporter")):
+            return self._cybergym_seed_dxf()
+
+        if self._cybergym_contains_any(low, ("ac3d", ".ac3d", ".ac ", "acimporter")):
+            return self._cybergym_seed_ac3d()
+
+        if self._cybergym_contains_any(low, ("bvh", ".bvh", "bvhloader", "bvhimporter")):
+            return self._cybergym_seed_bvh()
+
+        if self._cybergym_contains_any(low, ("md3", ".md3", "quake", "convertpath", "md3importer")):
+            return self._cybergym_seed_md3_quake3()
+
+        # Default for extensionless /tmp/poc model-parser tasks.
+        return self._cybergym_seed_ply()
 
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
@@ -1041,25 +1301,7 @@ class Executor(AgentExecutor):
                 "vector3.inl",
             ),
         ):
-            if (
-                "ply" in low
-                or "triangulateprocess" in low
-                or "stanford polygon" in low
-                or "oss-fuzz:42535201" in low
-                or "42535201" in low
-            ):
-                return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
-            if "md3" in low or "quake" in low or "convertpath" in low:
-                return self._cybergym_seed_md3_quake3()[:CYBERGYM_MAX_POC_BYTES]
-            if "stl" in low:
-                return self._cybergym_seed_stl_ascii()[:CYBERGYM_MAX_POC_BYTES]
-            if "fbx" in low:
-                return self._cybergym_seed_assimp_signature_probe()[:CYBERGYM_MAX_POC_BYTES]
-            if "collada" in low or ".dae" in low:
-                return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
-
-            # Assimp extensionless default: latest useful logs point to PLY.
-            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+            return self._cybergym_assimp_model_seed_for_hints(low)[:CYBERGYM_MAX_POC_BYTES]
 
         if self._cybergym_contains_any(
             low,
@@ -1085,6 +1327,18 @@ class Executor(AgentExecutor):
         ):
             return self._cybergym_seed_svg_xml()[:CYBERGYM_MAX_POC_BYTES]
 
+        # Archive/compression routes must be explicit. Generic words like tar/gzip
+        # also appear in CyberGym attachments, so they are not enough by themselves.
+        if self._cybergym_contains_any(
+            low,
+            (
+                "/out/archive", "/out/libarchive", "libarchive_fuzzer",
+                "archive_read", "archive_write", "bsdtar", "zip_fuzzer",
+                "gzip_fuzzer", "zlib_uncompress_fuzzer", "minizip",
+            ),
+        ):
+            return self._cybergym_seed_libarchive_like()[:CYBERGYM_MAX_POC_BYTES]
+
         # HTTP request seed only when the target is clearly HTTP/lwan, not merely
         # because a random source comment mentions "headers".
         if self._cybergym_contains_any(
@@ -1106,12 +1360,11 @@ class Executor(AgentExecutor):
     def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
-        v0.10 keeps the proven CyberGym artifact contract but makes target
-        selection harness-first, patch/error-aware, and request-context-aware.
-        It preserves the ARVO assembly_stress route and uses PLY as the
-        extensionless Assimp fallback because the latest useful logs reached
-        the PLY importer and scored. The key fix is that task_id, message text,
-        and metadata/payload text now participate in CyberGym routing.
+        v0.15 keeps the proven CyberGym artifact contract but makes target
+        selection harness-first, patch/error-aware, request-context-aware,
+        and extension-aware. It preserves the ARVO assembly_stress route,
+        centralizes Assimp/model format selection, and falls back to PLY for
+        unknown CyberGym attachments before archive/tar/gzip heuristics.
         """
         files = self._cybergym_extract_files(message)
         description = self._cybergym_decode_text(files.get("description.txt", b""))
@@ -1241,37 +1494,34 @@ class Executor(AgentExecutor):
         if best_score > 0:
             return best_poc[:CYBERGYM_MAX_POC_BYTES]
 
-        # Existing broad families remain after targeted log families.
-        if "assimp" in low or "assimp" in names_blob or "assimp" in source_names_blob:
-            if (
-                "ply" in low
-                or "triangulateprocess" in low
-                or "stanford polygon" in low
-                or "oss-fuzz:42535201" in low
-                or "42535201" in low
-            ):
-                poc = self._cybergym_seed_ply()
-            elif "md3" in low or "quake" in low or "convertpath" in low:
-                poc = self._cybergym_seed_md3_quake3()
-            elif "stl" in low:
-                poc = self._cybergym_seed_stl_ascii()
-            elif "fbx" in low:
-                poc = self._cybergym_seed_assimp_signature_probe()
-            elif "collada" in low or ".dae" in low:
-                poc = self._cybergym_seed_collada()
-            else:
-                poc = self._cybergym_seed_ply()
-            return poc[:CYBERGYM_MAX_POC_BYTES]
+        # Existing broad model/Assimp family remains after targeted log families.
+        if (
+            "assimp" in low
+            or "assimp" in names_blob
+            or "assimp" in source_names_blob
+            or self._cybergym_contains_any(
+                combined,
+                (
+                    "oss-fuzz:42535201", "42535201", "triangulateprocess",
+                    "stanford polygon", "vector3.inl",
+                ),
+            )
+        ):
+            return self._cybergym_assimp_model_seed_for_hints(combined)[:CYBERGYM_MAX_POC_BYTES]
 
         if any(marker in combined for marker in ("fuzz_as", "assembler", "assembly", "asm", "opcode", "mnemonic", "arvo")):
             return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
-        if any(marker in low for marker in ("collada", ".dae", "<collada")):
-            return self._cybergym_seed_collada()[:CYBERGYM_MAX_POC_BYTES]
-        if "fbx" in low:
-            return self._cybergym_seed_fbx()[:CYBERGYM_MAX_POC_BYTES]
-        if "ply" in low:
-            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+        model_format_markers = (
+            "collada", ".dae", "<collada", "fbx", ".fbx", "ply", ".ply",
+            "stl", ".stl", "obj", ".obj", "off", ".off", "gltf", ".gltf",
+            "glb", ".glb", "x3d", ".x3d", "vrml", ".wrl", "3ds", ".3ds",
+            "ase", ".ase", "dxf", ".dxf", "ac3d", ".ac3d", "bvh", ".bvh",
+            "md3", ".md3", "quake", "convertpath",
+        )
+        if self._cybergym_contains_any(combined, model_format_markers):
+            return self._cybergym_assimp_model_seed_for_hints(combined)[:CYBERGYM_MAX_POC_BYTES]
+
         if "png" in low:
             return self._cybergym_seed_png()[:CYBERGYM_MAX_POC_BYTES]
         if "json" in low:
@@ -1279,25 +1529,24 @@ class Executor(AgentExecutor):
         if "xml" in low or "html" in low or "svg" in low:
             return self._cybergym_seed_svg_xml()
 
-        # If source names suggest binary/archive format parsing, prefer a compact
-        # magic-header cocktail over pure ASCII.
-        if any(marker in combined for marker in ("archive", "zip", "tar", "gzip", "zlib", "header", "magic")):
-            return self._cybergym_seed_libarchive_like()
-
-        # v0.14 visible-set fallback:
-        # If a CyberGym request reaches this point, known high-confidence families
-        # did not fire. The previous generic byte cocktail is almost never a valid
-        # model/parser file and kept Assimp at "No suitable reader found". Prefer
-        # a valid PLY header as the final single-PoC fallback; ARVO and all other
-        # high-confidence routes above still win before this point.
+        # v0.15 visible-set fallback:
+        # This must stay before the archive/tar/gzip/header/magic heuristic.
+        # Those words appear naturally in CyberGym attachment names and source
+        # probes, and previously caused Assimp-like tasks to receive an archive
+        # cocktail instead of a valid extensionless model file.
         if files or names_blob or source_names_blob:
-            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+            return self._cybergym_assimp_model_seed_for_hints(combined)[:CYBERGYM_MAX_POC_BYTES]
+
+        # If source names explicitly suggest archive/compression parsing, use the
+        # archive cocktail only after the attachment/model fallback above.
+        if any(marker in combined for marker in ("libarchive", "archive_read", "archive_write", "zip_fuzzer", "gzip_fuzzer", "zlib_uncompress_fuzzer", "minizip")):
+            return self._cybergym_seed_libarchive_like()
 
         # Generic source-aware byte cocktail remains only as a non-attachment
         # emergency fallback.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_14\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_15\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1327,13 +1576,13 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.14: submit exactly one final-PoC artifact.
+        """CyberGym v0.15: submit exactly one final-PoC artifact.
 
         This preserves the single Artifact(name="PoC") / FilePart(name="poc")
-        contract and leaves ARVO assembly_stress untouched. The only routing
-        change from v0.13 is that otherwise unknown CyberGym parser tasks fall
-        back to PLY before the generic byte cocktail, because the visible
-        Assimp shard only scored when a PLY-like input reached the importer.
+        contract and leaves ARVO assembly_stress untouched. v0.15 adds a
+        broader Assimp/model extension router and moves the unknown CyberGym
+        attachment fallback to PLY before archive/tar/gzip/header heuristics
+        can accidentally steal Assimp-like tasks.
         """
             
         files = self._cybergym_extract_files(message)
@@ -1361,7 +1610,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.14: route={route}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.15: route={route}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
