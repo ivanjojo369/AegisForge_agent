@@ -171,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_11_route_diagnostic_arvo_assimp_ply_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_12_route_artifact_diagnostic_arvo_assimp_ply_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.11 preserves ARVO assembly_stress, uses PLY as the Assimp extensionless fallback, enriches routing context, and emits route diagnostics.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.12 preserves ARVO assembly_stress and Assimp/PLY routing, enriches routing context, and emits a separate route diagnostic artifact.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -983,6 +983,44 @@ class Executor(AgentExecutor):
 
         return poc
 
+    @staticmethod
+    def _cybergym_route_diagnostic_payload(
+        *,
+        route: str,
+        poc: bytes,
+        poc_sha256: str,
+        filenames: list[str],
+        context_id: str,
+        task_id: str,
+    ) -> bytes:
+        """Build a bounded JSON diagnostic artifact for CyberGym route debugging.
+
+        This intentionally avoids dumping message metadata or source snippets, so
+        it cannot leak secrets. The first bytes are base64 only and are limited to
+        enough data to distinguish PLY/ARVO/generic routes.
+        """
+        diagnostic = {
+            "agent": "AegisForge",
+            "contract_version": CYBERGYM_CONTRACT_VERSION,
+            "diagnostic_version": "v0.12",
+            "primary_artifact": {
+                "artifact_name": "PoC",
+                "file_name": "poc",
+                "mime_type": "application/octet-stream",
+            },
+            "route": str(route or "unknown"),
+            "poc_len": int(len(poc or b"")),
+            "poc_sha256": hashlib.sha256(poc or b"").hexdigest(),
+            "poc_sha256_prefix": str(poc_sha256 or ""),
+            "poc_head_64_b64": base64.b64encode((poc or b"")[:64]).decode("ascii"),
+            "poc_head_256_b64": base64.b64encode((poc or b"")[:256]).decode("ascii"),
+            "filenames": list(filenames or [])[:32],
+            "context_id_hash": hashlib.sha256(str(context_id or "").encode("utf-8")).hexdigest()[:16],
+            "task_id_hash": hashlib.sha256(str(task_id or "").encode("utf-8")).hexdigest()[:16],
+            "note": "Route-only diagnostic artifact; primary PoC bytes are not modified by v0.12.",
+        }
+        return json.dumps(diagnostic, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
 
@@ -1288,7 +1326,7 @@ class Executor(AgentExecutor):
         # over a fixed placeholder so the input has a chance to pass early gates.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_11\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_12\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1318,21 +1356,19 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.11: submit a final-PoC artifact with contextual bytes.
+        """CyberGym v0.12: submit a final-PoC artifact plus route diagnostics.
 
-        v0 proved the artifact contract. v0.11 keeps the same final Artifact(name="PoC")
-        / FilePart(name="poc") shape, preserves ARVO assembly_stress, uses PLY
-        as the Assimp extensionless fallback, enriches routing context, and adds
-        controlled route diagnostics for confirming which PoC family reached /tmp/poc.
+        v0 proved the primary artifact contract. v0.12 keeps the same
+        Artifact(name="PoC") / FilePart(name="poc") shape, preserves ARVO
+        assembly_stress and Assimp/PLY routing, and adds a separate JSON
+        artifact to confirm which PoC family was selected without changing
+        the primary PoC bytes.
         """
             
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
         poc = self._cybergym_generate_contextual_poc(message, context_id=context_id, task_id=task_id)
         route = self._cybergym_route_label_for_poc(poc)
-        if poc:
-            poc = self._cybergym_add_route_diagnostic_marker(poc, route)
-            route = self._cybergym_route_label_for_poc(poc)
 
         if not poc:
             payload = json.dumps(
@@ -1354,7 +1390,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.11: route={route}; poc_sha256={poc_sha256}; submitting contextual PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.12: route={route}; poc_sha256={poc_sha256}; submitting contextual PoC artifact plus route diagnostic ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
@@ -1373,6 +1409,29 @@ class Executor(AgentExecutor):
                 )
             ],
             name="PoC",
+        )
+
+        route_diagnostic = self._cybergym_route_diagnostic_payload(
+            route=route,
+            poc=poc,
+            poc_sha256=poc_sha256,
+            filenames=filenames,
+            context_id=context_id,
+            task_id=task_id,
+        )
+        await updater.add_artifact(
+            parts=[
+                Part(
+                    root=FilePart(
+                        file=FileWithBytes(
+                            bytes=base64.b64encode(route_diagnostic).decode("ascii"),
+                            name="aegisforge_cybergym_route.json",
+                            mime_type="application/json",
+                        )
+                    )
+                )
+            ],
+            name="AegisForgeCyberGymRoute",
         )
 
     def _require_message(self, context: RequestContext):
