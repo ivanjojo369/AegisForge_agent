@@ -1,0 +1,59 @@
+{
+  "payload_id": "skillsbench_standard_v1_openenv_eval",
+  "track": "skillsbench",
+  "benchmark": "SkillsBench",
+  "task_set": "standard-v1",
+  "adapter": "skillsbench",
+  "assessment_mode": "defender",
+  "scenario_family": "general_purpose",
+  "purpose": "offline_artifact_contract_eval",
+  "contract_checks": [
+    "skillsbench traffic must route to the skillsbench/general-purpose path",
+    "artifact-native tasks must not return prose-only responses",
+    "artifact_refs must be non-empty when requires_artifact is true",
+    "generated artifacts must preserve a file-like name, kind, and content",
+    "CyberGym single PoC/poc contract must remain untouched"
+  ],
+  "eval_cases": [
+    {
+      "case_id": "skillsbench_patch_smoke",
+      "task_id": "fix-build-agentops",
+      "category": "software-engineering",
+      "requires_artifact": true,
+      "expected_artifact_family": "patch",
+      "minimum_pass_condition": "artifact_refs_non_empty"
+    },
+    {
+      "case_id": "skillsbench_xlsx_smoke",
+      "task_id": "xlsx-recover-data",
+      "category": "office-white-collar",
+      "requires_artifact": true,
+      "expected_artifact_family": "xlsx",
+      "minimum_pass_condition": "artifact_refs_non_empty"
+    },
+    {
+      "case_id": "skillsbench_pptx_smoke",
+      "task_id": "pptx-reference-formatting",
+      "category": "office-white-collar",
+      "requires_artifact": true,
+      "expected_artifact_family": "pptx",
+      "minimum_pass_condition": "artifact_refs_non_empty"
+    },
+    {
+      "case_id": "skillsbench_lean_smoke",
+      "task_id": "lean4-proof",
+      "category": "mathematics-or-formal-reasoning",
+      "requires_artifact": true,
+      "expected_artifact_family": "lean",
+      "minimum_pass_condition": "artifact_refs_non_empty"
+    },
+    {
+      "case_id": "skillsbench_obj_smoke",
+      "task_id": "threejs-to-obj",
+      "category": "media-content-production",
+      "requires_artifact": true,
+      "expected_artifact_family": "obj",
+      "minimum_pass_condition": "artifact_refs_non_empty"
+    }
+  ]
+}

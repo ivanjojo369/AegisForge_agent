@@ -1,0 +1,60 @@
+{
+  "bundle_id": "skillsbench_standard_v1_client_bundle",
+  "track": "skillsbench",
+  "benchmark": "SkillsBench",
+  "task_set": "standard-v1",
+  "category": "general_purpose_agent",
+  "scenario_family": "general_purpose",
+  "adapter": "skillsbench",
+  "purpose": "offline_smoke_client_bundle",
+  "fair_play": {
+    "uses_real_answers": false,
+    "uses_task_specific_lookup_table": false,
+    "notes": [
+      "Synthetic local payload for artifact-contract validation only.",
+      "Do not encode leaderboard answers or hidden task solutions."
+    ]
+  },
+  "tasks": [
+    {
+      "task_id": "fix-build-agentops",
+      "category": "software-engineering",
+      "tags": ["patch", "build", "python"],
+      "instructions": "Repair a failing build and return a minimal patch artifact.",
+      "requires_artifact": true,
+      "expected_artifact_family": "patch"
+    },
+    {
+      "task_id": "xlsx-recover-data",
+      "category": "office-white-collar",
+      "tags": ["xlsx", "spreadsheet", "data-recovery"],
+      "instructions": "Recover spreadsheet data and return an xlsx or csv artifact.",
+      "requires_artifact": true,
+      "expected_artifact_family": "xlsx"
+    },
+    {
+      "task_id": "pptx-reference-formatting",
+      "category": "office-white-collar",
+      "tags": ["pptx", "slides", "formatting"],
+      "instructions": "Format references in a slide deck and return a pptx artifact.",
+      "requires_artifact": true,
+      "expected_artifact_family": "pptx"
+    },
+    {
+      "task_id": "lean4-proof",
+      "category": "mathematics-or-formal-reasoning",
+      "tags": ["lean4", "formal-proof"],
+      "instructions": "Complete a Lean 4 proof and return a .lean artifact.",
+      "requires_artifact": true,
+      "expected_artifact_family": "lean"
+    },
+    {
+      "task_id": "threejs-to-obj",
+      "category": "media-content-production",
+      "tags": ["threejs", "3d", "obj"],
+      "instructions": "Convert a Three.js-style geometry description into an OBJ artifact.",
+      "requires_artifact": true,
+      "expected_artifact_family": "obj"
+    }
+  ]
+}
