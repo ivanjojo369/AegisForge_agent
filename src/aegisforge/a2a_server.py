@@ -9,6 +9,8 @@ This module must:
 - For Pi-Bench, advertise the policy bootstrap contract that tells the
   orchestrator the decision must be emitted as an assistant tool_call to
   record_decision, not as a generic TextPart/DataPart payload.
+- For SkillsBench, advertise file/artifact output so standard-v1 tasks can
+  discover that this agent can return evaluator-visible FilePart artifacts.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from .executor import Executor
 
 
-RUNTIME_VERSION = "1.2.0-pibench-bootstrap"
+RUNTIME_VERSION = "1.3.0-pibench-skillsbench-artifact-output"
 
 # One selected opponent per AgentX-AgentBeats category.
 # "mcu" covers the MCU/Minecraft benchmark; we do not treat mcu-minecraft as a separate track.
@@ -46,6 +48,7 @@ SELECTED_OPPONENT_TRACKS = (
     "pibench",
     "cybergym",
     "netarena",
+    "skillsbench",
 )
 
 SELECTED_OPPONENT_REPOS = {
@@ -59,6 +62,7 @@ SELECTED_OPPONENT_REPOS = {
     "pibench": "Pi-Bench",
     "cybergym": "CyberGym",
     "netarena": "NetArena",
+    "skillsbench": "https://github.com/benchflow-ai/skillsbench-leaderboard",
 }
 
 AGENT_CARD_TAGS = (
@@ -82,6 +86,21 @@ AGENT_CARD_TAGS = (
     "record-decision-tool-call",
     "cybergym",
     "netarena",
+    "skillsbench",
+    "skillsbench-leaderboard",
+    "benchflow-ai",
+    "standard-v1",
+    "general-purpose-agent",
+    "multi-utility",
+    "artifact-first",
+    "artifact-output",
+    "file-output",
+    "file-generation",
+    "patch-output",
+    "spreadsheet-output",
+    "presentation-output",
+    "document-output",
+    "formal-proof-output",
 )
 
 PI_BENCH_POLICY_BOOTSTRAP_URN = "urn:pi-bench:policy-bootstrap:v1"
@@ -155,6 +174,75 @@ PI_BENCH_POLICY_BOOTSTRAP: dict[str, Any] = {
 }
 
 
+SKILLSBENCH_ARTIFACT_OUTPUT_URN = "urn:aegisforge:skillsbench:artifact-output:v1"
+
+SKILLSBENCH_ARTIFACT_FAMILIES = (
+    "text",
+    "markdown",
+    "json",
+    "python",
+    "patch",
+    "diff",
+    "csv",
+    "xlsx",
+    "docx",
+    "pptx",
+    "pdf",
+    "lean",
+    "obj",
+    "html",
+    "zip",
+    "audio",
+    "video",
+)
+
+SKILLSBENCH_TASK_CATEGORIES = (
+    "software-engineering",
+    "office-white-collar",
+    "natural-science",
+    "industrial-physical-systems",
+    "media-content-production",
+    "finance-economics",
+    "mathematics-or-formal-reasoning",
+    "cybersecurity",
+)
+
+SKILLSBENCH_ARTIFACT_OUTPUT: dict[str, Any] = {
+    "uri": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
+    "version": "1",
+    "track": "skillsbench",
+    "benchmark": "SkillsBench",
+    "task_set": "standard-v1",
+    "benchmark_aliases": [
+        "skillsbench",
+        "skillsbench-leaderboard",
+        "benchflow",
+        "benchflow-ai",
+        "standard-v1",
+        "with_skills",
+        "general-purpose",
+        "general_purpose",
+        "general-purpose-agent",
+        "multi-utility",
+        "artifact-first",
+    ],
+    "artifact_first": True,
+    "expected_transport": "A2A FilePart/FileWithBytes",
+    "minimum_contract": {
+        "status_text": "concise",
+        "artifact_native_tasks": "emit evaluator-visible file artifacts",
+        "artifact_refs": "must not be empty for artifact-native standard-v1 tasks",
+    },
+    "artifact_families": list(SKILLSBENCH_ARTIFACT_FAMILIES),
+    "task_categories": list(SKILLSBENCH_TASK_CATEGORIES),
+    "non_regression_guards": {
+        "cybergym": "preserve exactly one Artifact(name='PoC') with FilePart(name='poc')",
+        "maizebargain": "preserve the stable EF1-repair baseline unless explicitly requested",
+        "pibench": "preserve record_decision assistant tool-call discovery metadata",
+    },
+}
+
+
 def _normalize_base_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -205,16 +293,24 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
     # Serve both Python SDK field names and common JSON aliases. Some harnesses read
     # snake_case, others read lowerCamelCase.
     if "default_input_modes" in data:
+        data["default_input_modes"] = _merge_unique_list(data["default_input_modes"], ["file", "application/json"])
         data.setdefault("defaultInputModes", data["default_input_modes"])
     else:
-        data.setdefault("default_input_modes", ["text"])
-        data.setdefault("defaultInputModes", ["text"])
+        data.setdefault("default_input_modes", ["text", "file", "application/json"])
+        data.setdefault("defaultInputModes", ["text", "file", "application/json"])
+
+    if "defaultInputModes" in data:
+        data["defaultInputModes"] = _merge_unique_list(data["defaultInputModes"], ["file", "application/json"])
 
     if "default_output_modes" in data:
+        data["default_output_modes"] = _merge_unique_list(data["default_output_modes"], ["file", "application/json"])
         data.setdefault("defaultOutputModes", data["default_output_modes"])
     else:
-        data.setdefault("default_output_modes", ["text"])
-        data.setdefault("defaultOutputModes", ["text"])
+        data.setdefault("default_output_modes", ["text", "file", "application/json"])
+        data.setdefault("defaultOutputModes", ["text", "file", "application/json"])
+
+    if "defaultOutputModes" in data:
+        data["defaultOutputModes"] = _merge_unique_list(data["defaultOutputModes"], ["file", "application/json"])
 
     data.setdefault("protocolVersion", "a2a")
     data.setdefault("provider", {"organization": "QuipuLoop", "url": data.get("url", "")})
@@ -225,6 +321,10 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         capabilities.setdefault("stateTransitionHistory", True)
         capabilities.setdefault("toolCalls", True)
         capabilities.setdefault("assistantToolCalls", True)
+        capabilities.setdefault("fileInput", True)
+        capabilities.setdefault("fileOutput", True)
+        capabilities.setdefault("artifactOutput", True)
+        capabilities.setdefault("multiArtifactOutput", True)
 
     extensions = data.setdefault("extensions", [])
     if not isinstance(extensions, list):
@@ -236,6 +336,13 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         "description": "Pi-Bench policy decision bootstrap for assistant tool_calls.",
         "required": False,
         "params": PI_BENCH_POLICY_BOOTSTRAP,
+    }
+
+    skillsbench_extension_record = {
+        "uri": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
+        "description": "SkillsBench standard-v1 artifact-first file output discovery.",
+        "required": False,
+        "params": SKILLSBENCH_ARTIFACT_OUTPUT,
     }
 
     # Add both forms:
@@ -250,6 +357,15 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         for item in extensions
     ):
         extensions.append(extension_record)
+
+    if SKILLSBENCH_ARTIFACT_OUTPUT_URN not in extensions:
+        extensions.append(SKILLSBENCH_ARTIFACT_OUTPUT_URN)
+
+    if not any(
+        isinstance(item, dict) and item.get("uri") == SKILLSBENCH_ARTIFACT_OUTPUT_URN
+        for item in extensions
+    ):
+        extensions.append(skillsbench_extension_record)
 
     metadata = data.setdefault("metadata", {})
     if not isinstance(metadata, dict):
@@ -266,6 +382,7 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         },
     )
     metadata["pi_bench_policy_bootstrap"] = PI_BENCH_POLICY_BOOTSTRAP
+    metadata["skillsbench_artifact_output"] = SKILLSBENCH_ARTIFACT_OUTPUT
 
     # Tool declarations are duplicated under a few conventional keys because public
     # AgentBeats/Pi-Bench harness revisions have differed in what they probe.
@@ -275,6 +392,7 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
     data["tool_declarations"] = tools
 
     data["x-aegisforge-pibench-policy-bootstrap"] = PI_BENCH_POLICY_BOOTSTRAP
+    data["x-aegisforge-skillsbench-artifact-output"] = SKILLSBENCH_ARTIFACT_OUTPUT
     return data
 
 
@@ -296,8 +414,9 @@ def build_agent_card(*, url: str) -> AgentCard:
                 "Route an MCU/Minecraft benchmark task through the mcu profile.",
                 "Answer an OfficeQA finance task with evidence-aware document handling.",
                 "Handle a CRMArena business-process task without exposing protected formulas.",
-                "Process FieldWorkArena, MAizeBargAIn, tau2, OSWorld, Pi-Bench, CyberGym, or NetArena tasks through their selected profiles.",
+                "Process FieldWorkArena, MAizeBargAIn, tau2, OSWorld, Pi-Bench, CyberGym, NetArena, or SkillsBench tasks through their selected profiles.",
                 'For Pi-Bench, emit assistant tool_calls: record_decision({"decision":"ALLOW|ALLOW-CONDITIONAL|DENY|ESCALATE","rationale":"..."}).',
+                "For SkillsBench, emit concise status plus evaluator-visible file artifacts.",
             ],
         ),
         AgentSkill(
@@ -319,19 +438,55 @@ def build_agent_card(*, url: str) -> AgentCard:
                 '{"tool_calls":[{"function":{"name":"record_decision","arguments":{"decision":"DENY","rationale":"The policy disallows the requested action."}}}]}',
             ],
         ),
+        AgentSkill(
+            id="quipuloop.aegisforge.skillsbench_artifact_solver",
+            name="SkillsBench general-purpose artifact solver",
+            description=(
+                "Advertises SkillsBench standard-v1 general-purpose capability with "
+                "artifact-first file output for code repair, spreadsheets, slides, "
+                "documents, media, science, formal reasoning, and defensive cybersecurity tasks."
+            ),
+            tags=[
+                "skillsbench",
+                "skillsbench-leaderboard",
+                "benchflow-ai",
+                "standard-v1",
+                "general-purpose-agent",
+                "multi-utility",
+                "artifact-first",
+                "artifact-output",
+                "file-output",
+                "file-generation",
+                "patch",
+                "xlsx",
+                "docx",
+                "pptx",
+                "pdf",
+                "lean4",
+                "obj",
+            ],
+            examples=[
+                "fix-build-agentops -> return a minimal patch FilePart artifact.",
+                "xlsx-recover-data -> return an xlsx/csv FilePart artifact.",
+                "pptx-reference-formatting -> return a pptx FilePart artifact.",
+                "lean4-proof -> return a .lean FilePart artifact.",
+                "threejs-to-obj -> return an .obj FilePart artifact.",
+            ],
+        ),
     ]
 
     return AgentCard(
         name="AegisForge (QuipuLoop)",
         description=(
             "Unified A2A Purple Agent for AgentX-AgentBeats Phase 2. "
-            "Supports the selected opponent matrix across Game, Finance, Business Process, Research, Multi-agent, tau2, Computer Use/Web, Agent Safety, Cybersecurity, and Coding. "
-            "For Pi-Bench, the public agent card advertises the urn:pi-bench:policy-bootstrap:v1 decision-tool contract."
+            "Supports the selected opponent matrix across Game, Finance, Business Process, Research, Multi-agent, tau2, Computer Use/Web, Agent Safety, Cybersecurity, Coding, and SkillsBench General-Purpose Agent tasks. "
+            "For Pi-Bench, the public agent card advertises the urn:pi-bench:policy-bootstrap:v1 decision-tool contract. "
+            "For SkillsBench, the public agent card advertises artifact-first file output."
         ),
         url=_normalize_base_url(url),
         version=RUNTIME_VERSION,
-        default_input_modes=["text", "application/json"],
-        default_output_modes=["text", "application/json"],
+        default_input_modes=["text", "file", "application/json"],
+        default_output_modes=["text", "file", "application/json"],
         capabilities=AgentCapabilities(streaming=True),
         skills=skills,
     )
@@ -362,6 +517,8 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
                 "runtime_version": RUNTIME_VERSION,
                 "pibench_policy_bootstrap": True,
                 "pi_bench_extension": PI_BENCH_POLICY_BOOTSTRAP_URN,
+                "skillsbench_artifact_output": True,
+                "skillsbench_extension": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
                 "executor": snapshot,
             }
         )
@@ -380,6 +537,7 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
             Route("/.well-known/agent.json", agent_card_route, methods=["GET"]),
             Route("/pi-bench/policy-bootstrap", pibench_bootstrap_route, methods=["GET"]),
             Route("/pibench/policy-bootstrap", pibench_bootstrap_route, methods=["GET"]),
+            Route("/skillsbench/artifact-output", lambda _request: JSONResponse(SKILLSBENCH_ARTIFACT_OUTPUT), methods=["GET"]),
             Mount("/", app=a2a_app),
         ]
     )
