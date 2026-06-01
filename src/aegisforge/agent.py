@@ -60,6 +60,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_general_purpose_multiutility_router_v0_1_2026_06_01"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -1141,6 +1142,7 @@ UPSTREAM_GREEN_AGENT_REGISTRY: dict[str, AdapterProfile] = {
     "carbench": AdapterProfile("carbench", "CAR-bench", "computer_use", status="adapter_slot", capability_tags=("computer_use", "state_observation")),
     "swebench_pro": AdapterProfile("swebench_pro", "SWE-bench Pro", "coding", status="adapter_slot", capability_tags=("software_engineering", "patching", "tests")),
     "terminal_bench": AdapterProfile("terminal_bench", "Terminal Bench 2.0", "coding", status="adapter_slot", capability_tags=("terminal", "tool_use", "debugging")),
+    "skillsbench": AdapterProfile("skillsbench", "SkillsBench / General-Purpose Agent", "general_purpose", capability_tags=("general_purpose", "multi_utility", "artifact_planning", "file_generation", "code_repair", "document_automation", "scientific_computation", "optimization", "media_processing", "cybersecurity_audit")),
 }
 TRACK_ALIASES = {
     "mcu": "mcu",
@@ -1260,6 +1262,23 @@ TRACK_ALIASES = {
     "codereviewruse": "netarena",
     "cryptocrash": "officeqa",
     "lawfirmleak": "pibench",
+    "skillsbench": "skillsbench",
+    "skillsbench_agentbeats": "skillsbench",
+    "skillsbench-leaderboard": "skillsbench",
+    "skillsbench_leaderboard": "skillsbench",
+    "benchflow": "skillsbench",
+    "benchflow-ai": "skillsbench",
+    "benchflow_ai": "skillsbench",
+    "general_purpose": "skillsbench",
+    "general-purpose": "skillsbench",
+    "general purpose": "skillsbench",
+    "general_purpose_agent": "skillsbench",
+    "general-purpose-agent": "skillsbench",
+    "general agent": "skillsbench",
+    "multi_utility": "skillsbench",
+    "multi-utility": "skillsbench",
+    "with_skills": "skillsbench",
+    "standard-v1": "skillsbench",
     "openenv": "openenv",
     "open_env": "openenv",
     "open-env": "openenv",
@@ -1277,8 +1296,8 @@ CANONICAL_OPPONENT_TRACKS = (
     "netarena",
 )
 SECURITY_LIKE_TRACKS = {"security", "pibench", "cybergym", "netarena"}
-OPENENV_LIKE_TRACKS = {"officeqa", "crmarena", "fieldworkarena", "maizebargain", "osworld"}
-A2A_TOOL_HEAVY_TRACKS = {"mcu", "tau2", "osworld", "pibench", "cybergym", "netarena"}
+OPENENV_LIKE_TRACKS = {"officeqa", "crmarena", "fieldworkarena", "maizebargain", "osworld", "skillsbench"}
+A2A_TOOL_HEAVY_TRACKS = {"mcu", "tau2", "osworld", "pibench", "cybergym", "netarena", "skillsbench"}
 TRACK_DISPLAY_NAMES = {
     "mcu": "MCU / Minecraft",
     "officeqa": "OfficeQA",
@@ -1292,6 +1311,7 @@ TRACK_DISPLAY_NAMES = {
     "netarena": "NetArena",
     "security": "Security Arena",
     "openenv": "OpenEnv",
+    "skillsbench": "SkillsBench / General-Purpose Agent",
 }
 TRACK_SUMMARIES = {
     "mcu": "Minecraft long-horizon planning, crafting, navigation, resource management, and poisoned wiki/source robustness.",
@@ -1306,6 +1326,7 @@ TRACK_SUMMARIES = {
     "netarena": "Network automation and coding tasks requiring topology/config reasoning, repair minimality, and realistic feedback handling.",
     "security": "General AgentBeats security arena posture for prompt injection, exfiltration, unsafe output, and dependency trust scenarios.",
     "openenv": "Generic OpenEnv-compatible environment route.",
+    "skillsbench": "General-purpose multi-utility evaluator spanning code repair, office files, spreadsheets, slides, media, science, optimization, formal reasoning, and cybersecurity artifacts.",
 }
 TRACK_DEFAULT_SCENARIO_FAMILIES = {
     "mcu": "wikiwiper",
@@ -1320,6 +1341,7 @@ TRACK_DEFAULT_SCENARIO_FAMILIES = {
     "netarena": "codereviewruse",
     "security": "general_security",
     "openenv": "general",
+    "skillsbench": "general_purpose",
 }
 TRACK_FRAGMENT_KEYS = {
     "mcu": (
@@ -1361,6 +1383,11 @@ TRACK_FRAGMENT_KEYS = {
     "netarena": (
         "network_topology", "topology", "routing_state", "config", "intent",
         "patch", "test_feedback", "scenario_family", "assessment_mode",
+    ),
+    "skillsbench": (
+        "task_id", "task_set", "trial_id", "category", "difficulty", "tags",
+        "files", "attachments", "input_files", "workspace", "repository", "instructions",
+        "expected_output", "output_format", "artifact_refs", "has_skills", "condition",
     ),
     "security": (
         "scenario_family", "assessment_mode", "target_system", "protected_asset",
@@ -1418,6 +1445,11 @@ TRACK_ROUTE_PROFILES = {
         "defender": ("netarena_defender", "repair_oriented"),
         "tool_mode": "guided",
     },
+    "skillsbench": {
+        "attacker": ("skillsbench_stress_tester", "multi_utility_edge_case_probe"),
+        "defender": ("skillsbench_generalist", "artifact_first_problem_solver"),
+        "tool_mode": "multi_utility",
+    },
 }
 SCENARIO_ALIASES = {
     **SCENARIO_POLICY_ALIASES,
@@ -1451,6 +1483,10 @@ SCENARIO_ALIASES = {
     "secret_leakage": "secret_leakage",
     "pii": "pii_leakage",
     "pii_leakage": "pii_leakage",
+    "skillsbench": "general_purpose",
+    "general_purpose": "general_purpose",
+    "general-purpose": "general_purpose",
+    "with_skills": "general_purpose",
     "cybergym": "gymjailbreak",
     "vulnerability": "cybergym",
     "patching": "cybergym",
@@ -1809,6 +1845,8 @@ class AegisForgeAgent:
         self._pi_bench_last_status: dict[str, Any] = {}
         self._malt_last_status: dict[str, Any] = {}
         self._cybergym_last_strategy: dict[str, Any] = {}
+        self._skillsbench_last_status: dict[str, Any] = {}
+        self._skillsbench_last_artifacts: list[dict[str, Any]] = []
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -1831,8 +1869,13 @@ class AegisForgeAgent:
         self.llm_timeout_seconds = max(5, int(os.getenv("AEGISFORGE_LLM_TIMEOUT_SECONDS", "75") or "75"))
         self.max_llm_calls_per_response = max(
             1,
-            min(4, int(os.getenv("AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE", "2") or "2")),
+            min(8, int(os.getenv("AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE", "3") or "3")),
         )
+        self._skillsbench_connection_budget = max(
+            self.max_llm_calls_per_response,
+            min(8, int(os.getenv("AEGISFORGE_SKILLSBENCH_CONNECTIONS", "6") or "6")),
+        )
+        self._skillsbench_context_char_budget = max(16000, int(os.getenv("AEGISFORGE_SKILLSBENCH_CONTEXT_CHARS", "36000") or "36000"))
         self.default_temperature = _env_float("AEGISFORGE_TEMPERATURE", default=0.2)
         self.prompt_loader = self._build_prompt_loader()
         self.context_mapper = self._build_context_mapper()
@@ -16091,6 +16134,337 @@ class AegisForgeAgent:
         return strategy
 
 
+
+    def _skillsbench_scope_signal(self, task_text: str = "", metadata: Mapping[str, Any] | None = None) -> bool:
+        """Detect the SkillsBench / General-Purpose Agent evaluator without stealing closed specialist tracks."""
+        safe_metadata: Mapping[str, Any] = metadata if isinstance(metadata, Mapping) else {}
+        forced = os.getenv("AEGISFORGE_FORCE_SKILLSBENCH", "").strip().lower()
+        if forced in {"1", "true", "yes", "on"}:
+            return True
+        if forced in {"0", "false", "no", "off"}:
+            return False
+        if self._pi_bench_strong_scope_signal(task_text, safe_metadata):
+            return False
+        if self._aegisforge_browsecomp_explicit_scope_signal(task_text, safe_metadata):
+            return False
+        chunks = [
+            task_text,
+            self._officeqa_stringify_for_signal_safe(safe_metadata, limit=24000),
+            os.getenv("GITHUB_REPOSITORY", ""),
+            os.getenv("GITHUB_WORKFLOW", ""),
+            os.getenv("AMBER_COMPOSE_PROJECT", ""),
+            os.getenv("AGENTBEATS_TRACK", ""),
+            os.getenv("AGENTBEATS_BENCHMARK", ""),
+            str(Path.cwd()),
+        ]
+        blob = "\n".join(chunk for chunk in chunks if chunk).lower()
+        compact = re.sub(r"[^a-z0-9]+", "_", blob).strip("_")
+        direct_markers = (
+            "skillsbench",
+            "skillsbench_leaderboard",
+            "skillsbench-agentbeats",
+            "benchflow-ai/skillsbench",
+            "benchflow_ai_skillsbench",
+            "standard-v1",
+            "standard_v1",
+            "with_skills",
+            "general_purpose",
+            "general-purpose agent",
+            "general purpose agent",
+        )
+        if any(marker in blob or marker in compact for marker in direct_markers):
+            return True
+        category_markers = (
+            "software-engineering",
+            "office-white-collar",
+            "natural-science",
+            "industrial-physical-systems",
+            "media-content-production",
+            "finance-economics",
+            "mathematics-or-formal-reasoning",
+        )
+        tag_markers = (
+            "form-filling",
+            "document-automation",
+            "pptx",
+            "xlsx",
+            "threejs",
+            "video-silence-remover",
+            "lean4-proof",
+            "software-dependency-audit",
+            "unit-commitment",
+            "wyckoff",
+            "d3.js",
+            "data-to-d3",
+        )
+        score = sum(1 for marker in category_markers if marker in blob)
+        score += sum(1 for marker in tag_markers if marker in blob)
+        has_task_id = bool(re.search(r'''(?is)["']task_id["']\s*[:=]\s*["'][a-z0-9][a-z0-9._\-]{2,}["']''', blob))
+        return score >= 2 or (has_task_id and score >= 1)
+
+    def _officeqa_stringify_for_signal_safe(self, value: Any, *, limit: int = 30000) -> str:
+        try:
+            return _officeqa_stringify_for_signal(value, limit=limit)
+        except Exception:
+            return self._coerce_text(value)[:limit]
+
+    def _skillsbench_walk_values(self, value: Any, *, depth: int = 0, limit: int = 160) -> list[Any]:
+        if value is None or depth > 5 or limit <= 0:
+            return []
+        if isinstance(value, Mapping):
+            out: list[Any] = []
+            for key, child in list(value.items())[:limit]:
+                out.append(key)
+                out.extend(self._skillsbench_walk_values(child, depth=depth + 1, limit=max(8, limit // 2)))
+                if len(out) >= limit:
+                    break
+            return out[:limit]
+        if isinstance(value, (list, tuple, set)):
+            out = []
+            for child in list(value)[:limit]:
+                out.extend(self._skillsbench_walk_values(child, depth=depth + 1, limit=max(8, limit // 2)))
+                if len(out) >= limit:
+                    break
+            return out[:limit]
+        return [value]
+
+    def _skillsbench_find_value(self, metadata: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+        wanted = {key.lower() for key in keys}
+        def _walk(value: Any, *, depth: int = 0) -> Any:
+            if depth > 6 or value is None:
+                return None
+            if isinstance(value, Mapping):
+                for key, child in value.items():
+                    if str(key).lower() in wanted and child not in (None, ""):
+                        return child
+                for child in value.values():
+                    found = _walk(child, depth=depth + 1)
+                    if found not in (None, ""):
+                        return found
+            elif isinstance(value, (list, tuple)):
+                for child in value[:80]:
+                    found = _walk(child, depth=depth + 1)
+                    if found not in (None, ""):
+                        return found
+            return None
+        return _walk(metadata)
+
+    def _skillsbench_task_descriptor(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        safe_metadata = metadata if isinstance(metadata, Mapping) else {}
+        payload = self._extract_payload(safe_metadata) or {}
+        merged = self._deep_merge_dicts(dict(safe_metadata), payload if isinstance(payload, Mapping) else {})
+        text_blob = "\n".join([
+            self._coerce_text(task_text),
+            self._officeqa_stringify_for_signal_safe(merged, limit=self._skillsbench_context_char_budget),
+        ])
+        lowered = text_blob.lower()
+        task_id = self._coerce_text(
+            self._skillsbench_find_value(merged, ("task_id", "id", "name", "trial_id"))
+        ).strip()
+        if not task_id:
+            match = re.search(r'''(?is)["']task_id["']\s*[:=]\s*["']([^"']+)["']''', text_blob)
+            if match:
+                task_id = match.group(1).strip()
+        category = self._coerce_text(
+            self._skillsbench_find_value(merged, ("category", "task_category", "domain"))
+        ).strip().lower()
+        if not category:
+            for candidate in (
+                "software-engineering",
+                "office-white-collar",
+                "natural-science",
+                "industrial-physical-systems",
+                "media-content-production",
+                "finance-economics",
+                "mathematics-or-formal-reasoning",
+                "cybersecurity",
+            ):
+                if candidate in lowered:
+                    category = candidate
+                    break
+        difficulty = self._coerce_text(self._skillsbench_find_value(merged, ("difficulty",))).strip().lower()
+        raw_tags = self._skillsbench_find_value(merged, ("tags", "tag", "skills", "skill_tags"))
+        tags = self._coerce_string_list(raw_tags if raw_tags is not None else [])
+        if not tags:
+            tag_hits = []
+            for token in (
+                "python", "java", "javascript", "excel", "xlsx", "pdf", "pptx", "video", "audio", "ocr",
+                "optimization", "statistics", "simulation", "security", "vulnerability", "lean4", "stl",
+                "threejs", "d3.js", "form-filling", "redaction", "data-analysis", "github", "ci",
+            ):
+                if token in lowered:
+                    tag_hits.append(token)
+            tags = self._dedupe(tag_hits)
+        return {
+            "task_id": task_id,
+            "category": category or "general-purpose",
+            "difficulty": difficulty or "unknown",
+            "tags": self._dedupe([str(tag).strip().lower() for tag in tags if str(tag).strip()])[:16],
+            "task_set": self._coerce_text(self._skillsbench_find_value(merged, ("task_set",))).strip() or "",
+            "condition": self._coerce_text(self._skillsbench_find_value(merged, ("condition",))).strip() or "",
+            "has_skills": self._coerce_bool(self._skillsbench_find_value(merged, ("has_skills",)), default=True),
+            "text_excerpt": self._trim(text_blob, 2400),
+            "metadata_keys": sorted(str(key) for key in merged.keys())[:40] if isinstance(merged, Mapping) else [],
+        }
+
+    def _skillsbench_utility_modes(self, descriptor: Mapping[str, Any]) -> list[str]:
+        category = self._coerce_text(descriptor.get("category")).lower()
+        tags = " ".join(self._coerce_string_list(descriptor.get("tags"))).lower()
+        task_id = self._coerce_text(descriptor.get("task_id")).lower()
+        blob = f"{category} {tags} {task_id}"
+        modes: list[str] = ["general_purpose_router", "artifact_first_delivery"]
+        if category == "software-engineering" or any(term in blob for term in ("build", "ci", "github", "repo", "react", "nextjs", "java", "python", "javascript", "maven", "unit-tests", "d3.js")):
+            modes.extend(["software_repair", "patch_plan", "test_driven_validation"])
+        if category == "office-white-collar" or any(term in blob for term in ("pdf", "form", "redaction", "pptx", "xlsx", "excel", "latex", "ocr", "pivot")):
+            modes.extend(["office_document_automation", "file_transform", "spreadsheet_or_presentation"])
+        if category == "finance-economics" or any(term in blob for term in ("finance", "macrofinance", "gdp", "reserves", "excel-index-match", "statistics")):
+            modes.extend(["finance_spreadsheet_analysis", "numeric_audit"])
+        if category == "natural-science" or any(term in blob for term in ("science", "radar", "hydrology", "seismology", "crystallography", "bioinformatics", "signal-processing")):
+            modes.extend(["scientific_computation", "data_pipeline", "model_calibration"])
+        if category == "industrial-physical-systems" or any(term in blob for term in ("cad", "dxf", "stl", "geometry", "energy", "routing", "robotics", "simulation", "control")):
+            modes.extend(["physical_systems_analysis", "geometry_or_optimization"])
+        if category == "media-content-production" or any(term in blob for term in ("video", "audio", "tts", "threejs", "obj", "image-processing", "multimodal")):
+            modes.extend(["media_processing", "asset_conversion"])
+        if category == "mathematics-or-formal-reasoning" or any(term in blob for term in ("lean4", "proof", "pddl", "planning", "integer-programming", "constraint-satisfaction")):
+            modes.extend(["formal_reasoning", "optimization_solver"])
+        if category == "cybersecurity" or any(term in blob for term in ("security", "cve", "vulnerability", "pcap", "intrusion", "dependency")):
+            modes.extend(["cybersecurity_audit", "defensive_patch"])
+        return self._dedupe(modes)
+
+    def _skillsbench_artifact_blueprint(self, descriptor: Mapping[str, Any], modes: list[str]) -> dict[str, Any]:
+        task_id = self._coerce_text(descriptor.get("task_id")) or "skillsbench-task"
+        category = self._coerce_text(descriptor.get("category")) or "general-purpose"
+        expected_files: list[dict[str, str]] = []
+        def add_file(name: str, purpose: str, content_type: str = "text/plain") -> None:
+            expected_files.append({"path": name, "purpose": purpose, "content_type": content_type})
+        if "software_repair" in modes:
+            add_file("solution.patch", "unified diff or concise patch description", "text/x-diff")
+            add_file("tests.md", "reproducible validation commands and expected pass criteria", "text/markdown")
+        if "spreadsheet_or_presentation" in modes or "finance_spreadsheet_analysis" in modes:
+            add_file("analysis.csv", "computed table or extracted normalized data", "text/csv")
+            add_file("workbook_notes.md", "formulas, sheet mapping, and verification notes", "text/markdown")
+        if "office_document_automation" in modes:
+            add_file("document_result.md", "document transformation/redaction/form-filling summary", "text/markdown")
+        if "media_processing" in modes or "asset_conversion" in modes:
+            add_file("media_manifest.json", "media conversion/indexing manifest", "application/json")
+        if "scientific_computation" in modes or "physical_systems_analysis" in modes or "formal_reasoning" in modes:
+            add_file("solution.json", "structured numeric or symbolic answer with units and checks", "application/json")
+        if "cybersecurity_audit" in modes:
+            add_file("security_report.md", "defensive findings, patch notes, and verification", "text/markdown")
+        if not expected_files:
+            add_file("answer.md", "final answer and validation evidence", "text/markdown")
+        return {
+            "task_id": task_id,
+            "category": category,
+            "utility_modes": modes,
+            "expected_files": expected_files,
+            "primary_mode": modes[-1] if modes else "general_purpose_router",
+            "artifact_strategy": "emit_text_plus_named_artifacts; prefer concrete files/patches when task supplies workspace attachments",
+        }
+
+    def _skillsbench_build_llm_messages(self, task_text: str, descriptor: Mapping[str, Any], modes: list[str], blueprint: Mapping[str, Any]) -> list[dict[str, str]]:
+        system = (
+            "You are AegisForge operating inside SkillsBench as a general-purpose multi-utility agent. "
+            "Return a concise deliverable that can be converted into artifacts. Do not invent hidden files. "
+            "When inputs are insufficient, provide an executable plan plus exact expected artifact names. "
+            "Prefer concrete patches, formulas, scripts, JSON manifests, tables, or validation commands over generic prose."
+        )
+        user = json.dumps(
+            {
+                "task_text": task_text[:12000],
+                "descriptor": self._normalize_for_json(dict(descriptor)),
+                "utility_modes": modes,
+                "artifact_blueprint": self._normalize_for_json(dict(blueprint)),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def _skillsbench_render_default_answer(self, descriptor: Mapping[str, Any], modes: list[str], blueprint: Mapping[str, Any]) -> str:
+        files = blueprint.get("expected_files") if isinstance(blueprint, Mapping) else []
+        file_lines = []
+        if isinstance(files, list):
+            for item in files[:8]:
+                if isinstance(item, Mapping):
+                    file_lines.append(f"- {item.get('path')}: {item.get('purpose')}")
+        task_id = self._coerce_text(descriptor.get("task_id")) or "unknown-task"
+        category = self._coerce_text(descriptor.get("category")) or "general-purpose"
+        return "\n".join([
+            f"SkillsBench task: {task_id}",
+            f"Category: {category}",
+            f"Utility modes: {', '.join(modes)}",
+            "",
+            "Deliverable plan:",
+            *(file_lines or ["- answer.md: final answer and validation evidence"]),
+            "",
+            "Execution stance: artifact-first, deterministic, validation-oriented. If task files are provided, transform them into the named deliverables; otherwise return the structured answer and commands needed to reproduce the transformation.",
+        ]).strip()
+
+    def _handle_skillsbench_turn(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        descriptor = self._skillsbench_task_descriptor(task_text, metadata)
+        modes = self._skillsbench_utility_modes(descriptor)
+        blueprint = self._skillsbench_artifact_blueprint(descriptor, modes)
+        old_cap = self.max_llm_calls_per_response
+        self.max_llm_calls_per_response = max(old_cap, self._skillsbench_connection_budget)
+        try:
+            llm_text = self._call_llm(
+                messages=self._skillsbench_build_llm_messages(task_text, descriptor, modes, blueprint),
+                temperature=0.05,
+                max_tokens=1400,
+            )
+        finally:
+            self.max_llm_calls_per_response = old_cap
+        draft = self._sanitize_text(llm_text) if llm_text else self._skillsbench_render_default_answer(descriptor, modes, blueprint)
+        payload = {
+            "schema": "aegisforge.skillsbench.multiutility.v0_1",
+            "version": SKILLSBENCH_AGENT_VERSION,
+            "descriptor": self._normalize_for_json(dict(descriptor)),
+            "utility_modes": modes,
+            "artifact_blueprint": self._normalize_for_json(dict(blueprint)),
+            "connection_budget": {
+                "llm_call_cap": self._skillsbench_connection_budget,
+                "context_char_budget": self._skillsbench_context_char_budget,
+                "llm_calls_used": self._current_llm_calls,
+                "last_llm_error": self._last_llm_error,
+            },
+            "deliverable": draft,
+            "fair_play": {
+                "no_hardcoded_answers": True,
+                "uses_task_signals_not_solution_tables": True,
+                "artifact_first_delivery": True,
+            },
+        }
+        artifacts = [
+            {"name": "skillsbench_result.json", "text": json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)},
+            {"name": "skillsbench_deliverable.md", "text": draft},
+            {"name": "skillsbench_artifact_blueprint.json", "text": json.dumps(payload["artifact_blueprint"], ensure_ascii=False, indent=2, sort_keys=True)},
+        ]
+        self._skillsbench_last_status = {
+            "mode": "skillsbench_general_purpose",
+            "task_id": descriptor.get("task_id"),
+            "category": descriptor.get("category"),
+            "utility_modes": modes,
+            "artifact_count": len(artifacts),
+            "llm_calls_used": self._current_llm_calls,
+            "last_llm_error": self._last_llm_error,
+        }
+        self._skillsbench_last_artifacts = [dict(item) for item in artifacts]
+        final_text = json.dumps(
+            {
+                "status": "completed",
+                "track": "skillsbench",
+                "task_id": descriptor.get("task_id"),
+                "category": descriptor.get("category"),
+                "utility_modes": modes,
+                "artifact_names": [item["name"] for item in artifacts],
+                "answer": draft,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return {"final_text": final_text, "payload": payload, "artifacts": artifacts}
+
     async def run(self, message: Message, updater: TaskUpdater) -> None:
         self.turns += 1
         self._current_llm_calls = 0
@@ -16123,20 +16497,22 @@ class AegisForgeAgent:
             self._browsecomp_plus_probe(base_text, metadata, browsecomp_task_text)
         emission_task_text = base_text
         emission_metadata: Mapping[str, Any] = metadata
+        skillsbench_artifacts: list[dict[str, str]] = []
         generic_smoke_request = self._is_generic_smoke_request(base_text, metadata)
-        maizebargain_turn_protocol = False if generic_smoke_request else self._is_maizebargain_turn_payload(base_text, metadata)
-        multi_agent_result_protocol = False if (generic_smoke_request or maizebargain_turn_protocol) else self._is_maizebargain_result_payload(base_text, metadata)
+        skillsbench_protocol = False if generic_smoke_request else self._skillsbench_scope_signal(base_text, metadata)
+        maizebargain_turn_protocol = False if (generic_smoke_request or skillsbench_protocol) else self._is_maizebargain_turn_payload(base_text, metadata)
+        multi_agent_result_protocol = False if (generic_smoke_request or skillsbench_protocol or maizebargain_turn_protocol) else self._is_maizebargain_result_payload(base_text, metadata)
         maizebargain_protocol = maizebargain_turn_protocol or multi_agent_result_protocol
-        pi_bench_protocol = bool(pi_bench_scope and not generic_smoke_request and not maizebargain_protocol and not tau2_airline_scope)
-        browsecomp_plus_protocol = False if (generic_smoke_request or maizebargain_protocol or tau2_airline_scope or pi_bench_protocol or not browsecomp_explicit_scope) else (
+        pi_bench_protocol = bool(pi_bench_scope and not generic_smoke_request and not skillsbench_protocol and not maizebargain_protocol and not tau2_airline_scope)
+        browsecomp_plus_protocol = False if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or tau2_airline_scope or pi_bench_protocol or not browsecomp_explicit_scope) else (
             self._is_browsecomp_plus_protocol(browsecomp_task_text, metadata)
             or self._should_route_browsecomp_plus_by_probe(browsecomp_task_text, metadata)
         )
-        crmarena_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or tau2_airline_scope or pi_bench_protocol) else _crmarena_strong_question_signal(base_text, metadata=metadata)
-        officeqa_forced_context = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
-        officeqa_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
-        build_it_protocol = False if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or tau2_airline_scope or pi_bench_protocol) else self._is_build_it_protocol(metadata, base_text)
-        strict_protocol = "" if (generic_smoke_request or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol or pi_bench_protocol) else self._strict_output_protocol(metadata, base_text)
+        crmarena_protocol = False if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or browsecomp_plus_protocol or tau2_airline_scope or pi_bench_protocol) else _crmarena_strong_question_signal(base_text, metadata=metadata)
+        officeqa_forced_context = False if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else _officeqa_forced_runner_context_signal(base_text, metadata=metadata)
+        officeqa_protocol = False if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or tau2_airline_scope or pi_bench_protocol) else (officeqa_forced_context or self._is_officeqa_protocol(metadata, base_text))
+        build_it_protocol = False if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or tau2_airline_scope or pi_bench_protocol) else self._is_build_it_protocol(metadata, base_text)
+        strict_protocol = "" if (generic_smoke_request or skillsbench_protocol or maizebargain_protocol or browsecomp_plus_protocol or crmarena_protocol or officeqa_protocol or build_it_protocol or pi_bench_protocol) else self._strict_output_protocol(metadata, base_text)
         if browsecomp_plus_protocol:
             try:
                 LOGGER.warning(
@@ -16145,12 +16521,24 @@ class AegisForgeAgent:
                 )
             except Exception:
                 pass
-        if not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if not skillsbench_protocol and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Classifying task and preparing execution route..."),
             )
-        if tau2_airline_scope and not maizebargain_protocol:
+        if skillsbench_protocol:
+            skillsbench_output = self._handle_skillsbench_turn(base_text, metadata)
+            final_text = self._coerce_text(skillsbench_output.get("final_text"))
+            skillsbench_artifacts = [dict(item) for item in skillsbench_output.get("artifacts", []) if isinstance(item, Mapping)]
+            trace = {
+                "mode": "skillsbench_general_purpose_protocol",
+                "protocol": "skillsbench_multiutility_artifact_first_v0_1",
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "turn": self.turns,
+                "llm_calls_used": self._current_llm_calls,
+                "skillsbench_status": getattr(self, "_skillsbench_last_status", {}),
+            }
+        elif tau2_airline_scope and not maizebargain_protocol:
             final_text = self._handle_tau2_airline_turn(base_text, metadata, message=message)
             trace = {
                 "mode": "tau2_airline_protocol",
@@ -16280,6 +16668,7 @@ class AegisForgeAgent:
         stale_bwim_visible_output = bool(re.search(r"\[(?:BUILD|ASK)\]", self._coerce_text(final_text), flags=re.IGNORECASE))
         final_seems_officeqa = (
             not generic_smoke_request
+            and not skillsbench_protocol
             and not tau2_airline_scope
             and not pi_bench_protocol
             and not crmarena_protocol
@@ -16312,12 +16701,22 @@ class AegisForgeAgent:
             officeqa_protocol = True
             build_it_protocol = False
             strict_protocol = ""
-        should_emit_primary_artifact = generic_smoke_request or not (tau2_airline_scope or pi_bench_protocol or strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
+        should_emit_primary_artifact = skillsbench_protocol or generic_smoke_request or not (tau2_airline_scope or pi_bench_protocol or strict_protocol or build_it_protocol or officeqa_protocol or crmarena_protocol or maizebargain_protocol or browsecomp_plus_protocol)
         if should_emit_primary_artifact:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=final_text))],
                 name="AegisForgeResponse",
             )
+        if skillsbench_protocol:
+            for artifact_item in skillsbench_artifacts[:6]:
+                art_name = self._coerce_text(artifact_item.get("name")).strip() or "skillsbench_artifact.txt"
+                art_text = self._coerce_text(artifact_item.get("text"))
+                if not art_text:
+                    continue
+                await updater.add_artifact(
+                    parts=[Part(root=TextPart(kind="text", text=art_text))],
+                    name=art_name[:120],
+                )
         if maizebargain_turn_protocol:
             try:
                 parsed_maize = json.loads(self._coerce_text(final_text).strip())
@@ -16339,12 +16738,12 @@ class AegisForgeAgent:
             TaskState.completed,
             new_agent_text_message(final_text),
         )
-        if self.trace_artifacts_enabled and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.trace_artifacts_enabled and not skillsbench_protocol and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._to_json(trace)))],
                 name="AegisForgeExecutionTrace",
             )
-        if self.debug_artifacts_enabled and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
+        if self.debug_artifacts_enabled and not skillsbench_protocol and not tau2_airline_scope and not pi_bench_protocol and not strict_protocol and not build_it_protocol and not officeqa_protocol and not crmarena_protocol and not maizebargain_protocol and not browsecomp_plus_protocol:
             await updater.add_artifact(
                 parts=[Part(root=TextPart(kind="text", text=self._build_debug_summary(trace)))],
                 name="AegisForgeRuntimeDebug",
@@ -16806,6 +17205,8 @@ class AegisForgeAgent:
                 normalized["track_hint"] = inferred_track
         if normalized.get("formatted_input") or normalized.get("security_guidelines") or normalized.get("defender_role"):
             normalized.setdefault("track_hint", "security")
+        if self._skillsbench_scope_signal("", normalized):
+            normalized["track_hint"] = "skillsbench"
         normalized["track_hint"] = self._normalize_track(normalized.get("track_hint"))
         normalized["track"] = normalized["track_hint"]
         normalized["opponent_profile"] = self._opponent_profile_payload(normalized["track_hint"])
@@ -17095,6 +17496,10 @@ class AegisForgeAgent:
                 "objective",
                 "instruction",
                 "domain",
+                "category",
+                "task_set",
+                "condition",
+                "tags",
             ):
                 value = source.get(key) if isinstance(source, Mapping) else None
                 if isinstance(value, str) and value.strip():
@@ -17111,6 +17516,7 @@ class AegisForgeAgent:
             "pibench": ("pi-bench", "pibench", "policy compliance", "finra", "refund", "helpdesk"),
             "cybergym": ("cybergym", "vulnerability", "sandbox", "patch", "cve"),
             "netarena": ("netarena", "network automation", "routing", "topology", "mininet"),
+            "skillsbench": ("skillsbench", "benchflow", "general-purpose", "general purpose", "standard-v1", "with_skills", "office-white-collar", "industrial-physical-systems", "mathematics-or-formal-reasoning", "media-content-production"),
         }
         for track, keywords in keyword_map.items():
             if any(keyword in joined for keyword in keywords):
@@ -17827,6 +18233,8 @@ class AegisForgeAgent:
         return 0.35 if assessment_mode == "attacker" else self.default_temperature
     def _max_tokens_for_execution(self, execution: Mapping[str, Any]) -> int:
         metadata = execution.get("metadata", {})
+        if isinstance(metadata, Mapping) and self._normalize_track(metadata.get("track_hint") or metadata.get("track")) == "skillsbench":
+            return 1400
         if isinstance(metadata, Mapping) and metadata.get("requires_artifact"):
             return 900
         return 550 if execution.get("assessment_mode") == "defender" else 420
