@@ -7,6 +7,7 @@ from .models import AgentCardPayload
 
 
 # Canonical selected-opponent tracks. "mcu" covers mcu-minecraft/Minecraft Benchmark.
+# SkillsBench is the General-Purpose Agent / standard-v1 evaluator.
 SELECTED_OPPONENT_TRACKS = [
     "mcu",
     "officeqa",
@@ -18,6 +19,7 @@ SELECTED_OPPONENT_TRACKS = [
     "pibench",
     "cybergym",
     "netarena",
+    "skillsbench",
 ]
 
 TRACK_ALIASES = {
@@ -45,26 +47,91 @@ TRACK_ALIASES = {
     "policy_compliance": "pibench",
     "cybergym-green": "cybergym",
     "cybersecurity": "cybergym",
+    "cybersecurity-agent": "cybergym",
     "net-arena": "netarena",
     "net_arena": "netarena",
+
+    # SkillsBench / General-Purpose Agent aliases.
+    "skillsbench": "skillsbench",
+    "skillsbench-agentbeats": "skillsbench",
+    "skillsbench_agentbeats": "skillsbench",
+    "skillsbench-leaderboard": "skillsbench",
+    "skillsbench_leaderboard": "skillsbench",
+    "benchflow": "skillsbench",
+    "benchflow-ai": "skillsbench",
+    "benchflow_ai": "skillsbench",
+    "benchflowai": "skillsbench",
+    "standard-v1": "skillsbench",
+    "standard_v1": "skillsbench",
+    "standard v1": "skillsbench",
+    "with-skills": "skillsbench",
+    "with_skills": "skillsbench",
+    "general-purpose": "skillsbench",
+    "general_purpose": "skillsbench",
+    "general purpose": "skillsbench",
+    "general-purpose-agent": "skillsbench",
+    "general_purpose_agent": "skillsbench",
+    "general purpose agent": "skillsbench",
+    "general-agent": "skillsbench",
+    "general_agent": "skillsbench",
+    "multi-utility": "skillsbench",
+    "multi_utility": "skillsbench",
+    "multi utility": "skillsbench",
+    "artifact-first": "skillsbench",
+    "artifact_first": "skillsbench",
 }
 
 # Pi-Bench's reference/strong agents advertise this extension so the green/gateway
 # can bootstrap policy/tools/context instead of treating the agent as a plain text bot.
 PI_BENCH_POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
 
+# SkillsBench is file/artifact-native for many standard-v1 tasks.  This extension
+# is a discovery hint only; the runtime bridge still has to emit FilePart artifacts.
+SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION = "urn:aegisforge:skillsbench:artifact-output:v1"
+
 # Keep these as conservative A2A-compatible card hints. The runtime A2A server may
 # override them with SDK-native values, but the legacy card should not omit them.
 A2A_PROTOCOL_VERSION = "0.3.0"
 A2A_PREFERRED_TRANSPORT = "http"
-A2A_DEFAULT_INPUT_MODES = ["text"]
-A2A_DEFAULT_OUTPUT_MODES = ["text"]
+A2A_DEFAULT_INPUT_MODES = ["text", "file"]
+A2A_DEFAULT_OUTPUT_MODES = ["text", "file"]
 
 PI_BENCH_RECORD_DECISIONS = [
     "ALLOW",
     "ALLOW-CONDITIONAL",
     "DENY",
     "ESCALATE",
+]
+
+SKILLSBENCH_ARTIFACT_FAMILIES = [
+    "text",
+    "markdown",
+    "json",
+    "python",
+    "patch",
+    "diff",
+    "csv",
+    "xlsx",
+    "docx",
+    "pptx",
+    "pdf",
+    "lean",
+    "obj",
+    "html",
+    "zip",
+    "audio",
+    "video",
+]
+
+SKILLSBENCH_TASK_CATEGORIES = [
+    "software-engineering",
+    "office-white-collar",
+    "natural-science",
+    "industrial-physical-systems",
+    "media-content-production",
+    "finance-economics",
+    "mathematics-or-formal-reasoning",
+    "cybersecurity",
 ]
 
 
@@ -80,6 +147,10 @@ def _dedupe(items: list[str]) -> list[str]:
     return ordered
 
 
+def _with_skillsbench(items: list[str]) -> list[str]:
+    return _dedupe([*items, "skillsbench"])
+
+
 def _build_capabilities(config: AppConfig) -> list[str]:
     capabilities = [
         "a2a",
@@ -91,6 +162,21 @@ def _build_capabilities(config: AppConfig) -> list[str]:
         "policy-compliance-ops",
         "pibench-policy-bootstrap",
         "pibench-record-decision",
+
+        # SkillsBench / general-purpose artifact delivery.
+        "skillsbench",
+        "general-purpose-agent",
+        "multi-utility",
+        "artifact-first",
+        "artifact-output",
+        "file-generation",
+        "file-input",
+        "file-output",
+        "patch-output",
+        "spreadsheet-output",
+        "presentation-output",
+        "document-output",
+        "formal-proof-output",
     ]
 
     if config.enable_openenv:
@@ -103,6 +189,8 @@ def _build_capabilities(config: AppConfig) -> list[str]:
         capabilities.append("officeqa-adapter")
     if getattr(config, "enable_crmarena", False):
         capabilities.append("crmarena-adapter")
+    if getattr(config, "enable_skillsbench", True):
+        capabilities.append("skillsbench-adapter")
 
     return _dedupe(capabilities)
 
@@ -118,12 +206,16 @@ def _build_tracks(config: AppConfig) -> list[str]:
         else list(SELECTED_OPPONENT_TRACKS)
     )
     tracks.extend(selected_tracks)
+    tracks.append("skillsbench")
 
     return _dedupe(tracks)
 
 
 def _build_extensions() -> list[str]:
-    return [PI_BENCH_POLICY_BOOTSTRAP_EXTENSION]
+    return [
+        PI_BENCH_POLICY_BOOTSTRAP_EXTENSION,
+        SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION,
+    ]
 
 
 def _build_a2a_skill_tags(config: AppConfig) -> list[str]:
@@ -136,6 +228,22 @@ def _build_a2a_skill_tags(config: AppConfig) -> list[str]:
             "pibench",
             "policy-bootstrap",
             "record-decision",
+            "skillsbench",
+            "skillsbench-leaderboard",
+            "benchflow-ai",
+            "standard-v1",
+            "general-purpose",
+            "multi-utility",
+            "artifact-first",
+            "artifact-output",
+            "file-output",
+            "xlsx",
+            "docx",
+            "pptx",
+            "pdf",
+            "patch",
+            "lean4",
+            "obj",
             *_build_tracks(config),
         ]
     )
@@ -148,15 +256,48 @@ def _build_a2a_skills(config: AppConfig) -> list[dict[str, Any]]:
             "name": "AegisForge Unified Purple Agent",
             "description": (
                 "Unified AgentBeats Purple Agent with selected-opponent routing, "
-                "including Pi-Bench policy-bootstrap and final record_decision support."
+                "including Pi-Bench policy-bootstrap, CyberGym contract preservation, "
+                "and SkillsBench general-purpose artifact-first delivery."
             ),
             "tags": _build_a2a_skill_tags(config),
             "examples": [
                 "Handle Pi-Bench policy-compliance tasks using benchmark-provided policy and tools.",
                 "Call record_decision as the final Pi-Bench step with ALLOW, ALLOW-CONDITIONAL, DENY, or ESCALATE.",
                 "Route OfficeQA, CRMArena, tau2, OSWorld, CyberGym, NetArena, MAizeBargAIn, and MCU tasks through isolated profiles.",
+                "For SkillsBench standard-v1 file tasks, return concise status plus evaluator-visible artifacts such as patch, xlsx, docx, pptx, pdf, lean, obj, json, or markdown files.",
             ],
-        }
+        },
+        {
+            "id": "quipuloop.aegisforge.skillsbench",
+            "name": "AegisForge SkillsBench General-Purpose Artifact Solver",
+            "description": (
+                "Artifact-first general-purpose route for SkillsBench tasks spanning "
+                "software engineering, office automation, spreadsheets, slides, documents, "
+                "science, media conversion, finance/economics, formal reasoning, and defensive cybersecurity."
+            ),
+            "tags": [
+                "skillsbench",
+                "standard-v1",
+                "general-purpose",
+                "multi-utility",
+                "artifact-output",
+                "file-generation",
+                "patch",
+                "xlsx",
+                "docx",
+                "pptx",
+                "pdf",
+                "lean",
+                "obj",
+            ],
+            "examples": [
+                "fix-build-agentops -> produce a minimal patch or modified source artifact.",
+                "xlsx-recover-data -> produce an xlsx/csv artifact.",
+                "pptx-reference-formatting -> produce a pptx artifact.",
+                "lean4-proof -> produce a .lean proof artifact.",
+                "threejs-to-obj -> produce an .obj artifact.",
+            ],
+        },
     ]
 
 
@@ -185,13 +326,40 @@ def _build_pibench_metadata() -> dict[str, Any]:
     }
 
 
+def _build_skillsbench_metadata() -> dict[str, Any]:
+    return {
+        "artifact_output_extension": SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION,
+        "track": "skillsbench",
+        "benchmark": "SkillsBench",
+        "task_set": "standard-v1",
+        "route": "general_purpose_artifact_first",
+        "artifact_first": True,
+        "requires_file_output_for_artifact_native_tasks": True,
+        "artifact_families": list(SKILLSBENCH_ARTIFACT_FAMILIES),
+        "task_categories": list(SKILLSBENCH_TASK_CATEGORIES),
+        "minimum_contract": {
+            "status_text": "concise",
+            "file_tasks": "emit evaluator-visible FilePart/FileWithBytes artifacts",
+            "artifact_refs": "must not be empty for artifact-native tasks",
+        },
+        "non_regression_guards": {
+            "cybergym": "do not alter the single Artifact(name='PoC') / FilePart(name='poc') contract",
+            "maizebargain": "do not alter the stable EF1-repair baseline unless explicitly requested",
+            "pibench": "preserve record_decision assistant tool-call discovery metadata",
+        },
+    }
+
+
 def build_agent_card(config: AppConfig) -> AgentCardPayload:
     selected_tracks = (
         config.selected_opponent_tracks()
         if hasattr(config, "selected_opponent_tracks")
         else list(SELECTED_OPPONENT_TRACKS)
     )
+    selected_tracks = _with_skillsbench(list(selected_tracks))
+
     aliases = config.track_aliases() if hasattr(config, "track_aliases") else dict(TRACK_ALIASES)
+    aliases = {**TRACK_ALIASES, **aliases}
     extensions = _build_extensions()
 
     return AgentCardPayload(
@@ -203,7 +371,7 @@ def build_agent_card(config: AppConfig) -> AgentCardPayload:
         health_url=config.health_url(),
         capabilities=_build_capabilities(config),
         tracks=_build_tracks(config),
-        integrations=config.enabled_integrations(),
+        integrations=_dedupe([*config.enabled_integrations(), "skillsbench"]),
         metadata={
             "provider": "AegisForge",
             "runtime": "python",
@@ -223,7 +391,11 @@ def build_agent_card(config: AppConfig) -> AgentCardPayload:
                 "skills": _build_a2a_skills(config),
             },
             "pibench": _build_pibench_metadata(),
-            "note": "mcu and mcu-minecraft are aliases for the same selected Game Agent opponent.",
+            "skillsbench": _build_skillsbench_metadata(),
+            "note": (
+                "mcu and mcu-minecraft are aliases for the same selected Game Agent opponent; "
+                "skillsbench is the general-purpose standard-v1 artifact-first evaluator route."
+            ),
         },
     )
 
@@ -263,12 +435,19 @@ def _as_response_dict(card: AgentCardPayload, config: AppConfig) -> dict[str, An
         # Pi-Bench discovery hints.
         "toolCalls": True,
         "assistantToolCalls": True,
+
+        # SkillsBench / general-purpose artifact discovery hints.
+        "fileInput": True,
+        "fileOutput": True,
+        "artifactOutput": True,
+        "multiArtifactOutput": True,
     }
 
     metadata = payload.setdefault("metadata", {})
     if isinstance(metadata, dict):
         metadata.setdefault("extensions", _build_extensions())
         metadata.setdefault("pibench", _build_pibench_metadata())
+        metadata.setdefault("skillsbench", _build_skillsbench_metadata())
         metadata.setdefault(
             "a2a",
             {
