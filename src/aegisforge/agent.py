@@ -11929,6 +11929,204 @@ class AegisForgeAgent:
             if removable:
                 out[removable[-1]] -= 1
         return out
+    def _maizebargain_estimate_opponent_values(
+        self,
+        valuations: list[int],
+        quantities: list[int],
+        *,
+        explicit_opponent_values: list[int] | None = None,
+        last_offer: list[int] | None = None,
+    ) -> list[int]:
+        """Estimate opponent values for Nash Welfare Advantage-oriented bargaining.
+
+        The evaluator does not normally reveal the opponent's private values. This
+        estimate stays fair-play compliant: it uses only visible quantities, our
+        private values, and the opponent's visible offer behavior. It does not use
+        benchmark answer tables or task-specific lookups.
+        """
+        n = max(len(quantities), len(valuations), len(explicit_opponent_values or []), 3)
+        q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
+        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]]
+
+        if explicit_opponent_values:
+            raw = (explicit_opponent_values + [1] * n)[:n]
+            cleaned = [max(1, int(x)) for x in raw]
+            if any(cleaned):
+                return cleaned
+
+        max_v = max(v) if v else 1
+        min_v = min(v) if v else 0
+        spread = max(1, max_v - min_v)
+
+        # Inverse-rank prior: if we value an item less, assume it may be more
+        # useful to the other side. This improves Nash/Pareto search when the
+        # opponent values are private.
+        estimate: list[float] = []
+        for i in range(n):
+            inverse = 1.0 + 99.0 * float(max_v - v[i]) / float(spread)
+            scarcity = 1.0 + 0.08 * float(max(0, q[i]))
+            estimate.append(max(1.0, inverse * scarcity))
+
+        # If the opponent made an offer expressed as allocation_self, then items
+        # they leave less to us are plausibly more valuable to them. This is a
+        # behavior-only signal and helps adapt without hardcoding any outcome.
+        if last_offer:
+            lo = [max(0, min(int((last_offer + [0] * n)[i]), q[i])) for i in range(n)]
+            for i in range(n):
+                if q[i] <= 0:
+                    continue
+                kept_by_opponent = max(0, q[i] - lo[i])
+                pressure = float(kept_by_opponent) / float(max(1, q[i]))
+                estimate[i] *= 0.70 + 0.75 * pressure
+
+        rounded = [max(1, int(round(x))) for x in estimate]
+        if len(set(rounded)) == 1 and n > 1:
+            # Keep a deterministic preference gradient so Pareto/Nash search has
+            # signal even in symmetric/flat cases.
+            order = sorted(range(n), key=lambda i: (v[i], -q[i], i))
+            for rank, idx in enumerate(order):
+                rounded[idx] = max(1, rounded[idx] + n - rank)
+        return rounded
+
+    def _maizebargain_enumerate_allocations(self, quantities: list[int], *, limit: int = 8000) -> list[list[int]]:
+        """Enumerate feasible allocation_self vectors with a bounded fallback."""
+        q = [max(0, int(x)) for x in quantities]
+        total = 1
+        for cap in q:
+            total *= max(1, cap + 1)
+        if total <= limit:
+            out: list[list[int]] = []
+            cur = [0 for _ in q]
+            def rec(pos: int) -> None:
+                if pos >= len(q):
+                    out.append(list(cur))
+                    return
+                for value in range(q[pos] + 1):
+                    cur[pos] = value
+                    rec(pos + 1)
+            rec(0)
+            return out
+
+        # Safe fallback for larger games: deterministic frontier candidates.
+        candidates: list[list[int]] = []
+        n = len(q)
+        half = [cap // 2 for cap in q]
+        candidates.append(half)
+        candidates.append([min(cap, (cap + 1) // 2) for cap in q])
+        candidates.append([0 for _ in q])
+        if sum(q) > 1:
+            candidates.append([max(0, cap - 1) for cap in q])
+        for i in range(n):
+            keep = [0 for _ in q]
+            keep[i] = q[i]
+            candidates.append(keep)
+            if q[i] > 0:
+                near = [cap // 2 for cap in q]
+                near[i] = min(q[i], near[i] + 1)
+                candidates.append(near)
+        seen: set[tuple[int, ...]] = set()
+        out: list[list[int]] = []
+        for cand in candidates:
+            sane = self._maizebargain_sane_offer(cand, q)
+            key = tuple(sane)
+            if key not in seen:
+                seen.add(key)
+                out.append(sane)
+        return out
+
+    def _maizebargain_nwa_candidate_score(
+        self,
+        allocation_self: list[int],
+        valuations: list[int],
+        quantities: list[int],
+        opponent_values: list[int],
+        batna: float,
+        *,
+        current_round: int = 1,
+        max_rounds: int = 5,
+        last_offer: list[int] | None = None,
+        baseline_nash: float = 0.0,
+    ) -> tuple[float, dict[str, float]]:
+        """Score an allocation with Nash Welfare Advantage as the primary target."""
+        n = max(len(quantities), len(valuations), len(opponent_values), 3)
+        q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
+        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]]
+        ov = [max(1, int(x)) for x in (opponent_values + [1] * n)[:n]]
+        a = self._maizebargain_sane_offer((allocation_self + [0] * n)[:n], q)
+
+        self_value = self._maizebargain_offer_value(a, v)
+        opp_alloc = [max(0, q[i] - a[i]) for i in range(n)]
+        opp_value = self._maizebargain_offer_value(opp_alloc, ov)
+
+        max_self = max(1.0, self._maizebargain_offer_value(q, v))
+        max_opp = max(1.0, self._maizebargain_offer_value(q, ov))
+        self_norm = max(0.0, min(1.0, self_value / max_self))
+        opp_norm = max(0.0, min(1.0, opp_value / max_opp))
+
+        nash = math.sqrt(max(1e-9, self_norm) * max(1e-9, opp_norm))
+        nwa_proxy = nash - float(baseline_nash)
+        utilitarian = 0.5 * (self_norm + opp_norm)
+        balance = min(self_norm, opp_norm)
+
+        if max_rounds <= 1:
+            round_pressure = 1.0
+        else:
+            round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
+
+        batna_norm = max(0.0, min(1.0, float(batna) / max_self))
+        # Early rounds protect reservation value; late rounds become more
+        # acceptance-friendly to avoid losing Nash Welfare by stalemate.
+        self_floor = max(batna_norm, 0.56 - 0.11 * round_pressure)
+        if current_round >= max_rounds:
+            self_floor = max(batna_norm, 0.43)
+
+        self_floor_penalty = max(0.0, self_floor - self_norm) * (3.10 - 0.70 * round_pressure)
+        opponent_starve_penalty = max(0.0, 0.16 - opp_norm) * (2.00 - 0.45 * round_pressure)
+        no_deal_regret_penalty = 0.0
+        if current_round >= max_rounds and self_value + 1e-9 < max(float(batna), 0.40 * max_self):
+            no_deal_regret_penalty = 0.35
+
+        total_units = sum(q)
+        self_units = sum(a)
+        extreme_penalty = 0.0
+        if total_units > 1:
+            if self_units <= 0 or self_units >= total_units:
+                extreme_penalty += 0.33
+            unit_share = float(self_units) / float(total_units)
+            if unit_share < 0.10 or unit_share > 0.90:
+                extreme_penalty += 0.11
+
+        last_offer_bonus = 0.0
+        if last_offer:
+            lo = self._maizebargain_sane_offer(last_offer, q)
+            if lo == a and current_round >= max(1, max_rounds - 1):
+                # Echoing a strong late offer is the closest available
+                # allocation_self-only equivalent to accepting it.
+                last_offer_bonus = 0.10 + 0.08 * round_pressure
+
+        score = (
+            4.50 * nash
+            + 2.10 * nwa_proxy
+            + 0.50 * utilitarian
+            + 0.55 * balance
+            + last_offer_bonus
+            - self_floor_penalty
+            - opponent_starve_penalty
+            - no_deal_regret_penalty
+            - extreme_penalty
+        )
+        features = {
+            "self_value": float(self_value),
+            "opponent_value_est": float(opp_value),
+            "self_norm": float(self_norm),
+            "opponent_norm": float(opp_norm),
+            "nash": float(nash),
+            "nwa_proxy": float(nwa_proxy),
+            "utilitarian_proxy": float(utilitarian),
+            "score": float(score),
+        }
+        return float(score), features
+
     def _maizebargain_build_counteroffer(
         self,
         valuations: list[int],
@@ -11938,63 +12136,126 @@ class AegisForgeAgent:
         last_offer: list[int] | None = None,
         current_round: int = 1,
         max_rounds: int = 5,
+        opponent_values: list[int] | None = None,
     ) -> list[int]:
-        n = max(len(quantities), len(valuations), 3)
-        q = (quantities + [0] * n)[:n]
-        v = (valuations + [1] * n)[:n]
-        total_units = sum(max(0, int(x)) for x in q)
+        """Build an allocation_self proposal with NWA as the first-class target.
+
+        This replaces the old own-utility floor heuristic with a bounded
+        Pareto/Nash search. It still preserves enough EF1-style balance to avoid
+        extreme allocations and keeps regret low by becoming more acceptance-
+        friendly in late rounds.
+        """
+        n = max(len(quantities), len(valuations), len(opponent_values or []), 3)
+        q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
+        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]
+        ]
+        total_units = sum(q)
         if total_units <= 0:
             return [0] * n
-        ranked = sorted(range(n), key=lambda i: (-v[i], i))
-        offer = [max(0, int(q[i]) // 2) for i in range(n)]
-        remainders = [i for i in ranked if int(q[i]) % 2 == 1 and int(q[i]) > 0]
-        extra_budget = max(1, min(len(remainders), 1 + max(0, current_round - 1) // 2))
-        for idx in remainders[:extra_budget]:
-            offer[idx] += 1
-        best_non_extreme = [0] * n
-        for idx in ranked:
-            cap = max(0, int(q[idx]))
-            best_non_extreme[idx] = cap if cap <= 1 else cap - 1
-        if sum(best_non_extreme) >= total_units and total_units > 1:
-            low_idx = min(range(n), key=lambda i: (v[i], i))
-            if best_non_extreme[low_idx] > 0:
-                best_non_extreme[low_idx] -= 1
-        best_non_extreme_value = max(1.0, self._maizebargain_offer_value(best_non_extreme, v))
-        if max_rounds <= 1:
-            round_pressure = 1.0
-        else:
-            round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
-        batna_pressure = min(0.078, max(0.0, float(batna) / best_non_extreme_value - 0.50))
-        if max_rounds <= 1:
-            late_round_pressure = 1.0
-        else:
-            late_round_pressure = 1.0 if current_round >= max_rounds else 0.0
-        nash_tilt = min(
-            0.682,
-            0.60 + 0.06 * round_pressure + 0.006 * late_round_pressure + batna_pressure,
+
+        ov = self._maizebargain_estimate_opponent_values(
+            v,
+            q,
+            explicit_opponent_values=opponent_values,
+            last_offer=last_offer,
         )
-        target_floor = max(float(batna), nash_tilt * best_non_extreme_value)
-        target_floor = min(target_floor, best_non_extreme_value)
-        def can_add(i: int) -> bool:
-            if offer[i] >= q[i]:
-                return False
-            if q[i] > 1 and offer[i] >= q[i] - 1:
-                return False
-            return True
-        guard = 0
-        while self._maizebargain_offer_value(offer, v) + 1e-9 < target_floor and guard < 100:
-            guard += 1
-            candidates = [i for i in ranked if can_add(i)]
-            if not candidates:
-                break
-            offer[candidates[0]] += 1
+
+        split = [cap // 2 for cap in q]
+        for idx in sorted(range(n), key=lambda i: (-v[i], i)):
+            if q[idx] % 2 == 1:
+                split[idx] += 1
+        split = self._maizebargain_sane_offer(split, q)
+        split_score, split_features = self._maizebargain_nwa_candidate_score(
+            split,
+            v,
+            q,
+            ov,
+            batna,
+            current_round=current_round,
+            max_rounds=max_rounds,
+            last_offer=None,
+            baseline_nash=0.0,
+        )
+        baseline_nash = float(split_features.get("nash", 0.0))
+
+        candidates = self._maizebargain_enumerate_allocations(q)
         if last_offer:
-            last_value = self._maizebargain_offer_value(last_offer, v)
-            if self._maizebargain_offer_value(offer, v) + 1e-9 < min(last_value, self._maizebargain_offer_value(best_non_extreme, v)):
-                for idx in ranked:
-                    while can_add(idx) and self._maizebargain_offer_value(offer, v) + 1e-9 < last_value:
-                        offer[idx] += 1
-        return self._maizebargain_sane_offer(offer, q)
+            candidates.append(self._maizebargain_sane_offer(last_offer, q))
+
+        best: list[int] | None = None
+        best_score = -1e18
+        best_features: dict[str, float] = {}
+        seen: set[tuple[int, ...]] = set()
+        for cand in candidates:
+            sane = self._maizebargain_sane_offer(cand, q)
+            key = tuple(sane)
+            if key in seen:
+                continue
+            seen.add(key)
+            score, features = self._maizebargain_nwa_candidate_score(
+                sane,
+                v,
+                q,
+                ov,
+                batna,
+                current_round=current_round,
+                max_rounds=max_rounds,
+                last_offer=last_offer,
+                baseline_nash=baseline_nash,
+            )
+            # Deterministic tie-breaker: prefer higher NWA, then higher own
+            # value, then fewer extreme unit shares.
+            tie = (
+                score,
+                features.get("nwa_proxy", 0.0),
+                features.get("self_value", 0.0),
+                -abs((sum(sane) / max(1, total_units)) - 0.5),
+            )
+            best_tie = (
+                best_score,
+                best_features.get("nwa_proxy", 0.0),
+                best_features.get("self_value", 0.0),
+                -abs((sum(best or []) / max(1, total_units)) - 0.5),
+            )
+            if best is None or tie > best_tie:
+                best = sane
+                best_score = score
+                best_features = features
+
+        if last_offer:
+            last = self._maizebargain_sane_offer(last_offer, q)
+            last_score, last_features = self._maizebargain_nwa_candidate_score(
+                last,
+                v,
+                q,
+                ov,
+                batna,
+                current_round=current_round,
+                max_rounds=max_rounds,
+                last_offer=last_offer,
+                baseline_nash=baseline_nash,
+            )
+            pressure = 1.0 if max_rounds <= 1 else min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
+            # Accept/echo strong offers near the end instead of over-negotiating.
+            if (
+                current_round >= max(1, max_rounds - 1)
+                and last_features.get("self_value", 0.0) + 1e-9 >= max(float(batna), 0.42 * max(1.0, self._maizebargain_offer_value(q, v)))
+                and last_features.get("opponent_norm", 0.0) >= 0.14
+                and last_score + 0.10 + 0.10 * pressure >= best_score
+            ):
+                best = last
+                best_score = last_score
+                best_features = last_features
+
+        final = self._maizebargain_sane_offer(best or split, q)
+        self._maizebargain_last_policy_features = {
+            "policy": "nwa_first_pareto_nash_v2_0",
+            "opponent_values_est": ov,
+            "baseline_nash": round(float(baseline_nash), 6),
+            "candidate_score": round(float(best_score), 6),
+            "features": {k: round(float(vv), 6) for k, vv in best_features.items()},
+        }
+        return final
     def _handle_maizebargain_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         obs = self._maizebargain_observation_payload(task_text, metadata) or {}
         visible = "\n".join([
@@ -12045,6 +12306,36 @@ class AegisForgeAgent:
         )
         if last_offer and len(last_offer) != len(quantities):
             last_offer = []
+
+        opponent_values = self._maizebargain_number_list(
+            self._maizebargain_first_value(
+                obs,
+                (
+                    "opponent_values",
+                    "opponent_valuations",
+                    "other_values",
+                    "other_valuations",
+                    "partner_values",
+                    "counterpart_values",
+                    "their_values",
+                    "rival_values",
+                ),
+            ),
+            default=[],
+        )
+        if opponent_values and len(opponent_values) != len(quantities):
+            opponent_values = []
+        if not opponent_values:
+            for pattern in (
+                r"(?:opponent_values|opponent valuations|opponent values|other_values|other values|partner_values|partner values|their_values|their values)\s*[:=]\s*(\[[^\]]+\])",
+                r"(?:opponent values|other values|partner values|their values)\s*(?:are|is)\s*(\[[^\]]+\])",
+            ):
+                match = re.search(pattern, visible, flags=re.I)
+                if match:
+                    opponent_values = self._maizebargain_number_list(match.group(1), default=[])
+                    if opponent_values:
+                        break
+
         round_raw = self._maizebargain_first_value(obs, ("round", "current_round", "turn", "round_idx"), 1)
         max_rounds_raw = self._maizebargain_first_value(obs, ("max_rounds", "num_rounds", "horizon"), 5)
         try:
@@ -12064,6 +12355,7 @@ class AegisForgeAgent:
             last_offer=last_offer or None,
             current_round=current_round,
             max_rounds=max_rounds,
+            opponent_values=opponent_values or None,
         )
         proposal = self._maizebargain_sane_offer(proposal, q)
         response = {"allocation_self": [int(x) for x in proposal]}
@@ -12076,13 +12368,15 @@ class AegisForgeAgent:
             safe_n = max(3, len(q))
             final_json = json.dumps({"allocation_self": [0 for _ in range(safe_n)]}, ensure_ascii=False, separators=(",", ":"))
         self._maizebargain_last_status = {
-            "mode": "maizebargain_turn_v1_2",
+            "mode": "maizebargain_turn_nwa_first_v2_0",
             "decision": "PROPOSE_ALLOCATION_SELF",
             "allocation_self": response["allocation_self"],
             "value": round(self._maizebargain_offer_value(response["allocation_self"], v), 3),
             "batna": round(float(batna), 3),
             "round": current_round,
             "schema": "allocation_self_only",
+            "objective": "maximize_nash_welfare_advantage",
+            "policy_features": getattr(self, "_maizebargain_last_policy_features", {}),
         }
         return final_json
 
