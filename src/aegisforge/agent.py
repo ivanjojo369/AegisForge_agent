@@ -11929,6 +11929,59 @@ class AegisForgeAgent:
             if removable:
                 out[removable[-1]] -= 1
         return out
+
+    def _maizebargain_ef1_proxy_metrics(
+        self,
+        allocation_self: list[int],
+        valuations: list[int],
+        quantities: list[int],
+        opponent_values: list[int],
+    ) -> dict[str, float]:
+        """Estimate EF1-style envy risk from visible/self values and opponent model.
+
+        This is not a benchmark-answer shortcut. It is a generic fairness proxy:
+        each side should not prefer the other side's bundle after removing one
+        item from that bundle. Higher ef1_proxy is better.
+        """
+        n = max(len(quantities), len(valuations), len(opponent_values), 3)
+        q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
+        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]]
+        ov = [max(1, int(x)) for x in (opponent_values + [1] * n)[:n]]
+        a = self._maizebargain_sane_offer((allocation_self + [0] * n)[:n], q)
+        other = [max(0, q[i] - a[i]) for i in range(n)]
+
+        self_own = self._maizebargain_offer_value(a, v)
+        self_other = self._maizebargain_offer_value(other, v)
+        opp_own = self._maizebargain_offer_value(other, ov)
+        opp_other = self._maizebargain_offer_value(a, ov)
+
+        max_self_item_in_other = max([float(v[i]) for i in range(n) if other[i] > 0] or [0.0])
+        max_opp_item_in_ours = max([float(ov[i]) for i in range(n) if a[i] > 0] or [0.0])
+
+        max_self = max(1.0, self._maizebargain_offer_value(q, v))
+        max_opp = max(1.0, self._maizebargain_offer_value(q, ov))
+
+        self_envy_after_one = max(0.0, float(self_other) - max_self_item_in_other - float(self_own))
+        opp_envy_after_one = max(0.0, float(opp_other) - max_opp_item_in_ours - float(opp_own))
+
+        self_envy_norm = min(1.0, self_envy_after_one / max_self)
+        opp_envy_norm = min(1.0, opp_envy_after_one / max_opp)
+        envy_risk = max(self_envy_norm, opp_envy_norm)
+        ef1_proxy = max(0.0, 1.0 - envy_risk)
+
+        total_units = max(1, sum(q))
+        unit_share = float(sum(a)) / float(total_units)
+        unit_balance = 1.0 - min(1.0, abs(unit_share - 0.5) * 2.0)
+
+        return {
+            "ef1_proxy": float(ef1_proxy),
+            "envy_risk": float(envy_risk),
+            "self_envy_norm": float(self_envy_norm),
+            "opponent_envy_norm": float(opp_envy_norm),
+            "unit_balance": float(unit_balance),
+        }
+
+
     def _maizebargain_estimate_opponent_values(
         self,
         valuations: list[int],
@@ -12047,7 +12100,7 @@ class AegisForgeAgent:
         last_offer: list[int] | None = None,
         baseline_nash: float = 0.0,
     ) -> tuple[float, dict[str, float]]:
-        """Score an allocation with Nash Welfare Advantage as the primary target."""
+        """Score an allocation with NWA first, but with a real EF1 safety guard."""
         n = max(len(quantities), len(valuations), len(opponent_values), 3)
         q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
         v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]]
@@ -12073,15 +12126,26 @@ class AegisForgeAgent:
         else:
             round_pressure = min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
 
-        batna_norm = max(0.0, min(1.0, float(batna) / max_self))
-        # Early rounds protect reservation value; late rounds become more
-        # acceptance-friendly to avoid losing Nash Welfare by stalemate.
-        self_floor = max(batna_norm, 0.56 - 0.11 * round_pressure)
-        if current_round >= max_rounds:
-            self_floor = max(batna_norm, 0.43)
+        fairness = self._maizebargain_ef1_proxy_metrics(a, v, q, ov)
+        ef1_proxy = float(fairness.get("ef1_proxy", 0.0))
+        envy_risk = float(fairness.get("envy_risk", 1.0))
+        unit_balance = float(fairness.get("unit_balance", 0.0))
 
-        self_floor_penalty = max(0.0, self_floor - self_norm) * (3.10 - 0.70 * round_pressure)
-        opponent_starve_penalty = max(0.0, 0.16 - opp_norm) * (2.00 - 0.45 * round_pressure)
+        batna_norm = max(0.0, min(1.0, float(batna) / max_self))
+        # Keep the NWA-oriented core, but avoid the v2.0 collapse in EF1 by
+        # requiring both sides to retain meaningful normalized utility.
+        self_floor = max(batna_norm, 0.54 - 0.09 * round_pressure)
+        if current_round >= max_rounds:
+            self_floor = max(batna_norm, 0.44)
+
+        fairness_floor = 0.30 - 0.07 * round_pressure
+        if current_round >= max_rounds:
+            fairness_floor = 0.21
+
+        self_floor_penalty = max(0.0, self_floor - self_norm) * (2.85 - 0.55 * round_pressure)
+        opponent_starve_penalty = max(0.0, fairness_floor - opp_norm) * (3.10 - 0.55 * round_pressure)
+        ef1_penalty = envy_risk * (1.95 - 0.40 * round_pressure)
+
         no_deal_regret_penalty = 0.0
         if current_round >= max_rounds and self_value + 1e-9 < max(float(batna), 0.40 * max_self):
             no_deal_regret_penalty = 0.35
@@ -12091,10 +12155,12 @@ class AegisForgeAgent:
         extreme_penalty = 0.0
         if total_units > 1:
             if self_units <= 0 or self_units >= total_units:
-                extreme_penalty += 0.33
+                extreme_penalty += 0.50
             unit_share = float(self_units) / float(total_units)
-            if unit_share < 0.10 or unit_share > 0.90:
-                extreme_penalty += 0.11
+            if unit_share < 0.18 or unit_share > 0.82:
+                extreme_penalty += 0.22
+            elif unit_share < 0.25 or unit_share > 0.75:
+                extreme_penalty += 0.08
 
         last_offer_bonus = 0.0
         if last_offer:
@@ -12102,16 +12168,19 @@ class AegisForgeAgent:
             if lo == a and current_round >= max(1, max_rounds - 1):
                 # Echoing a strong late offer is the closest available
                 # allocation_self-only equivalent to accepting it.
-                last_offer_bonus = 0.10 + 0.08 * round_pressure
+                last_offer_bonus = 0.08 + 0.06 * round_pressure
 
         score = (
-            4.50 * nash
-            + 2.10 * nwa_proxy
-            + 0.50 * utilitarian
-            + 0.55 * balance
+            4.35 * nash
+            + 2.35 * nwa_proxy
+            + 0.55 * utilitarian
+            + 0.95 * balance
+            + 0.72 * ef1_proxy
+            + 0.18 * unit_balance
             + last_offer_bonus
             - self_floor_penalty
             - opponent_starve_penalty
+            - ef1_penalty
             - no_deal_regret_penalty
             - extreme_penalty
         )
@@ -12123,9 +12192,14 @@ class AegisForgeAgent:
             "nash": float(nash),
             "nwa_proxy": float(nwa_proxy),
             "utilitarian_proxy": float(utilitarian),
+            "balance": float(balance),
+            "ef1_proxy": float(ef1_proxy),
+            "envy_risk": float(envy_risk),
+            "unit_balance": float(unit_balance),
             "score": float(score),
         }
         return float(score), features
+
 
     def _maizebargain_build_counteroffer(
         self,
@@ -12138,17 +12212,15 @@ class AegisForgeAgent:
         max_rounds: int = 5,
         opponent_values: list[int] | None = None,
     ) -> list[int]:
-        """Build an allocation_self proposal with NWA as the first-class target.
+        """Build an allocation_self proposal with NWA first and EF1 recovery.
 
-        This replaces the old own-utility floor heuristic with a bounded
-        Pareto/Nash search. It still preserves enough EF1-style balance to avoid
-        extreme allocations and keeps regret low by becoming more acceptance-
-        friendly in late rounds.
+        v2.1 keeps the v2.0 Pareto/Nash search that raised NWA, but adds an
+        EF1-aware repair pass. The repair only replaces the top-scoring candidate
+        when a near-Nash alternative preserves much more EF1-style envy safety.
         """
         n = max(len(quantities), len(valuations), len(opponent_values or []), 3)
         q = [max(0, int(x)) for x in (quantities + [0] * n)[:n]]
-        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]
-        ]
+        v = [max(0, int(x)) for x in (valuations + [1] * n)[:n]]
         total_units = sum(q)
         if total_units <= 0:
             return [0] * n
@@ -12165,7 +12237,7 @@ class AegisForgeAgent:
             if q[idx] % 2 == 1:
                 split[idx] += 1
         split = self._maizebargain_sane_offer(split, q)
-        split_score, split_features = self._maizebargain_nwa_candidate_score(
+        _, split_features = self._maizebargain_nwa_candidate_score(
             split,
             v,
             q,
@@ -12185,6 +12257,12 @@ class AegisForgeAgent:
         best: list[int] | None = None
         best_score = -1e18
         best_features: dict[str, float] = {}
+
+        fair_best: list[int] | None = None
+        fair_best_key: tuple[float, float, float, float] | None = None
+        fair_best_score = -1e18
+        fair_best_features: dict[str, float] = {}
+
         seen: set[tuple[int, ...]] = set()
         for cand in candidates:
             sane = self._maizebargain_sane_offer(cand, q)
@@ -12203,17 +12281,18 @@ class AegisForgeAgent:
                 last_offer=last_offer,
                 baseline_nash=baseline_nash,
             )
-            # Deterministic tie-breaker: prefer higher NWA, then higher own
-            # value, then fewer extreme unit shares.
+
             tie = (
                 score,
                 features.get("nwa_proxy", 0.0),
+                features.get("ef1_proxy", 0.0),
                 features.get("self_value", 0.0),
                 -abs((sum(sane) / max(1, total_units)) - 0.5),
             )
             best_tie = (
                 best_score,
                 best_features.get("nwa_proxy", 0.0),
+                best_features.get("ef1_proxy", 0.0),
                 best_features.get("self_value", 0.0),
                 -abs((sum(best or []) / max(1, total_units)) - 0.5),
             )
@@ -12221,6 +12300,27 @@ class AegisForgeAgent:
                 best = sane
                 best_score = score
                 best_features = features
+
+            # Fair candidate bucket: this is not EF1 hardcoding; it is a generic
+            # envy-safe constraint using the same visible valuations/opponent model.
+            batna_norm = max(0.0, min(1.0, float(batna) / max(1.0, self._maizebargain_offer_value(q, v))))
+            fair_ok = (
+                features.get("ef1_proxy", 0.0) >= 0.72
+                and features.get("opponent_norm", 0.0) >= 0.22
+                and features.get("self_norm", 0.0) >= max(batna_norm, 0.36)
+            )
+            if fair_ok:
+                fair_key = (
+                    features.get("nwa_proxy", 0.0),
+                    features.get("nash", 0.0),
+                    features.get("ef1_proxy", 0.0),
+                    score,
+                )
+                if fair_best is None or fair_best_key is None or fair_key > fair_best_key:
+                    fair_best = sane
+                    fair_best_key = fair_key
+                    fair_best_score = score
+                    fair_best_features = features
 
         if last_offer:
             last = self._maizebargain_sane_offer(last_offer, q)
@@ -12236,26 +12336,53 @@ class AegisForgeAgent:
                 baseline_nash=baseline_nash,
             )
             pressure = 1.0 if max_rounds <= 1 else min(1.0, max(0.0, float(current_round - 1) / float(max(1, max_rounds - 1))))
-            # Accept/echo strong offers near the end instead of over-negotiating.
+            # Accept/echo strong offers near the end, but not if doing so repeats
+            # the low-EF1 failure mode seen in the previous run.
             if (
                 current_round >= max(1, max_rounds - 1)
                 and last_features.get("self_value", 0.0) + 1e-9 >= max(float(batna), 0.42 * max(1.0, self._maizebargain_offer_value(q, v)))
-                and last_features.get("opponent_norm", 0.0) >= 0.14
-                and last_score + 0.10 + 0.10 * pressure >= best_score
+                and last_features.get("opponent_norm", 0.0) >= 0.20
+                and last_features.get("ef1_proxy", 0.0) >= 0.55
+                and last_score + 0.08 + 0.08 * pressure >= best_score
             ):
                 best = last
                 best_score = last_score
                 best_features = last_features
 
+        repair_applied = False
+        if fair_best is not None and best is not None:
+            best_nash = float(best_features.get("nash", 0.0))
+            fair_nash = float(fair_best_features.get("nash", 0.0))
+            best_nwa = float(best_features.get("nwa_proxy", 0.0))
+            fair_nwa = float(fair_best_features.get("nwa_proxy", 0.0))
+            best_ef1 = float(best_features.get("ef1_proxy", 0.0))
+            fair_ef1 = float(fair_best_features.get("ef1_proxy", 0.0))
+
+            # Prefer the fair candidate when it preserves most Nash/NWA but fixes
+            # envy risk. This aims to recover EF1 without reverting to the older
+            # too-conservative policy.
+            if (
+                fair_ef1 >= best_ef1 + 0.22
+                and fair_nash + 0.035 >= best_nash
+                and fair_nwa + 0.045 >= best_nwa
+                and fair_best_score + 0.42 >= best_score
+            ):
+                best = fair_best
+                best_score = fair_best_score
+                best_features = fair_best_features
+                repair_applied = True
+
         final = self._maizebargain_sane_offer(best or split, q)
         self._maizebargain_last_policy_features = {
-            "policy": "nwa_first_pareto_nash_v2_0",
+            "policy": "nwa_first_ef1_repair_pareto_nash_v2_1",
             "opponent_values_est": ov,
             "baseline_nash": round(float(baseline_nash), 6),
             "candidate_score": round(float(best_score), 6),
+            "ef1_repair_applied": bool(repair_applied),
             "features": {k: round(float(vv), 6) for k, vv in best_features.items()},
         }
         return final
+
     def _handle_maizebargain_turn(self, task_text: str, metadata: Mapping[str, Any]) -> str:
         obs = self._maizebargain_observation_payload(task_text, metadata) or {}
         visible = "\n".join([
@@ -12368,14 +12495,14 @@ class AegisForgeAgent:
             safe_n = max(3, len(q))
             final_json = json.dumps({"allocation_self": [0 for _ in range(safe_n)]}, ensure_ascii=False, separators=(",", ":"))
         self._maizebargain_last_status = {
-            "mode": "maizebargain_turn_nwa_first_v2_0",
+            "mode": "maizebargain_turn_nwa_first_ef1_repair_v2_1",
             "decision": "PROPOSE_ALLOCATION_SELF",
             "allocation_self": response["allocation_self"],
             "value": round(self._maizebargain_offer_value(response["allocation_self"], v), 3),
             "batna": round(float(batna), 3),
             "round": current_round,
             "schema": "allocation_self_only",
-            "objective": "maximize_nash_welfare_advantage",
+            "objective": "maximize_nash_welfare_advantage_with_ef1_recovery",
             "policy_features": getattr(self, "_maizebargain_last_policy_features", {}),
         }
         return final_json
