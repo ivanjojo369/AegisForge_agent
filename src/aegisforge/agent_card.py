@@ -189,7 +189,7 @@ def _build_capabilities(config: AppConfig) -> list[str]:
         capabilities.append("officeqa-adapter")
     if getattr(config, "enable_crmarena", False):
         capabilities.append("crmarena-adapter")
-    if getattr(config, "enable_skillsbench", True):
+    if getattr(config, "enable_skillsbench", False):
         capabilities.append("skillsbench-adapter")
 
     return _dedupe(capabilities)
@@ -371,7 +371,7 @@ def build_agent_card(config: AppConfig) -> AgentCardPayload:
         health_url=config.health_url(),
         capabilities=_build_capabilities(config),
         tracks=_build_tracks(config),
-        integrations=_dedupe([*config.enabled_integrations(), "skillsbench"]),
+        integrations=config.enabled_integrations(),
         metadata={
             "provider": "AegisForge",
             "runtime": "python",
@@ -465,3 +465,4 @@ def _as_response_dict(card: AgentCardPayload, config: AppConfig) -> dict[str, An
 
 def agent_card_response_dict(config: AppConfig) -> dict[str, object]:
     return _as_response_dict(build_agent_card(config), config)
+

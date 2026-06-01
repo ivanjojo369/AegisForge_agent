@@ -214,7 +214,7 @@ class AppConfig:
             git_sha=os.environ.get("AEGISFORGE_GIT_SHA", "dev").strip() or "dev",
             image_ref=os.environ.get("AEGISFORGE_IMAGE_REF", "local/aegisforge:dev").strip() or "local/aegisforge:dev",
             track=os.environ.get("AEGISFORGE_TRACK", "purple").strip() or "purple",
-            enable_skillsbench=_read_bool_env("AEGISFORGE_ENABLE_SKILLSBENCH", True),
+            enable_skillsbench=_read_bool_env("AEGISFORGE_ENABLE_SKILLSBENCH", False),
         )
 
     def runtime_summary(self) -> RuntimeSummary:
@@ -270,3 +270,4 @@ class AppConfig:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
