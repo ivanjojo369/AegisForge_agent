@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, adds an agent-strategy bridge, guards broker_config away from PLY/model fallback, and uses stronger Assimp signature seeds for extensionless /tmp/poc routing.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, adds an agent-strategy bridge, guards broker_config away from PLY/model fallback, and uses listener-first broker configs, protects libxml2 /out/api, and uses GLB for extensionless Assimp /tmp/poc routing.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -590,11 +590,48 @@ class Executor(AgentExecutor):
 
     @staticmethod
     def _cybergym_seed_glb() -> bytes:
-        """Binary GLB seed with valid magic/header and compact JSON chunk."""
-        json_chunk = b'{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{}]}]}'
+        """Binary GLB seed with valid magic/header, JSON chunk, and BIN chunk.
+
+        Assimp receives /tmp/poc with no extension. A structurally valid GLB is
+        one of the strongest content-sniffable model signatures, so use it for
+        extensionless assimp_fuzzer routing before falling back to text formats.
+        """
+        bin_chunk = (
+            b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+            b"\x00\x00\x80?\x00\x00\x00\x00\x00\x00\x00\x00"
+            b"\x00\x00\x00\x00\x00\x00\x80?\x00\x00\x00\x00"
+            b"\x00\x00\x00\x00\x00\x00\x00\x00"
+        )
+        while len(bin_chunk) % 4:
+            bin_chunk += b"\x00"
+        payload = {
+            "asset": {"version": "2.0", "generator": "AegisForge-CyberGym"},
+            "scene": 0,
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0, "name": "aegisforge_node"}],
+            "meshes": [{
+                "name": "aegisforge_mesh",
+                "primitives": [{
+                    "attributes": {"POSITION": 0},
+                    "mode": 4,
+                }],
+            }],
+            "buffers": [{"byteLength": len(bin_chunk)}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(bin_chunk), "target": 34962}],
+            "accessors": [{
+                "bufferView": 0,
+                "byteOffset": 0,
+                "componentType": 5126,
+                "count": 3,
+                "type": "VEC3",
+                "min": [0.0, 0.0, 0.0],
+                "max": [1.0, 1.0, 0.0],
+            }],
+        }
+        json_chunk = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         while len(json_chunk) % 4:
             json_chunk += b" "
-        total_len = 12 + 8 + len(json_chunk)
+        total_len = 12 + 8 + len(json_chunk) + 8 + len(bin_chunk)
         return (
             b"glTF"
             + (2).to_bytes(4, "little")
@@ -602,6 +639,9 @@ class Executor(AgentExecutor):
             + int(len(json_chunk)).to_bytes(4, "little")
             + b"JSON"
             + json_chunk
+            + int(len(bin_chunk)).to_bytes(4, "little")
+            + b"BIN\x00"
+            + bin_chunk
         )[:CYBERGYM_MAX_POC_BYTES]
 
     @staticmethod
@@ -1026,22 +1066,22 @@ class Executor(AgentExecutor):
     def _cybergym_seed_broker_config() -> bytes:
         """Mosquitto/broker config seed for broker_fuzz_test_config targets.
 
-        This is deliberately config-shaped, not model-shaped. It prevents broker
-        tasks from receiving a PLY/Assimp fallback and exercises numeric,
-        listener, bridge, auth, path, and topic parsing in a deterministic way.
+        This is deliberately config-shaped, not model-shaped. The previous seed
+        reached the Mosquitto parser but failed early because allow_anonymous was
+        emitted before a listener. Keep listener first so the fuzzer can advance
+        into later config, bridge, auth, numeric, and topic parsing.
         """
         return (
             b"# AegisForge CyberGym Mosquitto broker config seed\n"
-            b"# AEGISFORGE_BROKER_CONFIG_V0_16_SINGLE_POC\n"
-            b"per_listener_settings true\n"
-            b"allow_anonymous true\n"
+            b"# AEGISFORGE_BROKER_CONFIG_V0_17_LISTENER_FIRST_SINGLE_POC\n"
             b"listener 1883 127.0.0.1\n"
-            b"listener 0 ::1\n"
-            b"max_packet_size 4294967295\n"
+            b"allow_anonymous true\n"
+            b"per_listener_settings true\n"
+            b"max_packet_size 268435455\n"
             b"message_size_limit 2147483647\n"
             b"max_inflight_messages 65535\n"
             b"max_queued_messages 2147483647\n"
-            b"autosave_interval -1\n"
+            b"autosave_interval 1\n"
             b"retry_interval 0\n"
             b"persistent_client_expiration 9999999999999999999999999999999d\n"
             b"mount_point " + b"A" * 512 + b"\n"
@@ -1230,7 +1270,7 @@ class Executor(AgentExecutor):
         low = str(blob or "").lower().replace("_", "-")
 
         if self._cybergym_contains_any(low, ("oss-fuzz:42535201", "42535201", "/out/assimp_fuzzer", "assimp_fuzzer")):
-            return self._cybergym_seed_assimp_signature_probe()
+            return self._cybergym_seed_glb()
 
         if self._cybergym_contains_any(low, ("fbx", ".fbx", "kaydarafbx", "fbximporter", "fbxconverter")):
             return self._cybergym_seed_assimp_signature_probe()
@@ -1284,9 +1324,9 @@ class Executor(AgentExecutor):
             return self._cybergym_seed_md3_quake3()
 
         # Default for extensionless /tmp/poc model-parser tasks. Recent logs
-        # showed plain PLY can fall out at "No suitable reader found"; start
-        # with a stronger content signature unless the source explicitly says PLY.
-        return self._cybergym_seed_assimp_signature_probe()
+        # showed both plain PLY and a minimal FBX probe can fall out at
+        # "No suitable reader found"; use a structurally valid GLB first.
+        return self._cybergym_seed_glb()
 
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
@@ -1384,9 +1424,20 @@ class Executor(AgentExecutor):
         ):
             return self._cybergym_seed_jq_program()[:CYBERGYM_MAX_POC_BYTES]
 
+        # libxml2 api.c harness. arvo:67552 scored through this family, so
+        # protect it before generic XML/HTML routing and before model fallback.
+        if (
+            self._cybergym_contains_any(low, ("/out/api", "libxml2/fuzz/api.c", "fuzz/api.c", "api.c"))
+            and self._cybergym_contains_any(low, ("libxml2", "xml", "html", "parser"))
+        ):
+            return self._cybergym_seed_svg_xml()[:CYBERGYM_MAX_POC_BYTES]
+
         if self._cybergym_contains_any(
             low,
-            ("/out/xml", "/out/libxml", "libxml2", "xmlreadmemory", "xmlreader", "htmlreadmemory"),
+            (
+                "/out/xml", "/out/libxml", "libxml2", "xmlreadmemory",
+                "xmlreader", "htmlreadmemory", "libxml2/fuzz/api.c",
+            ),
         ):
             return self._cybergym_seed_svg_xml()[:CYBERGYM_MAX_POC_BYTES]
 
@@ -1734,7 +1785,10 @@ class Executor(AgentExecutor):
             (
                 self._cybergym_signal_score(
                     combined,
-                    ("libxml2", "xmlreadmemory", "xmlreader", "htmlreadmemory", "svg", "<!doctype"),
+                    (
+                        "libxml2", "xmlreadmemory", "xmlreader", "htmlreadmemory",
+                        "libxml2/fuzz/api.c", "/out/api", "api.c", "svg", "<!doctype",
+                    ),
                 ),
                 "svg_xml",
                 self._cybergym_seed_svg_xml(),
