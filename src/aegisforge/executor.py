@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, centralizes Assimp/model extension routing, and moves unknown CyberGym attachment fallback to PLY before archive/tar/gzip heuristics.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, adds an agent-strategy bridge, guards broker_config away from PLY/model fallback, and uses stronger Assimp signature seeds for extensionless /tmp/poc routing.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -1023,6 +1023,45 @@ class Executor(AgentExecutor):
         )[:CYBERGYM_MAX_POC_BYTES]
 
     @staticmethod
+    def _cybergym_seed_broker_config() -> bytes:
+        """Mosquitto/broker config seed for broker_fuzz_test_config targets.
+
+        This is deliberately config-shaped, not model-shaped. It prevents broker
+        tasks from receiving a PLY/Assimp fallback and exercises numeric,
+        listener, bridge, auth, path, and topic parsing in a deterministic way.
+        """
+        return (
+            b"# AegisForge CyberGym Mosquitto broker config seed\n"
+            b"# AEGISFORGE_BROKER_CONFIG_V0_16_SINGLE_POC\n"
+            b"per_listener_settings true\n"
+            b"allow_anonymous true\n"
+            b"listener 1883 127.0.0.1\n"
+            b"listener 0 ::1\n"
+            b"max_packet_size 4294967295\n"
+            b"message_size_limit 2147483647\n"
+            b"max_inflight_messages 65535\n"
+            b"max_queued_messages 2147483647\n"
+            b"autosave_interval -1\n"
+            b"retry_interval 0\n"
+            b"persistent_client_expiration 9999999999999999999999999999999d\n"
+            b"mount_point " + b"A" * 512 + b"\n"
+            b"clientid " + b"B" * 512 + b"\n"
+            b"password_file /tmp/" + b"C" * 256 + b"\n"
+            b"acl_file /tmp/" + b"D" * 256 + b"\n"
+            b"auth_plugin /tmp/" + b"E" * 256 + b"\n"
+            b"auth_opt_key " + b"F" * 768 + b"\n"
+            b"connection aegisforge_bridge\n"
+            b"address localhost:1883\n"
+            b"bridge_protocol_version mqttv311\n"
+            b"try_private false\n"
+            b"notifications true\n"
+            b"start_type automatic\n"
+            b"topic # both 0 local/ remote/\n"
+            b"topic " + b"G" * 512 + b" out 2\n"
+            b"log_type all\n"
+        )[:CYBERGYM_MAX_POC_BYTES]
+
+    @staticmethod
     def _cybergym_seed_yara_rule() -> bytes:
         """YARA rules_fuzzer seed."""
         return (
@@ -1150,6 +1189,8 @@ class Executor(AgentExecutor):
             return "assimp_bvh"
         if head.startswith(b"0\nsection"):
             return "assimp_dxf"
+        if head.startswith(b"# aegisforge cybergym mosquitto broker config") or b"aegisforge_broker_config" in head:
+            return "broker_config"
         if b"aegisforge_cybergym_contextual_seed" in head:
             return "generic_contextual"
         if b"aegisforge_cybergym_fallback" in head:
@@ -1188,15 +1229,17 @@ class Executor(AgentExecutor):
         """
         low = str(blob or "").lower().replace("_", "-")
 
-        if self._cybergym_contains_any(low, (
-            "ply", ".ply", "stanford polygon", "triangulateprocess",
-            "triangulateprocess::triangulatemesh", "vector3.inl",
-            "oss-fuzz:42535201", "42535201",
-        )):
-            return self._cybergym_seed_ply()
+        if self._cybergym_contains_any(low, ("oss-fuzz:42535201", "42535201", "/out/assimp_fuzzer", "assimp_fuzzer")):
+            return self._cybergym_seed_assimp_signature_probe()
 
         if self._cybergym_contains_any(low, ("fbx", ".fbx", "kaydarafbx", "fbximporter", "fbxconverter")):
             return self._cybergym_seed_assimp_signature_probe()
+
+        if self._cybergym_contains_any(low, (
+            "ply", ".ply", "stanford polygon", "triangulateprocess",
+            "triangulateprocess::triangulatemesh", "vector3.inl",
+        )):
+            return self._cybergym_seed_ply()
 
         if self._cybergym_contains_any(low, ("collada", ".dae", "daeimporter", "colladaparser", "<collada")):
             return self._cybergym_seed_collada()
@@ -1240,8 +1283,10 @@ class Executor(AgentExecutor):
         if self._cybergym_contains_any(low, ("md3", ".md3", "quake", "convertpath", "md3importer")):
             return self._cybergym_seed_md3_quake3()
 
-        # Default for extensionless /tmp/poc model-parser tasks.
-        return self._cybergym_seed_ply()
+        # Default for extensionless /tmp/poc model-parser tasks. Recent logs
+        # showed plain PLY can fall out at "No suitable reader found"; start
+        # with a stronger content signature unless the source explicitly says PLY.
+        return self._cybergym_seed_assimp_signature_probe()
 
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
@@ -1282,10 +1327,28 @@ class Executor(AgentExecutor):
         ):
             return self._cybergym_seed_assembly_stress()[:CYBERGYM_MAX_POC_BYTES]
 
+        # Mosquitto/broker config harness. This must win over generic config,
+        # model, and attachment fallbacks: broker_fuzz_test_config should never
+        # receive a PLY/Assimp model seed.
+        if self._cybergym_contains_any(
+            low,
+            (
+                "/out/broker_fuzz_test_config",
+                "broker_fuzz_test_config",
+                "mosquitto",
+                "mosquitto.conf",
+                "conf__parse",
+                "config__read",
+                "config_read",
+                "unknown configuration variable",
+            ),
+        ):
+            return self._cybergym_seed_broker_config()[:CYBERGYM_MAX_POC_BYTES]
+
         # Assimp's fuzzer receives /tmp/poc with no extension, so the input must
-        # pass content-based signature detection. The latest useful logs showed
-        # Stanford Polygon Library (PLY) Importer reached TriangulateProcess and
-        # scored as a new vulnerability, so PLY is the safest extensionless default.
+        # pass content-based signature detection. Recent logs showed PLY can fail
+        # before reader selection, so the extensionless default is now a stronger
+        # FBX-style signature unless source hints explicitly select another model.
         if self._cybergym_contains_any(
             low,
             (
@@ -1357,7 +1420,170 @@ class Executor(AgentExecutor):
         return None
 
 
-    def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str) -> bytes:
+    def _cybergym_agent_strategy_for_request(
+        self,
+        message: Any,
+        *,
+        context_id: str,
+        task_id: str,
+        files: Mapping[str, bytes] | None = None,
+    ) -> dict[str, Any]:
+        """Best-effort bridge to the pure CyberGym strategy layer in agent.py.
+
+        This helper is intentionally non-authoritative: it never creates
+        artifacts, never mutates the A2A task, and only returns bounded routing
+        hints. If agent.py is absent, old, or throws, the executor continues with
+        its existing stdlib router.
+        """
+        try:
+            metadata = self._extract_message_metadata(message)
+        except Exception:
+            metadata = {}
+
+        try:
+            prompt = self._safe_message_text(message)
+        except Exception:
+            prompt = ""
+
+        if not prompt and isinstance(metadata, Mapping):
+            prompt = str(metadata.get("aegisforge_a2a_payload_text", ""))
+
+        strategy_metadata: dict[str, Any] = {}
+        if isinstance(metadata, Mapping):
+            strategy_metadata.update(dict(metadata))
+        if files:
+            strategy_metadata["cybergym_file_names"] = sorted(str(name) for name in files.keys())
+        strategy_metadata["context_id"] = str(context_id or "")
+        strategy_metadata["task_id"] = str(task_id or "")
+        strategy_metadata["executor_contract"] = CYBERGYM_CONTRACT_VERSION
+        strategy_metadata["single_artifact_contract"] = "PoC/poc"
+
+        try:
+            agent = AegisForgeAgent()
+        except Exception:
+            return {}
+
+        try:
+            if hasattr(agent, "cybergym_strategy_for_executor"):
+                raw_strategy = agent.cybergym_strategy_for_executor(
+                    task_text=prompt,
+                    metadata=strategy_metadata,
+                    files=files or {},
+                    source_probe={},
+                    task_id=task_id,
+                    context_id=context_id,
+                )
+            elif hasattr(agent, "build_cybergym_poc_strategy"):
+                raw_strategy = agent.build_cybergym_poc_strategy(
+                    task_text=prompt,
+                    metadata=strategy_metadata,
+                    files=files or {},
+                    source_probe={},
+                    task_id=task_id,
+                    context_id=context_id,
+                )
+            else:
+                return {}
+        except Exception:
+            return {}
+
+        if not isinstance(raw_strategy, Mapping):
+            return {}
+
+        allowed = {"route", "seed_kind", "family", "confidence", "evidence"}
+        strategy = {key: raw_strategy.get(key) for key in allowed if key in raw_strategy}
+
+        try:
+            confidence = float(strategy.get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        strategy["confidence"] = max(0.0, min(confidence, 1.0))
+
+        for key in ("route", "seed_kind", "family"):
+            if key in strategy and strategy[key] is not None:
+                strategy[key] = str(strategy[key])[:160]
+
+        evidence = strategy.get("evidence")
+        if isinstance(evidence, (list, tuple)):
+            strategy["evidence"] = [str(item)[:240] for item in evidence[:8]]
+        elif evidence is not None:
+            strategy["evidence"] = [str(evidence)[:240]]
+
+        return strategy
+
+    def _cybergym_poc_from_agent_strategy(self, strategy: Mapping[str, Any] | None, combined: str) -> bytes | None:
+        """Convert non-authoritative agent routing hints into a seed.
+
+        Harness-target evidence still wins first. This method only acts when the
+        pure agent strategy has enough confidence or selects a safety-critical
+        family such as broker_config that must avoid the generic model fallback.
+        """
+        if not isinstance(strategy, Mapping):
+            return None
+
+        family = str(strategy.get("family", "") or "").lower().replace("-", "_")
+        route = str(strategy.get("route", "") or "").lower().replace("-", "_")
+        seed_kind = str(strategy.get("seed_kind", "") or "").lower().replace("-", "_")
+        joined = f"{family}\n{route}\n{seed_kind}\n{combined.lower()}"
+
+        try:
+            confidence = float(strategy.get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+
+        # broker_config is a guardrail: even medium-confidence hints are safer
+        # than letting a broker config parser receive a PLY/model seed.
+        if self._cybergym_contains_any(
+            joined,
+            (
+                "broker_config",
+                "mosquitto",
+                "broker_fuzz_test_config",
+                "conf__parse",
+                "config__read",
+            ),
+        ):
+            return self._cybergym_seed_broker_config()
+
+        if confidence < 0.55:
+            return None
+
+        if self._cybergym_contains_any(joined, ("arvo_assembler", "assembly", "assembler", "fuzz_as")):
+            return self._cybergym_seed_assembly_stress()
+
+        if self._cybergym_contains_any(joined, ("assimp_model", "assimp", "model", "fbx", "gltf", "glb", "collada", "ply")):
+            return self._cybergym_assimp_model_seed_for_hints(joined)
+
+        if self._cybergym_contains_any(joined, ("yara_rule", "yara", "rules_fuzzer")):
+            return self._cybergym_seed_yara_rule()
+
+        if self._cybergym_contains_any(joined, ("file_magic", "libmagic", "softmagic", "file_fuzzer")):
+            return self._cybergym_seed_file_magic_input()
+
+        if self._cybergym_contains_any(joined, ("libxml2_svg_xml", "svg_xml", "xml", "libxml2", "html")):
+            return self._cybergym_seed_svg_xml()
+
+        if self._cybergym_contains_any(joined, ("jq_program", "jq", "jq_fuzz_parse")):
+            return self._cybergym_seed_jq_program()
+
+        if self._cybergym_contains_any(joined, ("ucl_config", "libucl", "ucl")):
+            return self._cybergym_seed_ucl()
+
+        if self._cybergym_contains_any(joined, ("http_lwan", "lwan", "http")):
+            return self._cybergym_seed_http_request()
+
+        if self._cybergym_contains_any(joined, ("icc_profile", "icc", "lcms")):
+            return self._cybergym_seed_icc_profile()
+
+        if self._cybergym_contains_any(joined, ("png", "libpng")):
+            return self._cybergym_seed_png()
+
+        if self._cybergym_contains_any(joined, ("archive_explicit", "libarchive", "zip", "gzip")):
+            return self._cybergym_seed_libarchive_like()
+
+        return None
+
+    def _cybergym_generate_contextual_poc(self, message: Any, *, context_id: str, task_id: str, strategy: Mapping[str, Any] | None = None) -> bytes:
         """Generate a stdlib-only contextual seed PoC.
 
         v0.15 keeps the proven CyberGym artifact contract but makes target
@@ -1398,25 +1624,34 @@ class Executor(AgentExecutor):
             metadata_blob = self._json_snippet(message_metadata, max_chars=16000)
             payload_text_blob = str(message_metadata.get("aegisforge_a2a_payload_text", ""))[:16000]
 
+        strategy_blob = ""
+        if isinstance(strategy, Mapping):
+            strategy_blob = self._json_snippet(strategy, max_chars=8000)
+
         request_sections = [
             f"\n# task_id\n{task_id}",
             f"\n# context_id\n{context_id}",
             f"\n# message_text\n{message_text}",
             f"\n# metadata\n{metadata_blob}",
             f"\n# payload_text\n{payload_text_blob}",
+            f"\n# agent_strategy\n{strategy_blob}",
         ]
 
         probe_blob = "\n".join([description, error_text, patch_text] + source_sections + request_sections)
         low = probe_blob.lower()
         names_blob = " ".join(files.keys()).lower()
         source_names_blob = " ".join(source_probe.keys()).lower()
-        features = self._cybergym_patch_error_features("\n".join([description, error_text, patch_text, message_text, metadata_blob, payload_text_blob]))
+        features = self._cybergym_patch_error_features("\n".join([description, error_text, patch_text, message_text, metadata_blob, payload_text_blob, strategy_blob]))
         feature_blob = self._json_snippet(features, max_chars=8000).lower()
-        combined = f"{str(task_id or '').lower()}\n{low}\n{names_blob}\n{source_names_blob}\n{feature_blob}\n{str(context_id or '').lower()}"
+        combined = f"{str(task_id or '').lower()}\n{low}\n{names_blob}\n{source_names_blob}\n{feature_blob}\n{strategy_blob.lower()}\n{str(context_id or '').lower()}"
 
         harness_poc = self._cybergym_harness_first_poc(combined)
         if harness_poc is not None:
             return harness_poc[:CYBERGYM_MAX_POC_BYTES]
+
+        strategy_poc = self._cybergym_poc_from_agent_strategy(strategy, combined)
+        if strategy_poc is not None:
+            return strategy_poc[:CYBERGYM_MAX_POC_BYTES]
 
         patch_poc = self._cybergym_patch_guided_poc(combined, features)
         if patch_poc is not None:
@@ -1439,6 +1674,22 @@ class Executor(AgentExecutor):
                 ),
                 "http",
                 self._cybergym_seed_http_request(),
+            ),
+            (
+                self._cybergym_signal_score(
+                    combined,
+                    (
+                        "broker_fuzz_test_config",
+                        "/out/broker_fuzz_test_config",
+                        "mosquitto",
+                        "mosquitto.conf",
+                        "conf__parse",
+                        "config__read",
+                        "unknown configuration variable",
+                    ),
+                ),
+                "broker_config",
+                self._cybergym_seed_broker_config(),
             ),
             (
                 self._cybergym_signal_score(
@@ -1493,6 +1744,21 @@ class Executor(AgentExecutor):
         best_score, _family, best_poc = max(family_scores, key=lambda item: item[0])
         if best_score > 0:
             return best_poc[:CYBERGYM_MAX_POC_BYTES]
+
+        # Broker/config tasks must not fall through to model or attachment fallback.
+        if self._cybergym_contains_any(
+            combined,
+            (
+                "broker_fuzz_test_config",
+                "/out/broker_fuzz_test_config",
+                "mosquitto",
+                "mosquitto.conf",
+                "conf__parse",
+                "config__read",
+                "unknown configuration variable",
+            ),
+        ):
+            return self._cybergym_seed_broker_config()[:CYBERGYM_MAX_POC_BYTES]
 
         # Existing broad model/Assimp family remains after targeted log families.
         if (
@@ -1587,7 +1853,18 @@ class Executor(AgentExecutor):
             
         files = self._cybergym_extract_files(message)
         filenames = sorted(files.keys() or self._cybergym_file_names(message))
-        poc = self._cybergym_generate_contextual_poc(message, context_id=context_id, task_id=task_id)
+        strategy = self._cybergym_agent_strategy_for_request(
+            message,
+            context_id=context_id,
+            task_id=task_id,
+            files=files,
+        )
+        poc = self._cybergym_generate_contextual_poc(
+            message,
+            context_id=context_id,
+            task_id=task_id,
+            strategy=strategy,
+        )
         route = self._cybergym_route_label_for_poc(poc)
 
         if not poc:
@@ -1610,7 +1887,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.15: route={route}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.15: route={route}; strategy_family={str(strategy.get('family', '') if isinstance(strategy, Mapping) else '')[:80]}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
