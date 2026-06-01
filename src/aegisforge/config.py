@@ -18,6 +18,7 @@ SELECTED_OPPONENT_TRACKS = [
     "pibench",
     "cybergym",
     "netarena",
+    "skillsbench",
 ]
 
 TRACK_ALIASES = {
@@ -34,6 +35,7 @@ TRACK_ALIASES = {
     "crmarenapro": "crmarena",
     "entropic-crmarenapro": "crmarena",
     "business-process": "crmarena",
+    "business_process": "crmarena",
     "fieldworkarena-greenagent": "fieldworkarena",
     "fieldworkarena_greenagent": "fieldworkarena",
     "research": "fieldworkarena",
@@ -41,6 +43,7 @@ TRACK_ALIASES = {
     "maize_bargain": "maizebargain",
     "tutorial-agent-beats-comp": "maizebargain",
     "multi-agent": "maizebargain",
+    "multi_agent": "maizebargain",
     "tau2-agentbeats": "tau2",
     "tau2_agentbeats": "tau2",
     "tau²": "tau2",
@@ -52,12 +55,44 @@ TRACK_ALIASES = {
     "agent-safety": "pibench",
     "agent_safety": "pibench",
     "cybergym-green": "cybergym",
+    "cyber-gym": "cybergym",
+    "cyber_gym": "cybergym",
     "cybersecurity": "cybergym",
     "cybersecurity-agent": "cybergym",
+    "cybersecurity_agent": "cybergym",
     "net-arena": "netarena",
     "net_arena": "netarena",
     "coding-agent": "netarena",
     "coding_agent": "netarena",
+
+    # SkillsBench / General-Purpose Agent.
+    "skillsbench": "skillsbench",
+    "skillsbench-agentbeats": "skillsbench",
+    "skillsbench_agentbeats": "skillsbench",
+    "skillsbench-leaderboard": "skillsbench",
+    "skillsbench_leaderboard": "skillsbench",
+    "benchflow": "skillsbench",
+    "benchflow-ai": "skillsbench",
+    "benchflow_ai": "skillsbench",
+    "benchflowai": "skillsbench",
+    "standard-v1": "skillsbench",
+    "standard_v1": "skillsbench",
+    "standard v1": "skillsbench",
+    "with-skills": "skillsbench",
+    "with_skills": "skillsbench",
+    "general-purpose": "skillsbench",
+    "general_purpose": "skillsbench",
+    "general purpose": "skillsbench",
+    "general-purpose-agent": "skillsbench",
+    "general_purpose_agent": "skillsbench",
+    "general purpose agent": "skillsbench",
+    "general-agent": "skillsbench",
+    "general_agent": "skillsbench",
+    "multi-utility": "skillsbench",
+    "multi_utility": "skillsbench",
+    "multi utility": "skillsbench",
+    "artifact-first": "skillsbench",
+    "artifact_first": "skillsbench",
 }
 
 
@@ -103,6 +138,10 @@ class AppConfig:
     git_sha: str
     image_ref: str
     track: str
+
+    # Kept at the end to preserve older direct AppConfig(...) call sites that
+    # may still pass the original fields positionally.
+    enable_skillsbench: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -175,6 +214,7 @@ class AppConfig:
             git_sha=os.environ.get("AEGISFORGE_GIT_SHA", "dev").strip() or "dev",
             image_ref=os.environ.get("AEGISFORGE_IMAGE_REF", "local/aegisforge:dev").strip() or "local/aegisforge:dev",
             track=os.environ.get("AEGISFORGE_TRACK", "purple").strip() or "purple",
+            enable_skillsbench=_read_bool_env("AEGISFORGE_ENABLE_SKILLSBENCH", True),
         )
 
     def runtime_summary(self) -> RuntimeSummary:
@@ -198,13 +238,16 @@ class AppConfig:
             integrations.append("officeqa")
         if self.enable_crmarena:
             integrations.append("crmarena")
+        if self.enable_skillsbench:
+            integrations.append("skillsbench")
         return integrations
 
     def selected_opponent_tracks(self) -> list[str]:
         """Return the canonical one-opponent-per-category matrix.
 
         mcu is the canonical Game Agent track. mcu-minecraft is an alias, not
-        a separate selected opponent.
+        a separate selected opponent. skillsbench is the General-Purpose Agent
+        track used by the SkillsBench / standard-v1 evaluator.
         """
         return list(SELECTED_OPPONENT_TRACKS)
 
@@ -212,8 +255,12 @@ class AppConfig:
         return dict(TRACK_ALIASES)
 
     def normalize_track(self, value: str | None) -> str:
-        raw = str(value or self.track or "purple").strip().lower().replace("_", "-")
-        return TRACK_ALIASES.get(raw, raw)
+        raw = str(value or self.track or "purple").strip().lower()
+        compact = raw.replace("_", "-")
+        return TRACK_ALIASES.get(raw, TRACK_ALIASES.get(compact, compact))
+
+    def is_skillsbench_track(self, value: str | None = None) -> bool:
+        return self.normalize_track(value or self.track) == "skillsbench"
 
     def health_url(self) -> str:
         return f"{self.public_url}{self.health_path}"
@@ -223,4 +270,3 @@ class AppConfig:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
-    
