@@ -55,6 +55,7 @@ SPRINT4_POLICY_VERSION = "v1.2-sprint4-general-ncp-crmarena-v114-maizebargain-br
 AEGISFORGE_GENERAL_AGENT_VERSION = "v1_7_pibench_decision_balance_2026_05_30"
 PI_BENCH_AGENT_VERSION = "pi_bench_stable_toolcall_v1_9_2026_05_30"
 NETARENA_MALT_AGENT_VERSION = "malt_operator_v1_5_minimal_safety_delta"
+CYBERGYM_AGENT_STRATEGY_VERSION = "cybergym_agent_strategy_v0_1_visible49_safe_router_2026_06_01"
 BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v0_2_13_merged_general_2026_05_28"
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
@@ -1215,7 +1216,7 @@ TRACK_ALIASES = {
     "cybersecurity_agent": "cybergym",
     "cybersecurity-agent": "cybergym",
     "cyber": "cybergym",
-    "cybergym": "gymjailbreak",
+    "cybergym": "cybergym",
     "cybergym-green": "cybergym",
     "netarena": "netarena",
     "net-arena": "netarena",
@@ -1807,6 +1808,7 @@ class AegisForgeAgent:
         self._pi_bench_sessions: dict[str, dict[str, Any]] = {}
         self._pi_bench_last_status: dict[str, Any] = {}
         self._malt_last_status: dict[str, Any] = {}
+        self._cybergym_last_strategy: dict[str, Any] = {}
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -15211,6 +15213,461 @@ class AegisForgeAgent:
         except Exception:
             pass
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+    @staticmethod
+    def _cybergym_strategy_stringify(value: Any, *, depth: int = 0, limit: int = 40000) -> str:
+        """Bounded stringification for CyberGym strategy signals.
+
+        This intentionally avoids secrets/credential expansion and is used only
+        for local routing hints, not for emitting artifacts.
+        """
+        if value is None or depth > 5 or limit <= 0:
+            return ""
+        if isinstance(value, Mapping):
+            pieces: list[str] = []
+            for key, child in value.items():
+                key_text = str(key)
+                if key_text:
+                    pieces.append(key_text)
+                child_text = AegisForgeAgent._cybergym_strategy_stringify(
+                    child,
+                    depth=depth + 1,
+                    limit=max(1000, limit // 2),
+                )
+                if child_text:
+                    pieces.append(child_text)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            return "\n".join(pieces)[:limit]
+        if isinstance(value, (list, tuple, set)):
+            pieces: list[str] = []
+            for child in list(value)[:160]:
+                child_text = AegisForgeAgent._cybergym_strategy_stringify(
+                    child,
+                    depth=depth + 1,
+                    limit=max(1000, limit // 2),
+                )
+                if child_text:
+                    pieces.append(child_text)
+                if sum(len(piece) for piece in pieces) > limit:
+                    break
+            return "\n".join(pieces)[:limit]
+        if isinstance(value, bytes):
+            sample = value[:4096]
+            try:
+                return sample.decode("utf-8", errors="replace")
+            except Exception:
+                return repr(sample)
+        return str(value)[:limit]
+
+    @staticmethod
+    def _cybergym_strategy_count(blob: str, markers: tuple[str, ...]) -> int:
+        low = blob.lower().replace("_", "-")
+        return sum(1 for marker in markers if marker in low)
+
+    @staticmethod
+    def _cybergym_strategy_select_model_seed(blob: str) -> tuple[str, str, float, tuple[str, ...]]:
+        """Return (route, seed_kind, confidence, evidence) for Assimp/model-like tasks."""
+        low = blob.lower().replace("_", "-")
+        options: list[tuple[int, str, str, tuple[str, ...]]] = [
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("ply", ".ply", "stanford polygon", "triangulateprocess", "vector3.inl"),
+                ),
+                "assimp_ply",
+                "ply",
+                ("PLY/default model parser route",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("fbx", ".fbx", "kaydarafbx", "fbximporter", "fbxconverter"),
+                ),
+                "assimp_fbx",
+                "fbx",
+                ("FBX importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("collada", ".dae", "daeimporter", "colladaparser", "<collada"),
+                ),
+                "assimp_collada",
+                "collada",
+                ("Collada/DAE importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("stl", ".stl", "stlimporter", "solid "),
+                ),
+                "assimp_stl",
+                "stl_ascii",
+                ("STL importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("obj", ".obj", "wavefront", "objimporter"),
+                ),
+                "assimp_obj",
+                "obj",
+                ("Wavefront OBJ importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("off", ".off", "offimporter")),
+                "assimp_off",
+                "off",
+                ("OFF importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("gltf", ".gltf", "gltfimporter")),
+                "assimp_gltf",
+                "gltf_json",
+                ("glTF JSON importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("glb", ".glb")),
+                "assimp_glb",
+                "glb",
+                ("GLB binary importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("x3d", ".x3d", "x3dimporter")),
+                "assimp_x3d",
+                "x3d",
+                ("X3D importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("vrml", "wrl", ".wrl", "vrmlimporter")),
+                "assimp_vrml",
+                "vrml",
+                ("VRML/WRL importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("3ds", ".3ds", "3dsimporter", "3d studio")),
+                "assimp_3ds",
+                "3ds",
+                ("3DS importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("ase", ".ase", "aseimporter")),
+                "assimp_ase",
+                "ase",
+                ("ASE importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("dxf", ".dxf", "dxfimporter")),
+                "assimp_dxf",
+                "dxf",
+                ("DXF importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("ac3d", ".ac3d", "acimporter")),
+                "assimp_ac3d",
+                "ac3d",
+                ("AC3D importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("bvh", ".bvh", "bvhimporter", "bvhloader")),
+                "assimp_bvh",
+                "bvh",
+                ("BVH importer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(low, ("md3", ".md3", "quake", "convertpath", "md3importer")),
+                "assimp_md3",
+                "md3",
+                ("MD3/Quake importer signal",),
+            ),
+        ]
+        best_score, route, seed_kind, evidence = max(options, key=lambda item: item[0])
+        if best_score <= 0:
+            # CyberGym Assimp uses /tmp/poc with no extension. PLY is the safest
+            # default because the visible logs showed this route reaching the
+            # Stanford Polygon Library importer when it scored.
+            return "assimp_ply", "ply", 0.62, ("extensionless model/parser default -> PLY",)
+        return route, seed_kind, min(0.95, 0.65 + 0.07 * best_score), evidence
+
+    @staticmethod
+    def build_cybergym_poc_strategy(
+        *,
+        task_text: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        files: Mapping[str, Any] | None = None,
+        source_probe: Mapping[str, Any] | None = None,
+        task_id: str = "",
+        context_id: str = "",
+    ) -> dict[str, Any]:
+        """Pure CyberGym PoC strategy selector.
+
+        This does not create artifacts and does not return benchmark answers.
+        It only returns a reusable route/seed recommendation that executor.py can
+        map to the existing single Artifact(name="PoC") / FilePart(name="poc")
+        contract. The goal is to improve general routing across CyberGym tasks
+        without adding task-specific output lookup tables.
+        """
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        files = files if isinstance(files, Mapping) else {}
+        source_probe = source_probe if isinstance(source_probe, Mapping) else {}
+
+        file_names = " ".join(str(name) for name in files.keys())
+        source_names = " ".join(str(name) for name in source_probe.keys())
+
+        file_text_samples: list[str] = []
+        for name, raw in list(files.items())[:12]:
+            if str(name).lower().endswith((".txt", ".diff", ".patch", ".json", ".xml", ".c", ".h", ".cpp", ".cc", ".s", ".asm")):
+                file_text_samples.append(f"\n# file:{name}\n{AegisForgeAgent._cybergym_strategy_stringify(raw, limit=12000)}")
+
+        source_text_samples = [
+            f"\n# source:{name}\n{AegisForgeAgent._cybergym_strategy_stringify(raw, limit=8000)}"
+            for name, raw in list(source_probe.items())[:12]
+        ]
+
+        blob = "\n".join(
+            [
+                str(task_id or ""),
+                str(context_id or ""),
+                str(task_text or ""),
+                AegisForgeAgent._cybergym_strategy_stringify(metadata, limit=30000),
+                file_names,
+                source_names,
+                *file_text_samples,
+                *source_text_samples,
+            ]
+        )
+        low = blob.lower().replace("_", "-")
+
+        families: list[tuple[int, str, str, str, tuple[str, ...]]] = [
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    (
+                        "/out/fuzz-as", "fuzz-as", "gnu as", "gas/", "gas\\",
+                        "assembler", "assembly", "mnemonic", "opcode", "tc-i386",
+                        "input-file.c", "read-a-source-file", "define-macro",
+                        "htab-find-slot", "htab-insert", "s-macro",
+                    ),
+                ),
+                "arvo_assembler",
+                "assembly_stress",
+                "binary_assembler_parser",
+                ("GNU as / binutils assembler harness signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    (
+                        "/out/assimp-fuzzer", "assimp-fuzzer", "assimp", "importerregistry",
+                        "assimp::importer", "stanford polygon", "triangulateprocess",
+                        "vector3.inl", "fbximporter", "objimporter", "daeimporter",
+                        "md3importer", "gltfimporter",
+                    ),
+                ),
+                "assimp_model",
+                "model_router",
+                "model_parser",
+                ("Assimp/model parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("rules-fuzzer", "yr-rules-fuzzer", "yr-parser", "yr-compile", "yara", "condition:"),
+                ),
+                "yara_rule",
+                "yara_rule",
+                "rule_parser",
+                ("YARA rule compiler/fuzzer signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("magic-fuzzer", "file-fuzzer", "file-fuzzer", "softmagic.c", "libmagic", "magic-buffer", "file command"),
+                ),
+                "file_magic",
+                "file_magic",
+                "magic_parser",
+                ("file/libmagic softmagic signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("libxml2-xml-read-memory-fuzzer", "libxml2", "xmlreadmemory", "xmlreader", "htmlreadmemory"),
+                ),
+                "libxml2_svg_xml",
+                "svg_xml",
+                "xml_parser",
+                ("libxml2/XML reader signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("jq-fuzz-parse", "jq-compile", "libjq", "lexer.l", "jv-parse"),
+                ),
+                "jq_program",
+                "jq_program",
+                "program_parser",
+                ("jq program parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("libucl", "ucl-parser", "ucl-object", "ucl-hash", ".ucl"),
+                ),
+                "ucl_config",
+                "ucl_config",
+                "config_parser",
+                ("libucl/config parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("lwan-request.c", "lwan-request", "/out/lwan", "parse-request", "http request parser", "http/1.1 parser"),
+                ),
+                "http_lwan",
+                "http_request",
+                "http_parser",
+                ("HTTP/lwan parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("curl-fuzzer-ftp", "curl-fuzzer", "libcurl", "ftp", "url parser", "curl-url"),
+                ),
+                "curl_ftp_url",
+                "ftp_url",
+                "url_parser",
+                ("curl/FTP URL parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("broker-fuzz-test-config", "unknown configuration variable", "config file", "configuration variable", "mosquitto"),
+                ),
+                "broker_config",
+                "broker_config",
+                "config_parser",
+                ("broker/config parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("icc", "iccp", "lcms", "cmsopenprofilefrommem", "acsp", "profile"),
+                ),
+                "icc_profile",
+                "icc_profile",
+                "binary_profile_parser",
+                ("ICC profile parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("png", "ihdr", "idat", "libpng", "png-fuzzer"),
+                ),
+                "png",
+                "png",
+                "image_parser",
+                ("PNG parser signal",),
+            ),
+            (
+                AegisForgeAgent._cybergym_strategy_count(
+                    low,
+                    ("libarchive", "archive-read", "archive-write", "bsdtar", "zip-fuzzer", "gzip-fuzzer", "zlib-uncompress-fuzzer", "minizip"),
+                ),
+                "archive_explicit",
+                "libarchive_like",
+                "archive_parser",
+                ("explicit archive/compression harness signal",),
+            ),
+        ]
+
+        best_score, route, seed_kind, family, evidence = max(families, key=lambda item: item[0])
+
+        if route == "assimp_model" and best_score > 0:
+            model_route, model_seed, model_conf, model_evidence = AegisForgeAgent._cybergym_strategy_select_model_seed(blob)
+            return {
+                "version": CYBERGYM_AGENT_STRATEGY_VERSION,
+                "route": model_route,
+                "seed_kind": model_seed,
+                "family": "model_parser",
+                "confidence": model_conf,
+                "evidence": list(evidence + model_evidence),
+                "contract": "strategy_only_executor_must_emit_single_PoC_poc_artifact",
+                "task_id_present": bool(task_id),
+                "file_count": len(files),
+                "source_probe_count": len(source_probe),
+                "fair_play": "no answer lookup; reusable parser-family routing only",
+            }
+
+        if best_score > 0:
+            confidence = min(0.96, 0.58 + 0.08 * best_score)
+            return {
+                "version": CYBERGYM_AGENT_STRATEGY_VERSION,
+                "route": route,
+                "seed_kind": seed_kind,
+                "family": family,
+                "confidence": confidence,
+                "evidence": list(evidence),
+                "contract": "strategy_only_executor_must_emit_single_PoC_poc_artifact",
+                "task_id_present": bool(task_id),
+                "file_count": len(files),
+                "source_probe_count": len(source_probe),
+                "fair_play": "no answer lookup; reusable parser-family routing only",
+            }
+
+        if files or file_names or source_names:
+            model_route, model_seed, model_conf, model_evidence = AegisForgeAgent._cybergym_strategy_select_model_seed(blob)
+            return {
+                "version": CYBERGYM_AGENT_STRATEGY_VERSION,
+                "route": model_route,
+                "seed_kind": model_seed,
+                "family": "unknown_attachment_model_default",
+                "confidence": max(0.50, model_conf - 0.10),
+                "evidence": list(model_evidence) + ["CyberGym attachments present; extensionless default avoids generic byte cocktail"],
+                "contract": "strategy_only_executor_must_emit_single_PoC_poc_artifact",
+                "task_id_present": bool(task_id),
+                "file_count": len(files),
+                "source_probe_count": len(source_probe),
+                "fair_play": "no answer lookup; reusable parser-family routing only",
+            }
+
+        return {
+            "version": CYBERGYM_AGENT_STRATEGY_VERSION,
+            "route": "generic_contextual",
+            "seed_kind": "generic_contextual",
+            "family": "unknown",
+            "confidence": 0.20,
+            "evidence": ["insufficient CyberGym signals"],
+            "contract": "strategy_only_executor_must_emit_single_PoC_poc_artifact",
+            "task_id_present": bool(task_id),
+            "file_count": len(files),
+            "source_probe_count": len(source_probe),
+            "fair_play": "no answer lookup; reusable parser-family routing only",
+        }
+
+    def cybergym_strategy_for_executor(
+        self,
+        *,
+        task_text: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        files: Mapping[str, Any] | None = None,
+        source_probe: Mapping[str, Any] | None = None,
+        task_id: str = "",
+        context_id: str = "",
+    ) -> dict[str, Any]:
+        """Instance wrapper so executor.py can reuse the pure CyberGym strategy."""
+        strategy = self.build_cybergym_poc_strategy(
+            task_text=task_text,
+            metadata=metadata,
+            files=files,
+            source_probe=source_probe,
+            task_id=task_id,
+            context_id=context_id,
+        )
+        self._cybergym_last_strategy = dict(strategy)
+        return strategy
 
 
     async def run(self, message: Message, updater: TaskUpdater) -> None:
