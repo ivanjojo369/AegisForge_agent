@@ -14,7 +14,7 @@ The router intentionally keeps two naming layers alive:
 
 Do not treat the upstream names as stale.  They are compatibility/reporting
 profiles.  Local domains and scenario IDs are resolved to those profiles while
-still routing to the coarse adapter layer: openenv, security, tau2, or mcu.
+still routing to the coarse adapter layer: openenv, security, tau2, mcu, or skillsbench.
 """
 
 from dataclasses import dataclass
@@ -59,6 +59,7 @@ class TaskRouter:
     """
 
     MCU_TRACKS = {"mcu", "mcu_minecraft"}
+    SKILLSBENCH_TRACKS = {"skillsbench"}
 
     # Tracks that benefit from the security adapter posture.  Some local
     # OpenEnv domains still route to openenv because they are environment-style
@@ -91,6 +92,11 @@ class TaskRouter:
         "software_testing": "logomesh",
         "defi": "ethernaut",
         "legal_domain": "agentify_bench",
+        "skillsbench": "skillsbench",
+        "general_purpose": "skillsbench",
+        "general_purpose_agent": "skillsbench",
+        "standard_v1": "skillsbench",
+        "with_skills": "skillsbench",
     }
 
     # Scenario name/id -> upstream/reporting track.
@@ -114,6 +120,12 @@ class TaskRouter:
         "codereviewruse": "logomesh",
         "cryptocrash": "ethernaut",
         "lawfirmleak": "agentify_bench",
+        "skillsbench": "skillsbench",
+        "standardv1": "skillsbench",
+        "withskills": "skillsbench",
+        "generalpurpose": "skillsbench",
+        "generalpurposeagent": "skillsbench",
+        "multiutility": "skillsbench",
     }
 
     SCENARIO_TO_FAMILY = {
@@ -136,6 +148,12 @@ class TaskRouter:
         "codereviewruse": "code_integrity",
         "cryptocrash": "defi_invariant",
         "lawfirmleak": "legal_privilege",
+        "skillsbench": "general_purpose",
+        "standardv1": "general_purpose",
+        "withskills": "general_purpose",
+        "generalpurpose": "general_purpose",
+        "generalpurposeagent": "general_purpose",
+        "multiutility": "general_purpose",
     }
 
     DOMAIN_TO_FAMILY = {
@@ -155,6 +173,11 @@ class TaskRouter:
         "software_testing": "code_integrity",
         "defi": "defi_invariant",
         "legal_domain": "legal_privilege",
+        "skillsbench": "general_purpose",
+        "general_purpose": "general_purpose",
+        "general_purpose_agent": "general_purpose",
+        "standard_v1": "general_purpose",
+        "with_skills": "general_purpose",
     }
 
     # Final adapter selected for each reporting track.
@@ -182,6 +205,11 @@ class TaskRouter:
         "software_testing": "openenv",
         "defi": "openenv",
         "legal_domain": "openenv",
+        "skillsbench": "skillsbench",
+        "general_purpose": "skillsbench",
+        "general_purpose_agent": "skillsbench",
+        "standard_v1": "skillsbench",
+        "with_skills": "skillsbench",
         "security": "security",
         "security_arena": "security",
         "agent_security": "security",
@@ -197,6 +225,11 @@ class TaskRouter:
         "mcu": "mcu",
         "mcu_minecraft": "mcu",
         "game": "mcu",
+        "skillsbench": "skillsbench",
+        "general_purpose": "skillsbench",
+        "general_purpose_agent": "skillsbench",
+        "standard_v1": "skillsbench",
+        "with_skills": "skillsbench",
     }
 
     # Track profile lookup fallback.  Only a subset has dedicated TOML/profile
@@ -352,6 +385,34 @@ class TaskRouter:
         "openenv": "openenv",
         "open_env": "openenv",
         "open-env": "openenv",
+
+        # SkillsBench / General-Purpose Agent / standard-v1.
+        "skillsbench": "skillsbench",
+        "skillsbench_agentbeats": "skillsbench",
+        "skillsbench_leaderboard": "skillsbench",
+        "skillsbench-leaderboard": "skillsbench",
+        "benchflow": "skillsbench",
+        "benchflow_ai": "skillsbench",
+        "benchflow-ai": "skillsbench",
+        "benchflowai": "skillsbench",
+        "standard_v1": "skillsbench",
+        "standard-v1": "skillsbench",
+        "with_skills": "skillsbench",
+        "with-skills": "skillsbench",
+        "general_purpose": "skillsbench",
+        "general-purpose": "skillsbench",
+        "general_purpose_agent": "skillsbench",
+        "general-purpose-agent": "skillsbench",
+        "general_agent": "skillsbench",
+        "general-agent": "skillsbench",
+        "multi_utility": "skillsbench",
+        "multi-utility": "skillsbench",
+        "artifact_first": "skillsbench",
+        "artifact-first": "skillsbench",
+        "artifact_output": "skillsbench",
+        "artifact-output": "skillsbench",
+        "file_output": "skillsbench",
+        "file-output": "skillsbench",
     }
 
     def decide(
@@ -378,9 +439,16 @@ class TaskRouter:
             metadata_dict.get("normal_user", scenario.get("normal_user")),
             default=False,
         )
-        requires_artifact = self._read_bool(
-            metadata_dict.get("requires_artifact", signals.get("requires_artifact")),
-            default=False,
+        requires_artifact = (
+            self._read_bool(
+                metadata_dict.get("requires_artifact", signals.get("requires_artifact")),
+                default=False,
+            )
+            or self._read_bool(
+                metadata_dict.get("artifact_required", signals.get("artifact_required")),
+                default=False,
+            )
+            or bool(getattr(classification, "artifact_expected", False))
         )
         max_turns = max(
             1,
@@ -413,6 +481,22 @@ class TaskRouter:
         if scenario_key:
             reasons.append(f"Scenario hint: {scenario_key}.")
         reasons.append(f"Resolved reporting track/profile: {track}.")
+
+        if track in self.SKILLSBENCH_TRACKS:
+            return self._route_skillsbench(
+                track=track,
+                classification=classification,
+                assessment_mode=assessment_mode,
+                scenario_family=scenario_family,
+                strict_mode=strict_mode,
+                requires_artifact=requires_artifact,
+                max_turns=max_turns,
+                effective_risk=effective_risk,
+                heldout_like=heldout_like,
+                budget_state=budget_state,
+                metadata=metadata_dict,
+                reasons=reasons,
+            )
 
         if track in self.MCU_TRACKS:
             return self._route_mcu(
@@ -457,6 +541,88 @@ class TaskRouter:
             budget_state=budget_state,
             track_profile=track_profile,
             metadata=metadata_dict,
+            reasons=reasons,
+        )
+
+
+    def _route_skillsbench(
+        self,
+        *,
+        track: str,
+        classification: TaskClassification,
+        assessment_mode: str,
+        scenario_family: str,
+        strict_mode: bool,
+        requires_artifact: bool,
+        max_turns: int,
+        effective_risk: str,
+        heldout_like: bool,
+        budget_state: BudgetState | None,
+        metadata: Mapping[str, object],
+        reasons: list[str],
+    ) -> RouteDecision:
+        """Route SkillsBench traffic through the artifact-first generalist path.
+
+        This route is deliberately separate from CyberGym.  CyberGym keeps its
+        executor-owned single PoC/poc contract, while SkillsBench needs a
+        general-purpose file/artifact delivery path for many standard-v1 tasks.
+        """
+        adapter_name = str(metadata.get("adapter_name") or metadata.get("adapter") or "skillsbench")
+        prompt_profile = str(metadata.get("prompt_profile") or "skillsbench_generalist_artifact_first")
+        policy_profile = str(metadata.get("policy_profile") or "skillsbench")
+
+        artifact_native = requires_artifact or bool(getattr(classification, "artifact_expected", False))
+        tool_mode = str(metadata.get("tool_mode") or "")
+
+        if not tool_mode:
+            if budget_state and budget_state.near_limit:
+                tool_mode = "minimal"
+            elif artifact_native:
+                tool_mode = "multi_utility"
+            elif getattr(classification, "tool_use_likely", False):
+                tool_mode = "guided"
+            else:
+                tool_mode = "minimal"
+
+        if strict_mode and tool_mode not in {"minimal", "guided"}:
+            # Strict mode still permits artifact delivery, but avoids broad
+            # exploratory routing.  The executor/agent bridge owns the actual
+            # file emission.
+            tool_mode = "guided"
+
+        reasons.append("Selected SkillsBench general-purpose artifact-first route.")
+        reasons.append(f"Assessment mode: {assessment_mode}.")
+        reasons.append(f"Scenario family: {scenario_family}.")
+        reasons.append(f"Adapter selected: {adapter_name}.")
+        reasons.append(f"Prompt profile selected: {prompt_profile}.")
+        reasons.append(f"Policy profile selected: {policy_profile}.")
+
+        if artifact_native:
+            reasons.append("Artifact-native task detected; final response should include evaluator-visible file artifacts.")
+        else:
+            reasons.append("No strong file-artifact signal; concise text plus optional artifact metadata is acceptable.")
+        if heldout_like:
+            reasons.append("Held-out-like task detected; avoid brittle task-specific shortcuts.")
+        if max_turns > 1:
+            reasons.append(f"Multi-turn or multi-pass setting detected (max_turns={max_turns}).")
+        if effective_risk in {"high", "critical"}:
+            reasons.append(f"{effective_risk.title()}-risk SkillsBench task; keep defensive/safe boundaries.")
+        elif effective_risk == "medium":
+            reasons.append("Medium-risk SkillsBench task; preserve source-trust and safety checks.")
+        if budget_state and budget_state.near_limit:
+            reasons.append("Budget near limit; prefer the smallest valid artifact and concise status.")
+        reasons.append("Non-regression guard: do not modify CyberGym PoC/poc semantics from this route.")
+        reasons.append("Non-regression guard: do not modify stable MAizeBargAIn policy from this route.")
+
+        return RouteDecision(
+            track=track,
+            adapter_name=adapter_name,
+            prompt_profile=prompt_profile,
+            policy_profile=policy_profile,
+            tool_mode=tool_mode,
+            assessment_mode=assessment_mode,
+            scenario_family=scenario_family,
+            strict_mode=strict_mode,
             reasons=reasons,
         )
 
@@ -674,6 +840,14 @@ class TaskRouter:
         explicit = metadata.get("track") or metadata.get("track_hint")
         explicit_text = self._normalize_key(explicit)
 
+        for key in ("benchmark", "task_set", "suite", "leaderboard", "adapter"):
+            candidate = metadata.get(key) or scenario.get(key)
+            if candidate and self._normalize_track(candidate) == "skillsbench":
+                return "skillsbench"
+
+        if self._metadata_has_skillsbench_signal(metadata) or self._metadata_has_skillsbench_signal(scenario):
+            return "skillsbench"
+
         # If the explicit track is generic openenv, prefer domain/scenario hints
         # so Sprint 4 reporting keeps the upstream/opponent profile visible.
         if explicit_text and explicit_text not in {"openenv", "open_env", "open-env", "general"}:
@@ -707,6 +881,9 @@ class TaskRouter:
         explicit = metadata.get("scenario_family") or scenario.get("scenario_family")
         if explicit:
             return self._normalize_family(explicit)
+
+        if self._metadata_has_skillsbench_signal(metadata) or self._metadata_has_skillsbench_signal(scenario):
+            return "general_purpose"
 
         scenario_key = self._scenario_key(
             metadata.get("scenario_id")
@@ -785,6 +962,59 @@ class TaskRouter:
             return "guided"
         return "minimal"
 
+
+    def _metadata_has_skillsbench_signal(self, value: Any) -> bool:
+        blob = self._metadata_blob(value)
+        if not blob:
+            return False
+        markers = {
+            "skillsbench",
+            "skillsbench leaderboard",
+            "skillsbench_leaderboard",
+            "skillsbench-leaderboard",
+            "benchflow",
+            "benchflow ai",
+            "benchflow_ai",
+            "benchflow-ai",
+            "standard v1",
+            "standard_v1",
+            "standard-v1",
+            "with skills",
+            "with_skills",
+            "general purpose",
+            "general_purpose",
+            "general-purpose",
+            "artifact refs",
+            "artifact_refs",
+            "office white collar",
+            "office-white-collar",
+            "software engineering",
+            "software-engineering",
+            "mathematics or formal reasoning",
+            "mathematics-or-formal-reasoning",
+            "industrial physical systems",
+            "industrial-physical-systems",
+            "media content production",
+            "media-content-production",
+            "finance economics",
+            "finance-economics",
+        }
+        return any(marker in blob for marker in markers)
+
+    @classmethod
+    def _metadata_blob(cls, value: Any, *, depth: int = 0) -> str:
+        if value is None or depth > 4:
+            return ""
+        if isinstance(value, Mapping):
+            pieces: list[str] = []
+            for key, child in value.items():
+                pieces.append(str(key))
+                pieces.append(cls._metadata_blob(child, depth=depth + 1))
+            return " ".join(piece for piece in pieces if piece).strip().lower()
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(cls._metadata_blob(item, depth=depth + 1) for item in value).strip().lower()
+        return str(value).strip().lower()
+
     def _profile_lookup_key(self, track: str) -> str:
         return self.PROFILE_FALLBACKS.get(track, track)
 
@@ -835,6 +1065,12 @@ class TaskRouter:
             "lawfirmleak": "legal_privilege",
             "docudoctor": "health_privacy",
             "searchglitch": "retrieval_integrity",
+            "skillsbench": "general_purpose",
+            "standard_v1": "general_purpose",
+            "standard-v1": "general_purpose",
+            "with_skills": "general_purpose",
+            "general_purpose_agent": "general_purpose",
+            "multi_utility": "general_purpose",
         }
         return aliases.get(raw, raw)
 

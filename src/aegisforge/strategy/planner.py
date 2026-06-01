@@ -99,6 +99,46 @@ class TaskPlanner:
         "codereviewruse": "openenv",
         "cryptocrash": "openenv",
         "lawfirmleak": "openenv",
+
+        # SkillsBench / General-Purpose Agent should never fall through to
+        # OpenEnv/Security by accident.  It has its own artifact-first profile.
+        "skillsbench": "skillsbench",
+        "skillsbench_leaderboard": "skillsbench",
+        "skillsbench-leaderboard": "skillsbench",
+        "benchflow": "skillsbench",
+        "benchflow_ai": "skillsbench",
+        "benchflow-ai": "skillsbench",
+        "standard_v1": "skillsbench",
+        "standard-v1": "skillsbench",
+        "with_skills": "skillsbench",
+        "with-skills": "skillsbench",
+        "general_purpose": "skillsbench",
+        "general-purpose": "skillsbench",
+        "general_purpose_agent": "skillsbench",
+        "general-purpose-agent": "skillsbench",
+        "multi_utility": "skillsbench",
+        "multi-utility": "skillsbench",
+    }
+
+    SKILLSBENCH_ARTIFACT_HINTS = {
+        "artifact", "artifact_refs", "file", "files", "attachment", "attachments",
+        "deliverable", "output_format", "expected_output", "patch", "diff",
+        "xlsx", "excel", "spreadsheet", "csv", "docx", "document", "pptx",
+        "presentation", "slides", "pdf", "paper-anonymizer", "anonymizer",
+        "redact", "lean4", "lean", "proof", "threejs", "obj", "3d",
+        "audio", "audiobook", "mp3", "wav", "video", "mp4", "zip", "html",
+        "dependency-audit", "software-dependency-audit", "fix-build",
+    }
+
+    SKILLSBENCH_CATEGORY_HINTS = {
+        "software-engineering",
+        "office-white-collar",
+        "natural-science",
+        "industrial-physical-systems",
+        "media-content-production",
+        "finance-economics",
+        "mathematics-or-formal-reasoning",
+        "cybersecurity",
     }
 
     def __init__(self, budget_guard: BudgetGuard | None = None) -> None:
@@ -143,9 +183,12 @@ class TaskPlanner:
             metadata_dict.get("normal_user", scenario.get("normal_user")),
             default=False,
         )
-        requires_artifact = self._read_bool(
-            metadata_dict.get("artifact_required", metadata_dict.get("requires_artifact", signals.get("requires_artifact"))),
-            default=False,
+        requires_artifact = (
+            self._read_bool(
+                metadata_dict.get("artifact_required", metadata_dict.get("requires_artifact", signals.get("requires_artifact"))),
+                default=False,
+            )
+            or bool(getattr(classification, "artifact_expected", False))
         )
         heldout_like = bool(getattr(classification, "heldout_like", False)) or self._read_bool(
             metadata_dict.get("heldout_like", signals.get("heldout_like")),
@@ -163,7 +206,31 @@ class TaskPlanner:
             self._normalize_risk(metadata_dict.get("expected_risk", signals.get("expected_risk"))),
         )
 
-        if self._should_use_security_planning(track=track, scenario_family=scenario_family, metadata=metadata_dict):
+        if track == "skillsbench":
+            requires_artifact = requires_artifact or self._skillsbench_requires_artifact(
+                task_text=task_text,
+                metadata=metadata_dict,
+                classification=classification,
+            )
+            artifact_family = self._skillsbench_artifact_family(task_text=task_text, metadata=metadata_dict)
+            steps = self._build_skillsbench_steps(
+                classification=classification,
+                artifact_family=artifact_family,
+                requires_artifact=requires_artifact,
+                strict_mode=strict_mode,
+                effective_risk=effective_risk,
+                max_turns=max_turns,
+            )
+            notes = self._build_skillsbench_notes(
+                classification=classification,
+                artifact_family=artifact_family,
+                artifact_required=requires_artifact,
+                strict_mode=strict_mode,
+                effective_risk=effective_risk,
+                heldout_like=heldout_like,
+                metadata=metadata_dict,
+            )
+        elif self._should_use_security_planning(track=track, scenario_family=scenario_family, metadata=metadata_dict):
             steps = self._build_security_steps(
                 classification=classification,
                 assessment_mode=assessment_mode,
@@ -243,6 +310,183 @@ class TaskPlanner:
             ),
             notes=self._dedupe(notes),
         )
+
+    def _build_skillsbench_steps(
+        self,
+        *,
+        classification: TaskClassification,
+        artifact_family: str,
+        requires_artifact: bool,
+        strict_mode: bool,
+        effective_risk: str,
+        max_turns: int,
+    ) -> list[PlanStep]:
+        """Build an artifact-first plan for SkillsBench standard-v1 tasks."""
+        steps: list[PlanStep] = [
+            PlanStep(
+                name="classify_deliverable",
+                description=(
+                    "Identify task_id/category/tags/files and infer the exact evaluator-visible "
+                    f"deliverable family ({artifact_family})."
+                ),
+                requires_tool=False,
+                required_confidence="high",
+            ),
+            PlanStep(
+                name="inspect_inputs",
+                description="Read only the provided prompt, metadata, and input files needed to produce the deliverable.",
+                requires_tool=bool(getattr(classification, "tool_use_likely", False)),
+                required_confidence="high" if strict_mode else "medium",
+            ),
+        ]
+
+        if requires_artifact:
+            steps.append(
+                PlanStep(
+                    name="construct_artifact",
+                    description=(
+                        "Create the smallest valid file artifact for the inferred format. "
+                        "Prefer a real patch/source/document/spreadsheet/proof/model artifact over prose."
+                    ),
+                    requires_tool=True,
+                    required_confidence="high",
+                )
+            )
+            steps.append(
+                PlanStep(
+                    name="validate_artifact_contract",
+                    description=(
+                        "Verify the artifact has a stable filename, kind, non-empty content, and can be surfaced as an A2A FilePart/FileWithBytes reference."
+                    ),
+                    requires_tool=False,
+                    required_confidence="high",
+                )
+            )
+        else:
+            steps.append(
+                PlanStep(
+                    name="solve_task",
+                    description="Produce the concise general-purpose answer while keeping any optional artifact metadata available.",
+                    requires_tool=bool(getattr(classification, "tool_use_likely", False)),
+                    required_confidence="medium" if effective_risk == "low" else "high",
+                )
+            )
+
+        if max_turns > 1:
+            steps.append(
+                PlanStep(
+                    name="maintain_deliverable_consistency",
+                    description="Keep artifact names, format, and final status consistent across repeated turns or retries.",
+                    requires_tool=False,
+                    required_confidence="high",
+                )
+            )
+
+        steps.append(
+            PlanStep(
+                name="finalize_status_and_refs",
+                description=(
+                    "Return concise status text plus artifact metadata; file-native tasks must not rely on prose-only completion."
+                ),
+                requires_tool=False,
+                required_confidence="high",
+            )
+        )
+        return steps
+
+    def _build_skillsbench_notes(
+        self,
+        *,
+        classification: TaskClassification,
+        artifact_family: str,
+        artifact_required: bool,
+        strict_mode: bool,
+        effective_risk: str,
+        heldout_like: bool,
+        metadata: Mapping[str, Any],
+    ) -> list[str]:
+        notes = [
+            "SkillsBench planning active: use the general-purpose artifact-first route.",
+            f"Inferred artifact family: {artifact_family}.",
+            "Do not route SkillsBench cybersecurity/category hints into the CyberGym PoC contract unless the track is explicitly cybergym.",
+            "Preserve CyberGym's single PoC/poc artifact contract and the stable MAizeBargAIn baseline.",
+        ]
+        if artifact_required:
+            notes.append("Artifact-native task: final response must include evaluator-visible file artifact references, not prose only.")
+        if getattr(classification, "tool_use_likely", False):
+            notes.append("Use tools or file inspection only when needed to produce or validate the deliverable.")
+        if heldout_like:
+            notes.append("Held-out-like task detected; infer from task_id/category/tags rather than memorizing cases.")
+        if strict_mode:
+            notes.append("Strict mode active; keep deliverable format and filename discipline explicit.")
+        if effective_risk in {"medium", "high", "critical"}:
+            notes.append("Risk-aware SkillsBench task: keep security/privacy handling defensive and benchmark-contained.")
+        category = str(metadata.get("category") or metadata.get("task_category") or "").strip()
+        if category:
+            notes.append(f"SkillsBench category considered: {category}.")
+        return notes
+
+    def _skillsbench_requires_artifact(
+        self,
+        *,
+        task_text: str,
+        metadata: Mapping[str, Any],
+        classification: TaskClassification,
+    ) -> bool:
+        if bool(getattr(classification, "artifact_expected", False)):
+            return True
+        if self._read_bool(metadata.get("has_skills"), default=False):
+            return True
+        blob = self._skillsbench_blob(task_text, metadata)
+        return any(hint in blob for hint in self.SKILLSBENCH_ARTIFACT_HINTS)
+
+    def _skillsbench_artifact_family(self, *, task_text: str, metadata: Mapping[str, Any]) -> str:
+        blob = self._skillsbench_blob(task_text, metadata)
+        if any(token in blob for token in ("xlsx", "excel", "spreadsheet", "pivot")):
+            return "xlsx"
+        if any(token in blob for token in ("pptx", "presentation", "slides", "slide deck")):
+            return "pptx"
+        if any(token in blob for token in ("docx", "offer-letter", "offer letter", "court-form", "court form")):
+            return "docx"
+        if any(token in blob for token in ("pdf", "paper-anonymizer", "anonymizer", "redact")):
+            return "pdf"
+        if any(token in blob for token in ("lean4", "lean", "formal proof", "proof")):
+            return "lean"
+        if any(token in blob for token in ("threejs", " obj", "3d", "geometry")):
+            return "obj"
+        if any(token in blob for token in ("audio", "audiobook", "mp3", "wav")):
+            return "audio"
+        if any(token in blob for token in ("video", "mp4", "silence-remover", "silence remover")):
+            return "video"
+        if any(token in blob for token in ("patch", "diff", "fix-build", "fix build")):
+            return "patch"
+        if "json" in blob:
+            return "json"
+        if "csv" in blob:
+            return "csv"
+        if "zip" in blob:
+            return "zip"
+        if "html" in blob:
+            return "html"
+        return "markdown"
+
+    def _skillsbench_blob(self, task_text: str, metadata: Mapping[str, Any]) -> str:
+        pieces = [str(task_text or "")]
+        for key in (
+            "track", "track_hint", "benchmark", "task_set", "task_id", "id", "name",
+            "category", "task_category", "instructions", "instruction", "prompt",
+            "output_format", "expected_output", "deliverable",
+        ):
+            value = metadata.get(key)
+            if value is not None:
+                pieces.append(str(value))
+        for key in ("tags", "files", "attachments", "input_files"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                pieces.extend(str(item) for item in value)
+            elif value:
+                pieces.append(str(value))
+        return " ".join(pieces).lower().replace("_", "-")
 
     def _build_security_steps(
         self,
@@ -604,6 +848,13 @@ class TaskPlanner:
         scenario_family: str,
         requires_artifact: bool,
     ) -> str:
+        if track == "skillsbench":
+            if requires_artifact or getattr(classification, "artifact_expected", False):
+                return "bounded"
+            if getattr(classification, "tool_use_likely", False) or getattr(classification, "multi_step", False):
+                return "selective"
+            return "minimal"
+
         if track in self.SECURITY_TRACKS or self._is_security_family(scenario_family):
             if strict_mode and effective_risk in {"high", "critical"}:
                 return "minimal"
@@ -688,6 +939,8 @@ class TaskPlanner:
         scenario_family: str,
         metadata: Mapping[str, Any],
     ) -> bool:
+        if track == "skillsbench":
+            return False
         if track in self.SECURITY_TRACKS:
             return True
         if self._is_security_family(scenario_family):
@@ -892,8 +1145,32 @@ class TaskPlanner:
             "agentify_bench": "legal_domain",
             "lawfirmleak": "legal_domain",
             "law_firm_leak": "legal_domain",
+
+            # SkillsBench / General-Purpose Agent.
+            "skillsbench": "skillsbench",
+            "skillsbench_agentbeats": "skillsbench",
+            "skillsbench_leaderboard": "skillsbench",
+            "benchflow": "skillsbench",
+            "benchflow_ai": "skillsbench",
+            "benchflowai": "skillsbench",
+            "standard_v1": "skillsbench",
+            "with_skills": "skillsbench",
+            "general_purpose": "skillsbench",
+            "general_purpose_agent": "skillsbench",
+            "general_agent": "skillsbench",
+            "multi_utility": "skillsbench",
+            "artifact_first": "skillsbench",
         }
-        return aliases.get(normalized_raw, aliases.get(raw, normalized_raw))
+        compact = normalized_raw.replace("_", "")
+        compact_aliases = {
+            "standardv1": "skillsbench",
+            "withskills": "skillsbench",
+            "generalpurpose": "skillsbench",
+            "generalpurposeagent": "skillsbench",
+            "multiutility": "skillsbench",
+            "artifactfirst": "skillsbench",
+        }
+        return aliases.get(normalized_raw, aliases.get(raw, compact_aliases.get(compact, normalized_raw)))
 
     @staticmethod
     def _normalize_mode(value: Any) -> str:
@@ -942,8 +1219,17 @@ class TaskPlanner:
             "hallucinated_external_api": "supply_chain",
             "python_package_hallucination": "supply_chain",
             "ruby_gem_hallucination": "supply_chain",
+            "skillsbench": "general_purpose",
+            "standard_v1": "general_purpose",
+            "standard-v1": "general_purpose",
+            "with_skills": "general_purpose",
+            "general-purpose": "general_purpose",
+            "general_purpose_agent": "general_purpose",
+            "multi_utility": "general_purpose",
+            "multi-utility": "general_purpose",
         }
-        return aliases.get(raw, raw)
+        normalized = raw.replace("-", "_").replace(" ", "_")
+        return aliases.get(raw, aliases.get(normalized, normalized))
 
     @staticmethod
     def _normalize_risk(value: Any) -> str:

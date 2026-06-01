@@ -211,6 +211,39 @@ TRACK_ALIASES: dict[str, str] = {
     "omnibench": "openenv",
     "omnibench_aegis_env": "openenv",
 
+    # SkillsBench / General-Purpose Agent / standard-v1.
+    "skillsbench": "skillsbench",
+    "skillsbench_agentbeats": "skillsbench",
+    "skillsbench-agentbeats": "skillsbench",
+    "skillsbench_leaderboard": "skillsbench",
+    "skillsbench-leaderboard": "skillsbench",
+    "benchflow": "skillsbench",
+    "benchflow_ai": "skillsbench",
+    "benchflow-ai": "skillsbench",
+    "benchflowai": "skillsbench",
+    "standard_v1": "skillsbench",
+    "standard-v1": "skillsbench",
+    "standard v1": "skillsbench",
+    "with_skills": "skillsbench",
+    "with-skills": "skillsbench",
+    "general_purpose": "skillsbench",
+    "general-purpose": "skillsbench",
+    "general purpose": "skillsbench",
+    "general_purpose_agent": "skillsbench",
+    "general-purpose-agent": "skillsbench",
+    "general purpose agent": "skillsbench",
+    "general_agent": "skillsbench",
+    "general-agent": "skillsbench",
+    "multi_utility": "skillsbench",
+    "multi-utility": "skillsbench",
+    "multi utility": "skillsbench",
+    "artifact_first": "skillsbench",
+    "artifact-first": "skillsbench",
+    "artifact output": "skillsbench",
+    "artifact_output": "skillsbench",
+    "file_output": "skillsbench",
+    "file-output": "skillsbench",
+
     # Generic security remains available for purely security-shaped requests that
     # are not obviously one of the local Sprint 4 domains.
     "security": "security",
@@ -239,6 +272,12 @@ SCENARIO_TO_TRACK: dict[str, str] = {
     "codereviewruse": "software_testing",
     "cryptocrash": "defi",
     "lawfirmleak": "legal_domain",
+    "skillsbench": "skillsbench",
+    "standardv1": "skillsbench",
+    "withskills": "skillsbench",
+    "generalpurpose": "skillsbench",
+    "generalpurposeagent": "skillsbench",
+    "multiutility": "skillsbench",
 }
 
 # Domain keys are preserved for the six new domains and mapped to upstream
@@ -309,6 +348,32 @@ class TaskClassifier:
         "animal care", "navigation", "mcu", "wikiwiper",
     }
 
+    SKILLSBENCH_KEYWORDS = {
+        "skillsbench", "skillsbench leaderboard", "skillsbench-leaderboard",
+        "benchflow", "benchflow-ai", "standard-v1", "standard_v1", "with_skills",
+        "general purpose", "general-purpose", "general_purpose",
+        "general purpose agent", "general-purpose-agent", "multi utility",
+        "multi-utility", "artifact-first", "artifact first", "artifact_refs",
+        "file output", "file generation", "office-white-collar",
+        "software-engineering", "natural-science", "industrial-physical-systems",
+        "media-content-production", "finance-economics",
+        "mathematics-or-formal-reasoning", "fix-build", "fix build",
+        "fix-build-agentops", "fix-build-google-auto", "software-dependency-audit",
+        "dependency-audit", "court-form-filling", "paper-anonymizer",
+        "pptx-reference-formatting", "xlsx-recover-data", "threejs-to-obj",
+        "video-silence-remover", "pg-essay-to-audiobook", "lean4-proof",
+        "citation-check", "dialogue-parser", "offer-letter-generator",
+    }
+
+    SKILLSBENCH_ARTIFACT_HINTS = {
+        "artifact", "artifact_refs", "file", "files", "attachment", "attachments",
+        "deliverable", "output_format", "expected_output", "patch", "diff",
+        "xlsx", "excel", "spreadsheet", "csv", "docx", "document", "pptx",
+        "presentation", "slides", "pdf", "anonymizer", "redact", "lean4",
+        "lean", "proof", "threejs", "obj", "3d", "audio", "audiobook",
+        "mp3", "wav", "video", "mp4", "silence-remover", "zip", "html",
+    }
+
     SELECTED_TRACK_KEYWORDS: dict[str, set[str]] = {
         "mcu": {
             "mcu-agentbeats", "mcu_minecraft", "mcu-minecraft", "minecraft benchmark", "minecraft",
@@ -375,16 +440,23 @@ class TaskClassifier:
             "agentify-bench", "agentify_bench", "legal domain", "legal", "lawfirmleak",
             "law firm", "privilege", "legal discovery", "semantic mapping",
         },
+        "skillsbench": SKILLSBENCH_KEYWORDS | SKILLSBENCH_ARTIFACT_HINTS,
     }
 
     ARTIFACT_KEYWORDS = {
         "json", "yaml", "artifact", "report", "table", "file", "schema", "card", "contract",
         "assessment", "matrix", "payload", "bundle", "submission",
+        "artifact_refs", "deliverable", "output_format", "expected_output",
+        "patch", "diff", "xlsx", "excel", "spreadsheet", "csv", "docx",
+        "pptx", "slides", "presentation", "pdf", "lean", "lean4", "obj",
+        "audio", "video", "zip", "html",
     }
     TOOL_KEYWORDS = {
         "tool", "lookup", "query", "search", "inspect", "call", "use map_probe",
         "use table_lookup", "use ticket_lookup", "simulator", "crafting wiki", "minecraft wiki",
         "api", "browser", "fhir", "sandbox", "contract", "state", "reset", "step",
+        "workspace", "repository", "repo", "build", "test", "convert", "generate",
+        "recover", "format", "anonymize", "redact",
     }
     HIGH_RISK_PATTERNS = (
         r"ignore previous instructions",
@@ -426,9 +498,22 @@ class TaskClassifier:
         task_type = self._guess_task_type(normalized, track_guess)
         complexity = self._guess_complexity(normalized, metadata)
         risk = self._guess_risk(normalized, metadata, track_guess)
-        artifact_expected = self._read_bool(metadata.get("artifact_required"), default=False) or self._contains_any(normalized, self.ARTIFACT_KEYWORDS)
-        tool_use_likely = self._read_bool(metadata.get("tool_use_likely"), default=False) or self._contains_any(normalized, self.TOOL_KEYWORDS) or track_guess in {"mcu", "tau2", "osworld", "web", "healthcare", "defi"}
-        multi_step = self._read_bool(metadata.get("multi_step"), default=False) or self._looks_multi_step(normalized) or track_guess in {"mcu", "tau2", "maizebargain", "defi", "software_testing"}
+        artifact_expected = (
+            self._read_bool(metadata.get("artifact_required"), default=False)
+            or self._read_bool(metadata.get("requires_artifact"), default=False)
+            or self._contains_any(normalized, self.ARTIFACT_KEYWORDS)
+            or (track_guess == "skillsbench" and self._skillsbench_artifact_expected(normalized, metadata))
+        )
+        tool_use_likely = (
+            self._read_bool(metadata.get("tool_use_likely"), default=False)
+            or self._contains_any(normalized, self.TOOL_KEYWORDS)
+            or track_guess in {"mcu", "tau2", "osworld", "web", "healthcare", "defi", "skillsbench"}
+        )
+        multi_step = (
+            self._read_bool(metadata.get("multi_step"), default=False)
+            or self._looks_multi_step(normalized)
+            or track_guess in {"mcu", "tau2", "maizebargain", "defi", "software_testing", "skillsbench"}
+        )
         heldout_like = self._looks_heldout_like(normalized, metadata)
 
         domain = self._normalize_key(metadata.get("domain"))
@@ -457,6 +542,14 @@ class TaskClassifier:
         if heldout_like:
             tags.append("heldout-like")
             reasons.append("Task resembles a non-templated or unusual prompt.")
+        if track_guess == "skillsbench":
+            tags.append("skillsbench")
+            tags.append("general-purpose")
+            tags.append("artifact-first")
+            reasons.append("Detected SkillsBench / standard-v1 general-purpose artifact-first task signals.")
+            if artifact_expected:
+                tags.append("file-output")
+
         if track_guess == "mcu":
             tags.append("minecraft")
             reasons.append("Detected Minecraft / MCU benchmark language or scenario mapping.")
@@ -480,10 +573,16 @@ class TaskClassifier:
         )
 
     def _metadata_track_hint(self, metadata: Mapping[str, Any]) -> str | None:
-        for key in ("track_hint", "track", "benchmark_track", "opponent_profile"):
+        for key in ("track_hint", "track", "benchmark_track", "opponent_profile", "benchmark", "task_set", "suite", "leaderboard", "adapter"):
             value = metadata.get(key)
             if value:
+                normalized_value = self._normalize_track(str(value))
+                if normalized_value == "skillsbench":
+                    return "skillsbench"
                 return str(value)
+
+        if self._metadata_has_skillsbench_signal(metadata):
+            return "skillsbench"
 
         domain = self._normalize_key(metadata.get("domain"))
         if domain and domain in DOMAIN_TO_TRACK:
@@ -534,6 +633,8 @@ class TaskClassifier:
         return "openenv"
 
     def _guess_task_type(self, text: str, track_guess: str) -> str:
+        if track_guess == "skillsbench":
+            return self._guess_skillsbench_task_type(text)
         if track_guess == "mcu":
             if "artifact" in text or "json" in text or "report" in text:
                 return "artifact_generation"
@@ -590,6 +691,9 @@ class TaskClassifier:
             if re.search(pattern, text):
                 return "high"
 
+        if track_guess == "skillsbench" and self._contains_any(text, self.SECURITY_KEYWORDS | self.MEDIUM_RISK_MARKERS):
+            return "medium"
+
         if track_guess in {"agent_security", "cybergym", "defi"}:
             return "medium"
         if track_guess in {"healthcare", "legal_domain", "pibench"}:
@@ -618,6 +722,78 @@ class TaskClassifier:
         broad_keywords = self.OPENENV_KEYWORDS | self.SECURITY_KEYWORDS | self.TAU2_KEYWORDS | self.MCU_KEYWORDS
         rare_signal = len(vocab) > 90 and self._count_hits(text, broad_keywords) <= 2
         return rare_signal
+
+    def _guess_skillsbench_task_type(self, text: str) -> str:
+        if any(token in text for token in ("fix-build", "fix build", "build failure", "failing build", "patch", "diff")):
+            return "software_repair_artifact"
+        if any(token in text for token in ("xlsx", "excel", "spreadsheet", "csv", "pivot")):
+            return "spreadsheet_artifact"
+        if any(token in text for token in ("pptx", "presentation", "slides", "slide deck")):
+            return "presentation_artifact"
+        if any(token in text for token in ("docx", "offer letter", "court form", "form filling")):
+            return "document_artifact"
+        if any(token in text for token in ("pdf", "paper-anonymizer", "anonymizer", "redact")):
+            return "pdf_document_artifact"
+        if any(token in text for token in ("lean4", "lean", "formal proof", "proof")):
+            return "formal_reasoning_artifact"
+        if any(token in text for token in ("threejs", "obj", "3d model", "geometry")):
+            return "geometry_artifact"
+        if any(token in text for token in ("audio", "audiobook", "mp3", "wav")):
+            return "audio_artifact"
+        if "video" in text or "silence-remover" in text or "silence remover" in text:
+            return "video_artifact"
+        if "dependency-audit" in text or "software-dependency-audit" in text:
+            return "software_dependency_audit"
+        if "citation-check" in text or "dialogue-parser" in text:
+            return "analysis_artifact"
+        if self._contains_any(text, self.SKILLSBENCH_ARTIFACT_HINTS):
+            return "artifact_generation"
+        return "general_purpose_reasoning"
+
+    def _skillsbench_artifact_expected(self, text: str, metadata: Mapping[str, Any]) -> bool:
+        if self._contains_any(text, self.SKILLSBENCH_ARTIFACT_HINTS):
+            return True
+
+        for key in ("task_id", "category", "output_format", "expected_output", "deliverable", "instructions", "instruction", "prompt"):
+            value = metadata.get(key)
+            if value and self._contains_any(str(value).lower(), self.SKILLSBENCH_ARTIFACT_HINTS):
+                return True
+
+        for key in ("tags", "files", "attachments", "input_files"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                if self._contains_any(" ".join(str(item).lower() for item in value), self.SKILLSBENCH_ARTIFACT_HINTS):
+                    return True
+            elif value and self._contains_any(str(value).lower(), self.SKILLSBENCH_ARTIFACT_HINTS):
+                return True
+
+        # SkillsBench standard-v1 tasks with explicit has_skills usually expect
+        # a concrete deliverable. Keep this scoped to SkillsBench signals to
+        # avoid changing legacy OpenEnv/Pi-Bench behavior.
+        return self._read_bool(metadata.get("has_skills"), default=False) and self._metadata_has_skillsbench_signal(metadata)
+
+    def _metadata_has_skillsbench_signal(self, metadata: Mapping[str, Any]) -> bool:
+        blob = self._metadata_blob(metadata)
+        if self._contains_any(blob, self.SKILLSBENCH_KEYWORDS):
+            return True
+        task_id = str(metadata.get("task_id") or metadata.get("id") or "").lower()
+        if any(marker in task_id for marker in ("fix-build", "xlsx-", "pptx-", "lean4", "threejs", "dependency-audit")):
+            return True
+        return False
+
+    @staticmethod
+    def _metadata_blob(value: Any, *, depth: int = 0) -> str:
+        if value is None or depth > 4:
+            return ""
+        if isinstance(value, Mapping):
+            pieces: list[str] = []
+            for key, child in value.items():
+                pieces.append(str(key))
+                pieces.append(TaskClassifier._metadata_blob(child, depth=depth + 1))
+            return " ".join(piece for piece in pieces if piece).lower()
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(TaskClassifier._metadata_blob(item, depth=depth + 1) for item in value).lower()
+        return str(value).lower()
 
     @staticmethod
     def _normalize_track(track: str | None) -> str:
