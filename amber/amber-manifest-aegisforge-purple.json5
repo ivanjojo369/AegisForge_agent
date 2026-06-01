@@ -1,34 +1,27 @@
 {
-  // Generalist AgentBeats Purple manifest for AegisForge.
-  // Built from the previous OfficeQA manifest, with the required Pi-Bench
-  // runtime/config pieces merged in. No secrets are hardcoded here.
-  manifest_version: "0.3.0",
+  // MAizeBargAIn AgentBeats manifest for AegisForge.
+  // Amber v0 accepts manifest_version ^0.1.0. Keep this file small and
+  // evaluator-specific: the participant role for this benchmark is `challenger`.
+  // No secrets are hardcoded here; Amber injects config at runtime.
+  "manifest_version": "0.1.0",
 
   metadata: {
-    name: "AegisForge AgentBeats Purple",
-    display_name: "AegisForge AgentBeats Purple",
-    description: "Generalist AegisForge NCP Purple adapter for AgentX-AgentBeats selected-opponent tracks, including OfficeQA and Pi-Bench.",
+    name: "AegisForge MAizeBargAIn Challenger",
+    display_name: "AegisForge MAizeBargAIn Challenger",
+    description: "AegisForge NCP negotiation adapter for the MAizeBargAIn AgentBeats evaluator.",
     agent: "AegisForge NCP Purple",
-    mode: "purple_benchmark",
-    benchmark: "AgentX-AgentBeats Phase 2 Sprint 4",
-    scenario_family: "agentbeats-selected-opponents",
-    track: "generalist",
+    mode: "maizebargain_challenger",
+    benchmark: "MAizeBargAIn AgentBeats",
+    scenario_family: "maizebargain-agentbeats",
+    track: "maizebargain",
     repository: "https://github.com/ivanjojo369/AegisForge_agent",
 
-    // Pi-Bench Agent Safety track expects the participant role to be `agent`.
-    participant_roles: ["agent"],
+    // The MAizeBargAIn runner names the participant container `challenger`
+    // and exposes participant secrets under AMBER_CONFIG_CHALLENGER_*.
+    participant_roles: ["challenger"],
 
     selected_opponent_tracks: [
-      "mcu",
-      "officeqa",
-      "crmarena",
-      "fieldworkarena",
-      "maizebargain",
-      "tau2",
-      "osworld",
-      "pibench",
-      "cybergym",
-      "netarena"
+      "maizebargain"
     ]
   },
 
@@ -38,40 +31,24 @@
     env: {
       PYTHONUNBUFFERED: "1",
 
-      // General routing defaults. Actual benchmark-specific routing is handled
-      // inside AegisForge using the incoming A2A message/card/bootstrap context.
-      AEGISFORGE_TRACK: "generalist",
-      AEGISFORGE_BENCHMARK: "agentbeats",
-      AEGISFORGE_ADAPTER: "auto",
+      // Evaluator-specific routing. The agent.py MAizeBargAIn path handles
+      // proposal parsing and emits compact JSON allocations such as:
+      // {"allocation_self":[...]}.
+      AEGISFORGE_TRACK: "maizebargain",
+      AEGISFORGE_BENCHMARK: "maizebargain-agentbeats",
+      AEGISFORGE_ADAPTER: "maizebargain",
       AEGISFORGE_SELECTED_OPPONENT_MODE: "1",
-      AEGISFORGE_OUTPUT_PROTOCOL: "auto",
-      AGENT_OUTPUT_PROTOCOL: "auto",
+      AEGISFORGE_ENABLE_MAIZEBARGAIN: "1",
+      AEGISFORGE_MAIZEBARGAIN_MODE: "1",
+      AEGISFORGE_OUTPUT_PROTOCOL: "maizebargain_proposal",
+      AGENT_OUTPUT_PROTOCOL: "maizebargain_proposal",
 
-      // Shared OpenAI runtime. Amber injects this from config; do not hardcode keys.
+      // Shared OpenAI runtime. Amber injects this from the challenger config.
       OPENAI_API_KEY: "${config.openai_api_key}",
       OPENAI_BASE_URL: "https://api.openai.com/v1",
       OPENAI_MODEL: "gpt-4.1",
 
-      // Pi-Bench runtime hooks copied from the Pi-Bench manifest pattern.
-      PI_BENCH_MODEL: "${config.pi_bench_model}",
-      AEGISFORGE_ENABLE_PIBENCH: "1",
-      AEGISFORGE_PIBENCH_MODE: "1",
-      AEGISFORGE_PIBENCH_POLICY_BOOTSTRAP: "1",
-      AEGISFORGE_PIBENCH_RECORD_DECISION_FINAL: "1",
-
-      // OfficeQA runtime hooks preserved from the OfficeQA manifest.
-      AEGISFORGE_OFFICEQA_MODE: "1",
-      OFFICEQA_AGENT_MODE: "1",
-      OFFICEQA_RESPONSE_PROTOCOL: "final_answer",
-      AEGISFORGE_OFFICEQA_USE_RESPONSES_API: "1",
-      AEGISFORGE_OFFICEQA_CODE_INTERPRETER: "1",
-      AEGISFORGE_OFFICEQA_ENABLE_EVIDENCE_PACKER: "0",
-      AEGISFORGE_OFFICEQA_LLM_TIMEOUT_SECONDS: "24",
-      AEGISFORGE_OFFICEQA_ENABLE_CHAT_FALLBACK: "0",
-      AEGISFORGE_OFFICEQA_MAX_CONTEXT_CHARS: "16000",
-      AEGISFORGE_OFFICEQA_MAX_OUTPUT_TOKENS: "900",
-
-      // Debug artifacts stay off unless explicitly enabled.
+      // Keep diagnostics local/off by default.
       AEGISFORGE_DEBUG_ARTIFACTS: "0",
       AEGISFORGE_TRACE_ARTIFACTS: "0"
     },
@@ -88,14 +65,10 @@
       openai_api_key: {
         type: "string",
         secret: true,
-        description: "OpenAI API key injected by AgentBeats/Amber at runtime."
-      },
-      pi_bench_model: {
-        type: "string",
-        description: "Model used by the Pi-Bench purple agent path, e.g. gpt-4.1 or gpt-4o-mini."
+        description: "OpenAI API key injected by AgentBeats/Amber for the challenger participant."
       }
     },
-    required: ["openai_api_key", "pi_bench_model"],
+    required: ["openai_api_key"],
     additionalProperties: false
   },
 
