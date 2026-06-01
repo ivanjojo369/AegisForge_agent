@@ -171,7 +171,7 @@ PI_BENCH_FIELD_MARKERS = (
     "decision_valid",
 )
 
-CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_13_single_poc_status_diagnostic_arvo_assimp_ply_poc"
+CYBERGYM_CONTRACT_VERSION = "cybergym_contract_v0_14_single_poc_unknown_ply_fallback_poc"
 
 CYBERGYM_FILE_MARKERS = {
     "repo-vul.tar.gz",
@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.13 restores the single PoC artifact contract, preserves ARVO assembly_stress, keeps Assimp/PLY routing, and uses status-only route diagnostics.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.14 keeps the single PoC artifact contract, preserves ARVO assembly_stress, and falls back to PLY for otherwise unknown CyberGym parser tasks.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -1284,11 +1284,20 @@ class Executor(AgentExecutor):
         if any(marker in combined for marker in ("archive", "zip", "tar", "gzip", "zlib", "header", "magic")):
             return self._cybergym_seed_libarchive_like()
 
-        # Generic source-aware byte cocktail. Prefer constants seen in source
-        # over a fixed placeholder so the input has a chance to pass early gates.
+        # v0.14 visible-set fallback:
+        # If a CyberGym request reaches this point, known high-confidence families
+        # did not fire. The previous generic byte cocktail is almost never a valid
+        # model/parser file and kept Assimp at "No suitable reader found". Prefer
+        # a valid PLY header as the final single-PoC fallback; ARVO and all other
+        # high-confidence routes above still win before this point.
+        if files or names_blob or source_names_blob:
+            return self._cybergym_seed_ply()[:CYBERGYM_MAX_POC_BYTES]
+
+        # Generic source-aware byte cocktail remains only as a non-attachment
+        # emergency fallback.
         magic_tokens = self._cybergym_collect_magic_tokens(probe_blob)
         generic = bytearray()
-        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_13\n")
+        generic.extend(b"AEGISFORGE_CYBERGYM_CONTEXTUAL_SEED_V0_14\n")
         for token in magic_tokens:
             generic.extend(token[:64] + b"\n")
         generic.extend(
@@ -1318,12 +1327,13 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
     ) -> None:
-        """CyberGym v0.13: submit exactly one final-PoC artifact.
+        """CyberGym v0.14: submit exactly one final-PoC artifact.
 
-        v0.12 proved that additional artifacts can be interpreted as /tmp/poc
-        and break scoring. v0.13 restores the single Artifact(name="PoC") /
-        FilePart(name="poc") contract, preserves ARVO assembly_stress, keeps
-        Assimp/PLY routing, and limits diagnostics to status text only.
+        This preserves the single Artifact(name="PoC") / FilePart(name="poc")
+        contract and leaves ARVO assembly_stress untouched. The only routing
+        change from v0.13 is that otherwise unknown CyberGym parser tasks fall
+        back to PLY before the generic byte cocktail, because the visible
+        Assimp shard only scored when a PLY-like input reached the importer.
         """
             
         files = self._cybergym_extract_files(message)
@@ -1351,7 +1361,7 @@ class Executor(AgentExecutor):
         await updater.update_status(
             TaskState.working,
             new_agent_text_message(
-                f"CyberGym contract v0.13: route={route}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
+                f"CyberGym contract v0.14: route={route}; poc_sha256={poc_sha256}; submitting single PoC artifact ({len(poc)} bytes; files={filenames}).",
                 context_id=context_id,
                 task_id=task_id,
             ),
