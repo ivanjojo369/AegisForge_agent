@@ -319,7 +319,7 @@ class Executor(AgentExecutor):
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, adds an agent-strategy bridge, guards broker_config away from PLY/model fallback, and uses listener-first broker configs, protects libxml2 /out/api, and uses GLB for extensionless Assimp /tmp/poc routing.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract, preserves ARVO assembly_stress, adds an agent-strategy bridge, guards broker_config away from PLY/model fallback, and uses per_listener-first broker configs, protects libxml2 /out/api, and uses ASCII STL for extensionless Assimp /tmp/poc routing.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -1066,36 +1066,34 @@ class Executor(AgentExecutor):
     def _cybergym_seed_broker_config() -> bytes:
         """Mosquitto/broker config seed for broker_fuzz_test_config targets.
 
-        This is deliberately config-shaped, not model-shaped. The previous seed
-        reached the Mosquitto parser but failed early because allow_anonymous was
-        emitted before a listener. Keep listener first so the fuzzer can advance
-        into later config, bridge, auth, numeric, and topic parsing.
+        This is deliberately config-shaped, not model-shaped. The latest logs
+        advanced past the PLY fallback and listener ordering, then stopped because
+        per_listener_settings was emitted after a security setting. Keep
+        per_listener_settings first, then listener, then security and bridge
+        directives so the fuzzer reaches deeper config parsing.
         """
         return (
             b"# AegisForge CyberGym Mosquitto broker config seed\n"
-            b"# AEGISFORGE_BROKER_CONFIG_V0_17_LISTENER_FIRST_SINGLE_POC\n"
+            b"# AEGISFORGE_BROKER_CONFIG_V0_18_PER_LISTENER_FIRST_SINGLE_POC\n"
+            b"per_listener_settings true\n"
             b"listener 1883 127.0.0.1\n"
             b"allow_anonymous true\n"
-            b"per_listener_settings true\n"
             b"max_packet_size 268435455\n"
-            b"message_size_limit 2147483647\n"
+            b"message_size_limit 268435455\n"
             b"max_inflight_messages 65535\n"
-            b"max_queued_messages 2147483647\n"
+            b"max_queued_messages 65535\n"
             b"autosave_interval 1\n"
-            b"retry_interval 0\n"
-            b"persistent_client_expiration 9999999999999999999999999999999d\n"
+            b"retry_interval 1\n"
+            b"persistent_client_expiration 1d\n"
             b"mount_point " + b"A" * 512 + b"\n"
-            b"clientid " + b"B" * 512 + b"\n"
-            b"password_file /tmp/" + b"C" * 256 + b"\n"
-            b"acl_file /tmp/" + b"D" * 256 + b"\n"
-            b"auth_plugin /tmp/" + b"E" * 256 + b"\n"
-            b"auth_opt_key " + b"F" * 768 + b"\n"
             b"connection aegisforge_bridge\n"
             b"address localhost:1883\n"
             b"bridge_protocol_version mqttv311\n"
             b"try_private false\n"
             b"notifications true\n"
             b"start_type automatic\n"
+            b"clientid " + b"B" * 512 + b"\n"
+            b"remote_clientid " + b"C" * 512 + b"\n"
             b"topic # both 0 local/ remote/\n"
             b"topic " + b"G" * 512 + b" out 2\n"
             b"log_type all\n"
@@ -1270,7 +1268,7 @@ class Executor(AgentExecutor):
         low = str(blob or "").lower().replace("_", "-")
 
         if self._cybergym_contains_any(low, ("oss-fuzz:42535201", "42535201", "/out/assimp_fuzzer", "assimp_fuzzer")):
-            return self._cybergym_seed_glb()
+            return self._cybergym_seed_stl_ascii()
 
         if self._cybergym_contains_any(low, ("fbx", ".fbx", "kaydarafbx", "fbximporter", "fbxconverter")):
             return self._cybergym_seed_assimp_signature_probe()
@@ -1324,9 +1322,10 @@ class Executor(AgentExecutor):
             return self._cybergym_seed_md3_quake3()
 
         # Default for extensionless /tmp/poc model-parser tasks. Recent logs
-        # showed both plain PLY and a minimal FBX probe can fall out at
-        # "No suitable reader found"; use a structurally valid GLB first.
-        return self._cybergym_seed_glb()
+        # showed PLY, FBX, and GLB attempts can still fall out at
+        # "No suitable reader found"; ASCII STL starts with a simple content
+        # signature and is the least risky final Assimp probe.
+        return self._cybergym_seed_stl_ascii()
 
     def _cybergym_harness_first_poc(self, combined: str) -> bytes | None:
         """Choose a PoC from high-confidence harness/target names first.
@@ -1386,9 +1385,9 @@ class Executor(AgentExecutor):
             return self._cybergym_seed_broker_config()[:CYBERGYM_MAX_POC_BYTES]
 
         # Assimp's fuzzer receives /tmp/poc with no extension, so the input must
-        # pass content-based signature detection. Recent logs showed PLY can fail
-        # before reader selection, so the extensionless default is now a stronger
-        # FBX-style signature unless source hints explicitly select another model.
+        # pass content-based signature detection. Recent logs showed PLY, FBX,
+        # and GLB can fail before reader selection, so the final conservative
+        # extensionless default is ASCII STL unless source hints select another model.
         if self._cybergym_contains_any(
             low,
             (
