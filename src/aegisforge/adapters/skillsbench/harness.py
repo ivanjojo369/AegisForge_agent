@@ -54,7 +54,7 @@ from .task_catalog import (
 from .workspace import SkillsBenchWorkspace
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_1_family_strategy_worker_contract_2026_06_02"
+HARNESS_VERSION = "skillsbench_harness_v0_2_output_spec_fix_worker_contract_2026_06_02"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -213,6 +213,54 @@ def _parse_csv_excerpt(text: str) -> dict[str, Any]:
     }
 
 
+def _output_spec_name(value: Any) -> str:
+    """Return an output artifact name from dicts or SkillsBenchArtifactRequest objects.
+
+    contract.py represents expected outputs as SkillsBenchArtifactRequest
+    dataclasses.  Older harness code treated those as dictionaries and called
+    `.get(...)`, which caused:
+        'SkillsBenchArtifactRequest' object has no attribute 'get'
+
+    This helper keeps the harness tolerant of both shapes.
+    """
+
+    if value is None:
+        return ""
+    if isinstance(value, Mapping):
+        raw = value.get("name") or value.get("file_name") or value.get("filename")
+    else:
+        raw = (
+            getattr(value, "name", None)
+            or getattr(value, "file_name", None)
+            or getattr(value, "filename", None)
+        )
+    text = str(raw or "").strip()
+    return text
+
+
+def _output_spec_mime(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Mapping):
+        raw = value.get("mime_type") or value.get("mime") or value.get("content_type")
+    else:
+        raw = (
+            getattr(value, "mime_type", None)
+            or getattr(value, "mime", None)
+            or getattr(value, "content_type", None)
+        )
+    return str(raw or "").strip()
+
+
+def _expected_output_names(expected_outputs: Sequence[Any], *, family: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for item in expected_outputs or ():
+        name = _output_spec_name(item)
+        if name:
+            names.append(name)
+    return tuple(names) or tuple(preferred_outputs_for_family(family))
+
+
 class SkillsBenchHarness:
     """Family-aware, offline SkillsBench harness.
 
@@ -295,6 +343,8 @@ class SkillsBenchHarness:
                 diagnostics={
                     "harness_version": HARNESS_VERSION,
                     "stage": "handle_to_emission",
+                    "exception_type": exc.__class__.__name__,
+                    "exception": str(exc)[:500],
                 },
                 workspace=workspace,
             )
@@ -331,9 +381,7 @@ class SkillsBenchHarness:
     def plan_request(self, request: SkillsBenchRequest, *, workspace_summary: Mapping[str, Any]) -> HarnessPlan:
         classification = classify_task(request.metadata, request.prompt)
         family = str(classification.get("family") or request.family or "general")
-        expected_outputs = tuple(
-            str(item.get("name")) for item in request.expected_outputs if item.name
-        ) or tuple(preferred_outputs_for_family(family))
+        expected_outputs = _expected_output_names(request.expected_outputs, family=family)
 
         names = _workspace_file_names(workspace_summary)
         suffixes = _suffix_counts(workspace_summary)
