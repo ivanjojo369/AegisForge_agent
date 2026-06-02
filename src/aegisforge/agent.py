@@ -66,7 +66,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
-SKILLSBENCH_AGENT_VERSION = "skillsbench_general_purpose_artifactrefs_candidate_v0_5_2026_06_02"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_adapter_harness_worker_contract_v0_6_2026_06_02"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -16897,7 +16897,203 @@ class AegisForgeAgent:
         ]
 
 
+    def _skillsbench_adapter_reasoner(self, context: Mapping[str, Any]) -> str:
+        """Reasoning callback used by the formal SkillsBench adapter.
+
+        The new adapter/harness layer is deliberately offline and contract-safe.
+        This callback lets it borrow AegisForge's existing LLM budget only after
+        request normalization, workspace summarization, and task-family planning
+        have already happened.
+        """
+        try:
+            compact_context = json.dumps(
+                self._normalize_for_json(dict(context)),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            compact_context = self._coerce_text(context)
+        compact_context = compact_context[: self._skillsbench_context_char_budget]
+
+        old_cap = self.max_llm_calls_per_response
+        self.max_llm_calls_per_response = max(old_cap, self._skillsbench_connection_budget)
+        try:
+            llm_text = self._call_llm(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are AegisForge inside SkillsBench standard-v1. "
+                            "Produce a concrete, reproducible task answer using only public task metadata, "
+                            "visible prompt/workspace context, and safe reasoning. Do not hardcode hidden answers, "
+                            "do not claim private test access, and prefer structured file-ready outputs."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": compact_context,
+                    },
+                ],
+                temperature=0.05,
+                max_tokens=1800,
+            )
+            return self._sanitize_text(llm_text) if llm_text else ""
+        finally:
+            self.max_llm_calls_per_response = old_cap
+
     def _handle_skillsbench_turn(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Adapter-first SkillsBench handler.
+
+        Earlier versions produced artifact-ref candidates directly inside
+        agent.py.  The formal SkillsBench package now owns the contract:
+        contract.py -> workspace.py -> harness.py -> result_emitter.py ->
+        adapter.py.  This method keeps the same external return shape expected
+        by executor.py while storing all adapter outputs on the legacy surfaces
+        that executor.py already scans.
+        """
+        adapter_error = ""
+        try:
+            from .adapters.skillsbench.adapter import (
+                ADAPTER_VERSION,
+                handle_skillsbench,
+                skillsbench_adapter_health,
+            )
+
+            adapter_output = handle_skillsbench(
+                message={
+                    "metadata": dict(metadata or {}),
+                    "text": task_text,
+                    "track": "skillsbench",
+                    "task_set": "standard-v1",
+                    "condition": "with_skills",
+                },
+                metadata=metadata,
+                text=task_text,
+                reasoner=self._skillsbench_adapter_reasoner,
+            )
+            if not isinstance(adapter_output, Mapping):
+                raise TypeError(f"SkillsBench adapter returned non-mapping: {type(adapter_output)!r}")
+
+            artifacts = [dict(item) for item in adapter_output.get("artifacts", []) if isinstance(item, Mapping)]
+            payload = adapter_output.get("payload") if isinstance(adapter_output.get("payload"), Mapping) else {}
+            artifact_refs = [dict(item) for item in adapter_output.get("artifact_refs_candidate", []) if isinstance(item, Mapping)]
+            artifact_outputs = [dict(item) for item in adapter_output.get("artifact_outputs", []) if isinstance(item, Mapping)]
+            files = [dict(item) for item in adapter_output.get("files", []) if isinstance(item, Mapping)]
+            deliverables = [self._coerce_text(item) for item in adapter_output.get("deliverables", [])]
+
+            final_text = self._coerce_text(adapter_output.get("final_text"))
+            if not final_text:
+                final_text = json.dumps(
+                    {
+                        "status": "completed",
+                        "track": "skillsbench",
+                        "schema": "aegisforge.skillsbench.adapter_final.v0_6",
+                        "version": SKILLSBENCH_AGENT_VERSION,
+                        "payload": self._normalize_for_json(dict(payload)),
+                        "artifact_refs_candidate": self._normalize_for_json(artifact_refs),
+                        "artifact_outputs": self._normalize_for_json(artifact_outputs),
+                        "files": self._normalize_for_json(files),
+                        "deliverables": deliverables,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+
+            status = {
+                "mode": "skillsbench_adapter_harness",
+                "protocol": "skillsbench_adapter_worker_contract_v0_6",
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "adapter_version": ADAPTER_VERSION,
+                "artifact_count": len(artifacts),
+                "artifact_refs_candidate_count": len(artifact_refs),
+                "artifact_outputs_count": len(artifact_outputs),
+                "files_count": len(files),
+                "deliverables": deliverables,
+                "health": skillsbench_adapter_health(),
+                "adapter_diagnostics": self._normalize_for_json(adapter_output.get("diagnostics", {})),
+                "llm_calls_used": self._current_llm_calls,
+                "last_llm_error": self._last_llm_error,
+            }
+
+            # Preserve every collection surface that executor.py already probes.
+            self._skillsbench_last_status = status
+            self._skillsbench_last_artifacts = artifacts
+            self._skillsbench_last_payload = dict(payload)
+            self._skillsbench_last_gateway_manifest = {
+                "adapter": ADAPTER_VERSION,
+                "payload": self._normalize_for_json(dict(payload)),
+                "artifact_refs_candidate": self._normalize_for_json(artifact_refs),
+                "artifact_outputs": self._normalize_for_json(artifact_outputs),
+                "files": self._normalize_for_json(files),
+                "deliverables": deliverables,
+            }
+            self._skillsbench_last_artifact_refs = artifact_refs
+            self._last_artifacts = artifacts
+            self.last_artifacts = artifacts
+            self._last_result = {
+                "track": "skillsbench",
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "payload": dict(payload),
+                "artifacts": artifacts,
+                "artifact_outputs": artifact_outputs,
+                "files": files,
+                "deliverables": deliverables,
+                "artifact_refs_candidate": artifact_refs,
+                "adapter_status": status,
+            }
+            self.last_result = dict(self._last_result)
+
+            return {
+                "final_text": final_text,
+                "payload": dict(payload),
+                "artifacts": artifacts,
+                "artifact_outputs": artifact_outputs,
+                "files": files,
+                "deliverables": deliverables,
+                "artifact_refs_candidate": artifact_refs,
+                "adapter_status": status,
+            }
+        except Exception as exc:
+            adapter_error = self._trim(str(exc), 400)
+            try:
+                LOGGER.exception("SkillsBench adapter route failed; falling back to legacy handler")
+            except Exception:
+                pass
+
+        legacy = self._handle_skillsbench_legacy_turn(task_text, metadata)
+        legacy_payload = legacy.get("payload") if isinstance(legacy.get("payload"), Mapping) else {}
+        legacy_artifacts = [dict(item) for item in legacy.get("artifacts", []) if isinstance(item, Mapping)]
+        legacy_refs = [dict(item) for item in legacy.get("artifact_refs_candidate", []) if isinstance(item, Mapping)]
+        status = dict(getattr(self, "_skillsbench_last_status", {}) or {})
+        status.update(
+            {
+                "mode": "skillsbench_legacy_fallback_after_adapter_error",
+                "protocol": "skillsbench_legacy_artifactrefs_candidate_v0_5",
+                "adapter_error": adapter_error,
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "artifact_count": len(legacy_artifacts),
+                "artifact_refs_candidate_count": len(legacy_refs),
+            }
+        )
+        self._skillsbench_last_status = status
+        self._skillsbench_last_artifacts = legacy_artifacts
+        self._skillsbench_last_payload = dict(legacy_payload)
+        self._skillsbench_last_artifact_refs = legacy_refs
+        self._last_artifacts = legacy_artifacts
+        self.last_artifacts = legacy_artifacts
+        self._last_result = {
+            "track": "skillsbench",
+            "version": SKILLSBENCH_AGENT_VERSION,
+            "payload": dict(legacy_payload),
+            "artifacts": legacy_artifacts,
+            "artifact_refs_candidate": legacy_refs,
+            "adapter_error": adapter_error,
+        }
+        self.last_result = dict(self._last_result)
+        return legacy
+
+    def _handle_skillsbench_legacy_turn(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
         descriptor = self._skillsbench_task_descriptor(task_text, metadata)
         modes = self._skillsbench_utility_modes(descriptor)
         blueprint = self._skillsbench_artifact_blueprint(descriptor, modes)
@@ -17024,7 +17220,7 @@ class AegisForgeAgent:
 
         status = {
             "mode": "skillsbench_general_purpose",
-            "protocol": "skillsbench_multiutility_artifactrefs_candidate_v0_5",
+            "protocol": "skillsbench_adapter_harness_worker_contract_v0_6",
             "task_id": descriptor.get("task_id"),
             "category": descriptor.get("category"),
             "utility_modes": modes,
@@ -17150,6 +17346,8 @@ class AegisForgeAgent:
                 "turn": self.turns,
                 "llm_calls_used": self._current_llm_calls,
                 "skillsbench_status": getattr(self, "_skillsbench_last_status", {}),
+                "skillsbench_adapter_status": getattr(self, "_skillsbench_last_status", {}),
+                "skillsbench_adapter_payload_keys": sorted(str(k) for k in getattr(self, "_skillsbench_last_payload", {}).keys())[:40],
             }
         elif tau2_airline_scope and not maizebargain_protocol:
             final_text = self._handle_tau2_airline_turn(base_text, metadata, message=message)
