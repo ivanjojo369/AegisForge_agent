@@ -212,7 +212,9 @@ CYBERGYM_MAX_TAR_MEMBERS = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TAR_MEMBERS", 
 CYBERGYM_MAX_TEXT_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TEXT_BYTES", "24000"))
 CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "16384"))
 
-SKILLSBENCH_CONTRACT_VERSION = "skillsbench_artifact_bridge_v0_4_extreme_preflight_multichannel_artifactrefs_probe"
+SKILLSBENCH_LEGACY_BRIDGE_VERSION = "skillsbench_artifact_bridge_v0_4_extreme_preflight_multichannel_artifactrefs_probe"
+SKILLSBENCH_CONTRACT_VERSION = "skillsbench_executor_route_probe_direct_adapter_v0_5_2026_06_02"
+SKILLSBENCH_ROUTE_PROBE_VERSION = "skillsbench_route_probe_direct_adapter_v0_5_2026_06_02"
 
 SKILLSBENCH_MAX_ARTIFACTS = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS", "4"))
 SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES", "200000"))
@@ -222,6 +224,9 @@ SKILLSBENCH_POSTRUN_ARTIFACTS = os.getenv("AEGISFORGE_SKILLSBENCH_POSTRUN_ARTIFA
 SKILLSBENCH_SHADOW_TEXT_ARTIFACTS = os.getenv("AEGISFORGE_SKILLSBENCH_SHADOW_TEXT_ARTIFACTS", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_RUNTIME_FILE_MIRROR = os.getenv("AEGISFORGE_SKILLSBENCH_RUNTIME_FILE_MIRROR", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_GATEWAY_PROBE_ARTIFACT = os.getenv("AEGISFORGE_SKILLSBENCH_GATEWAY_PROBE_ARTIFACT", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILLSBENCH_DIRECT_ADAPTER_PROBE = os.getenv("AEGISFORGE_SKILLSBENCH_DIRECT_ADAPTER_PROBE", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILLSBENCH_ROUTE_PROBE_STDOUT = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_STDOUT", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILLSBENCH_ROUTE_PROBE_STATUS = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_STATUS", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 SKILLSBENCH_METADATA_MARKERS = (
     "skillsbench",
@@ -284,6 +289,9 @@ SKILLSBENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
     "assessment_mode": "defender",
     "skillsbench_artifact_bridge": {
         "version": SKILLSBENCH_CONTRACT_VERSION,
+        "legacy_bridge_version": SKILLSBENCH_LEGACY_BRIDGE_VERSION,
+        "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+        "direct_adapter_probe": True,
         "output_channel": "a2a.artifacts.FilePart.FileWithBytes",
         "artifact_refs_must_not_be_empty_for_file_tasks": True,
         "cybergym_non_regression": "never use this bridge for CyberGym; preserve the single PoC/poc artifact contract",
@@ -411,6 +419,15 @@ class Executor(AgentExecutor):
         self._skillsbench_runtime_files_written = 0
         self._skillsbench_last_artifact_failure = ""
         self._skillsbench_last_bridge_diagnostics: dict[str, Any] = {}
+        self._skillsbench_route_probe_events: list[dict[str, Any]] = []
+        self._skillsbench_direct_adapter_invocations = 0
+        self._skillsbench_direct_adapter_successes = 0
+        self._skillsbench_direct_adapter_failures = 0
+        self._skillsbench_direct_adapter_artifacts = 0
+        self._skillsbench_direct_adapter_files = 0
+        self._skillsbench_agent_run_completed = 0
+        self._skillsbench_agent_last_result_seen = 0
+        self._skillsbench_last_direct_adapter_result: dict[str, Any] = {}
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         message = self._require_message(context)
@@ -489,17 +506,44 @@ class Executor(AgentExecutor):
             self._executions += 1
 
             if is_skillsbench:
-                # Extreme SkillsBench artifact flow:
-                #   1) emit a guaranteed preflight artifact before agent.run(...),
-                #   2) run the agent behind a deferred-terminal updater,
-                #   3) emit post-run enrichment from agent.py-produced artifacts,
-                #   4) if both channels fail, emit an emergency diagnostic bundle,
-                #   5) only then flush the terminal state.
-                #
-                # This directly tests whether the SkillsBench gateway converts
-                # TaskUpdater.add_artifact(...) into artifact_refs when artifacts
-                # are emitted before the main completion path.
+                # SkillsBench route-probe v0.5:
+                #   0) emit a visible route marker so logs/status can prove this
+                #      executor branch was reached;
+                #   1) call the formal SkillsBench adapter directly from the
+                #      executor before agent.run(...), producing deterministic
+                #      adapter artifacts without relying on agent.py dispatch;
+                #   2) keep the existing preflight bridge as a timing probe;
+                #   3) run agent.py behind a deferred-terminal updater;
+                #   4) emit post-run enrichment from both adapter and agent
+                #      surfaces;
+                #   5) flush terminal state only after every artifact probe.
                 total_submitted = 0
+
+                await self._skillsbench_route_probe_status(
+                    updater,
+                    event="executor_skillsbench_entered",
+                    context_id=context_id,
+                    task_id=task.id,
+                    forced=forced_skillsbench,
+                    metadata_track=str(metadata.get("track") or metadata.get("track_hint") or ""),
+                    text_chars=len(str(text or "")),
+                )
+
+                if SKILLSBENCH_DIRECT_ADAPTER_PROBE:
+                    direct_adapter_count = await self._submit_skillsbench_direct_adapter_artifacts(
+                        agent,
+                        message,
+                        metadata=metadata,
+                        updater=updater,
+                        context_id=context_id,
+                        task_id=task.id,
+                        text=text,
+                        phase="direct_adapter_preflight",
+                    )
+                    direct_adapter_count = int(direct_adapter_count or 0)
+                    self._skillsbench_direct_adapter_artifacts += direct_adapter_count
+                    self._skillsbench_artifacts_submitted += direct_adapter_count
+                    total_submitted += direct_adapter_count
 
                 if SKILLSBENCH_PREFLIGHT_ARTIFACTS:
                     preflight_count = await self._submit_skillsbench_artifacts(
@@ -520,6 +564,30 @@ class Executor(AgentExecutor):
 
                 deferred_updater = _DeferredTerminalTaskUpdater(updater)
                 await agent.run(message, deferred_updater)
+                self._skillsbench_agent_run_completed += 1
+
+                agent_last_result_seen = any(
+                    bool(getattr(agent, attr, None))
+                    for attr in (
+                        "_last_result",
+                        "last_result",
+                        "_skillsbench_last_payload",
+                        "_skillsbench_last_artifacts",
+                        "_skillsbench_last_artifact_refs",
+                    )
+                )
+                if agent_last_result_seen:
+                    self._skillsbench_agent_last_result_seen += 1
+
+                await self._skillsbench_route_probe_status(
+                    updater,
+                    event="agent_run_completed",
+                    context_id=context_id,
+                    task_id=task.id,
+                    agent_last_result_seen=agent_last_result_seen,
+                    deferred_terminal=deferred_updater.terminal_deferred,
+                    total_submitted_before_postrun=total_submitted,
+                )
 
                 if SKILLSBENCH_POSTRUN_ARTIFACTS:
                     postrun_count = await self._submit_skillsbench_artifacts(
@@ -553,6 +621,19 @@ class Executor(AgentExecutor):
                     emergency_count = int(emergency_count or 0)
                     self._skillsbench_emergency_artifacts_submitted += emergency_count
                     self._skillsbench_artifacts_submitted += emergency_count
+                    total_submitted += emergency_count
+
+                await self._skillsbench_route_probe_status(
+                    updater,
+                    event="executor_skillsbench_before_terminal_flush",
+                    context_id=context_id,
+                    task_id=task.id,
+                    total_submitted=total_submitted,
+                    direct_adapter_invocations=self._skillsbench_direct_adapter_invocations,
+                    direct_adapter_artifacts=self._skillsbench_direct_adapter_artifacts,
+                    artifact_attempts=self._skillsbench_artifact_attempts,
+                    artifact_failures=self._skillsbench_artifact_failures,
+                )
 
                 if deferred_updater.terminal_deferred and not self._terminal_reached(updater):
                     self._skillsbench_deferred_terminal_flushes += 1
@@ -599,14 +680,307 @@ class Executor(AgentExecutor):
             "skillsbench_runtime_files_written": self._skillsbench_runtime_files_written,
             "skillsbench_last_artifact_failure": self._skillsbench_last_artifact_failure,
             "skillsbench_last_bridge_diagnostics": self._skillsbench_last_bridge_diagnostics,
+            "skillsbench_route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+            "skillsbench_route_probe_events": list(self._skillsbench_route_probe_events)[-24:],
+            "skillsbench_direct_adapter_probe_enabled": SKILLSBENCH_DIRECT_ADAPTER_PROBE,
+            "skillsbench_direct_adapter_invocations": self._skillsbench_direct_adapter_invocations,
+            "skillsbench_direct_adapter_successes": self._skillsbench_direct_adapter_successes,
+            "skillsbench_direct_adapter_failures": self._skillsbench_direct_adapter_failures,
+            "skillsbench_direct_adapter_artifacts": self._skillsbench_direct_adapter_artifacts,
+            "skillsbench_direct_adapter_files": self._skillsbench_direct_adapter_files,
+            "skillsbench_agent_run_completed": self._skillsbench_agent_run_completed,
+            "skillsbench_agent_last_result_seen": self._skillsbench_agent_last_result_seen,
+            "skillsbench_last_direct_adapter_result": self._skillsbench_last_direct_adapter_result,
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "skillsbench_contract_version": SKILLSBENCH_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses an extreme env-aware preflight + postrun + multichannel FilePart/TextPart artifact bridge so artifacts are emitted before task completion and artifact_refs conversion failures are diagnosable.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses v0.5 route-probe direct adapter + preflight/postrun FilePart/TextPart artifact bridge so route activation and artifact_refs conversion failures are diagnosable.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
+
+    def _skillsbench_record_route_probe(self, event: str, **payload: Any) -> dict[str, Any]:
+        """Record a bounded SkillsBench route-probe event.
+
+        The previous Quick Submit confirmed the correct image was used but did
+        not prove which runtime branch handled the A2A request.  These events
+        are intentionally duplicated to stdout, status messages, and snapshot()
+        so the next run can distinguish:
+          - executor branch not reached,
+          - direct adapter not invoked,
+          - agent.run did not expose results,
+          - TaskUpdater.add_artifact events ignored by the gateway.
+        """
+        record = {
+            "marker": "AEGISFORGE_ROUTE_PROBE",
+            "version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+            "event": str(event or "unknown")[:120],
+        }
+        try:
+            record.update(self._skillsbench_small_json(dict(payload), max_chars=8000))
+        except Exception:
+            record["payload_error"] = "unserializable"
+        self._skillsbench_route_probe_events.append(record)
+        self._skillsbench_route_probe_events = self._skillsbench_route_probe_events[-64:]
+        if SKILLSBENCH_ROUTE_PROBE_STDOUT:
+            try:
+                print("AEGISFORGE_ROUTE_PROBE " + json.dumps(record, ensure_ascii=False, sort_keys=True, default=str), flush=True)
+            except Exception:
+                pass
+        return record
+
+    async def _skillsbench_route_probe_status(
+        self,
+        updater: TaskUpdater,
+        *,
+        event: str,
+        context_id: str,
+        task_id: str,
+        **payload: Any,
+    ) -> None:
+        """Emit a visible route-probe status envelope."""
+        record = self._skillsbench_record_route_probe(event, **payload)
+        if not SKILLSBENCH_ROUTE_PROBE_STATUS:
+            return
+        try:
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(
+                    "AEGISFORGE_ROUTE_PROBE "
+                    + json.dumps(record, ensure_ascii=False, sort_keys=True, default=str)[:24000],
+                    context_id=context_id,
+                    task_id=task_id,
+                ),
+            )
+        except Exception as exc:
+            self._skillsbench_artifact_failures += 1
+            self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
+
+    async def _submit_skillsbench_direct_adapter_artifacts(
+        self,
+        agent: AegisForgeAgent,
+        message: Any,
+        *,
+        metadata: Mapping[str, Any],
+        updater: TaskUpdater,
+        context_id: str,
+        task_id: str,
+        text: str,
+        phase: str = "direct_adapter_preflight",
+    ) -> int:
+        """Call the formal SkillsBench adapter directly from executor.py.
+
+        agent.py already routes SkillsBench to the adapter, but the last
+        Quick Submit still had empty artifact_refs.  This direct executor call
+        removes one uncertainty: even if agent.run(...) does not dispatch the
+        handler the way we expect, the executor itself now materializes adapter
+        artifacts before terminal completion.
+        """
+        phase = self._skillsbench_slug(phase or "direct_adapter_preflight")
+        self._skillsbench_direct_adapter_invocations += 1
+        await self._skillsbench_route_probe_status(
+            updater,
+            event="direct_adapter_start",
+            context_id=context_id,
+            task_id=task_id,
+            phase=phase,
+            adapter_probe_enabled=SKILLSBENCH_DIRECT_ADAPTER_PROBE,
+        )
+
+        try:
+            from .adapters.skillsbench.adapter import (  # type: ignore
+                ADAPTER_VERSION,
+                SkillsBenchAdapterConfig,
+                handle_skillsbench_result,
+            )
+
+            config = SkillsBenchAdapterConfig(
+                include_workspace_text=False,
+                debug=True,
+                source="executor_route_probe",
+            )
+            adapter_result = handle_skillsbench_result(
+                message={
+                    "metadata": dict(metadata or {}),
+                    "text": str(text or ""),
+                    "track": "skillsbench",
+                    "task_set": "standard-v1",
+                    "condition": "with_skills",
+                    "route_probe": SKILLSBENCH_ROUTE_PROBE_VERSION,
+                },
+                metadata=metadata,
+                text=text,
+                reasoner=None,
+                config=config,
+            )
+            response = adapter_result.as_agent_response() if hasattr(adapter_result, "as_agent_response") else {}
+            adapter_dict = adapter_result.as_dict() if hasattr(adapter_result, "as_dict") else dict(response)
+
+            artifacts = [dict(item) for item in response.get("artifacts", []) if isinstance(item, Mapping)]
+            artifact_outputs = [dict(item) for item in response.get("artifact_outputs", []) if isinstance(item, Mapping)]
+            files_meta = [dict(item) for item in response.get("files", []) if isinstance(item, Mapping)]
+            artifact_refs = [dict(item) for item in response.get("artifact_refs_candidate", []) if isinstance(item, Mapping)]
+            deliverables = [str(item) for item in response.get("deliverables", [])]
+
+            try:
+                setattr(agent, "_skillsbench_last_artifacts", artifacts)
+                setattr(agent, "last_artifacts", artifacts)
+                setattr(agent, "_skillsbench_artifact_outputs", artifact_outputs)
+                setattr(agent, "_skillsbench_last_artifact_refs", artifact_refs)
+                setattr(agent, "_skillsbench_last_payload", response.get("payload") or adapter_dict.get("payload") or {})
+                setattr(
+                    agent,
+                    "_last_result",
+                    {
+                        "track": "skillsbench",
+                        "route_probe": SKILLSBENCH_ROUTE_PROBE_VERSION,
+                        "adapter_version": ADAPTER_VERSION,
+                        "artifacts": artifacts,
+                        "artifact_outputs": artifact_outputs,
+                        "files": files_meta,
+                        "deliverables": deliverables,
+                        "artifact_refs_candidate": artifact_refs,
+                        "payload": response.get("payload") or adapter_dict.get("payload") or {},
+                    },
+                )
+                setattr(agent, "last_result", getattr(agent, "_last_result"))
+            except Exception:
+                pass
+
+            candidates: list[Any] = []
+            candidates.extend(artifact_outputs)
+            candidates.extend(artifacts)
+            candidates.extend(artifact_refs)
+            candidates.extend(files_meta)
+
+            converted_files: list[dict[str, Any]] = []
+            for candidate in candidates:
+                converted = self._skillsbench_candidate_to_file(candidate, metadata=metadata, text=text)
+                if converted is not None:
+                    converted_files.append(converted)
+
+            if not converted_files:
+                converted_files = self._skillsbench_fallback_files(
+                    metadata=metadata,
+                    text=text,
+                    phase=phase,
+                    diagnostics={
+                        "adapter_version": ADAPTER_VERSION,
+                        "adapter_result": self._skillsbench_small_json(adapter_dict, max_chars=6000),
+                        "reason": "direct adapter returned no byte-bearing artifact candidates",
+                    },
+                )
+
+            diagnostics = self._skillsbench_bridge_diagnostics(
+                agent=agent,
+                message=message,
+                metadata=metadata,
+                text=text,
+                phase=phase,
+                context_id=context_id,
+                task_id=task_id,
+            )
+            diagnostics["direct_adapter"] = {
+                "adapter_version": ADAPTER_VERSION,
+                "ok": bool(getattr(adapter_result, "ok", True)),
+                "artifact_count": len(artifacts),
+                "artifact_outputs_count": len(artifact_outputs),
+                "files_count": len(files_meta),
+                "artifact_refs_candidate_count": len(artifact_refs),
+                "deliverables": deliverables[:24],
+            }
+            self._skillsbench_last_bridge_diagnostics = diagnostics
+
+            files = self._skillsbench_diversify_files(
+                converted_files,
+                metadata=metadata,
+                text=text,
+                phase=phase,
+                diagnostics=diagnostics,
+            )
+            self._skillsbench_direct_adapter_files += len(files)
+
+            if SKILLSBENCH_RUNTIME_FILE_MIRROR:
+                self._skillsbench_runtime_files_written += self._skillsbench_write_runtime_files(
+                    files,
+                    metadata=metadata,
+                    phase=phase,
+                    context_id=context_id,
+                    task_id=task_id,
+                )
+
+            await self._skillsbench_status_probe(
+                updater,
+                files=files,
+                diagnostics=diagnostics,
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+            )
+
+            submitted = 0
+            for index, file_record in enumerate(files[:SKILLSBENCH_MAX_ARTIFACTS]):
+                result = await self._skillsbench_emit_artifact_record(
+                    updater,
+                    file_record,
+                    context_id=context_id,
+                    task_id=task_id,
+                    phase=phase,
+                    index=index,
+                    diagnostics=diagnostics,
+                )
+                submitted += int(result.get("submitted", 0) or 0)
+
+            if submitted > 0:
+                self._skillsbench_direct_adapter_successes += 1
+            else:
+                self._skillsbench_direct_adapter_failures += 1
+
+            self._skillsbench_last_direct_adapter_result = {
+                "version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+                "adapter_version": ADAPTER_VERSION,
+                "ok": bool(getattr(adapter_result, "ok", True)),
+                "phase": phase,
+                "submitted": submitted,
+                "file_count": len(files),
+                "artifact_count": len(artifacts),
+                "artifact_outputs_count": len(artifact_outputs),
+                "artifact_refs_candidate_count": len(artifact_refs),
+                "deliverables": deliverables[:24],
+            }
+
+            await self._skillsbench_route_probe_status(
+                updater,
+                event="direct_adapter_complete",
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+                submitted=submitted,
+                file_count=len(files),
+                artifact_count=len(artifacts),
+                artifact_outputs_count=len(artifact_outputs),
+                artifact_refs_candidate_count=len(artifact_refs),
+            )
+            return submitted
+        except Exception as exc:
+            self._skillsbench_direct_adapter_failures += 1
+            self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
+            self._skillsbench_last_direct_adapter_result = {
+                "version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+                "phase": phase,
+                "ok": False,
+                "error": self._safe_error_message(exc),
+            }
+            await self._skillsbench_route_probe_status(
+                updater,
+                event="direct_adapter_failed",
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+                error=self._safe_error_message(exc),
+            )
+            return 0
 
     def _skillsbench_env_forced(self) -> bool:
         """Return True when the container was launched for SkillsBench.
@@ -1336,9 +1710,12 @@ class Executor(AgentExecutor):
                 if hasattr(agent, attr)
             ],
             "tasks_catalog": self._skillsbench_tasks_catalog_diagnostics(),
+            "direct_adapter_probe": self._skillsbench_last_direct_adapter_result,
+            "route_probe_events": list(self._skillsbench_route_probe_events)[-12:],
             "failure_reasoning": [
-                "Prior Quick Submit showed default_track=skillsbench and v0_3 executor in image, but artifact_refs remained empty.",
-                "This v0_4 bridge emits preflight artifacts before agent.run to test terminal-timing failure.",
+                "Prior Quick Submit showed the exact v0_6 agent/adapter image, but artifact_refs remained empty.",
+                "This v0_5 executor calls the formal SkillsBench adapter directly before agent.run to prove whether the route is reached.",
+                "It still emits preflight artifacts before agent.run to test terminal-timing failure.",
                 "It emits post-run artifacts from agent.py state to test candidate-conversion failure.",
                 "It emits TextPart shadows and runtime file mirrors to test gateway FilePart conversion failure.",
             ],
@@ -1406,6 +1783,9 @@ class Executor(AgentExecutor):
             "last_artifacts",
             "_artifact_outputs",
             "artifact_outputs",
+            "_skillsbench_last_payload",
+            "_skillsbench_last_gateway_manifest",
+            "_skillsbench_last_artifact_refs",
             "_deliverables",
             "deliverables",
         ):
@@ -1433,7 +1813,7 @@ class Executor(AgentExecutor):
             except Exception:
                 continue
             if isinstance(value, Mapping):
-                for key in ("artifacts", "artifact_outputs", "deliverables", "files"):
+                for key in ("artifacts", "artifact_outputs", "deliverables", "files", "artifact_refs_candidate", "artifact_refs"):
                     nested = value.get(key)
                     if isinstance(nested, list):
                         candidates.extend(nested)
