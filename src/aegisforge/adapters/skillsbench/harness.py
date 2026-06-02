@@ -66,9 +66,10 @@ from .task_workspace_executor import (
     TASK_WORKSPACE_EXECUTOR_VERSION,
     SkillsBenchTaskWorkspaceExecutor,
 )
+from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_workspace_executor_real_filesystem_probe_2026_06_02"
+HARNESS_VERSION = "skillsbench_harness_v0_3_1_workspace_executor_solver_registry_fix_2026_06_02"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -471,6 +472,7 @@ class SkillsBenchHarness:
             executor = SkillsBenchTaskWorkspaceExecutor(
                 allow_writes=self._workspace_executor_allow_writes(),
                 write_probe=self._workspace_executor_write_probe(),
+                solver_registry=default_solver_registry(),
             )
             execution = executor.execute(
                 request.metadata,
