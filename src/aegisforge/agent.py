@@ -66,7 +66,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
-SKILLSBENCH_AGENT_VERSION = "skillsbench_general_purpose_multiutility_filepart_bridge_v0_2_2026_06_01"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_general_purpose_artifactrefs_candidate_v0_5_2026_06_02"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -1853,6 +1853,9 @@ class AegisForgeAgent:
         self._cybergym_last_strategy: dict[str, Any] = {}
         self._skillsbench_last_status: dict[str, Any] = {}
         self._skillsbench_last_artifacts: list[dict[str, Any]] = []
+        self._skillsbench_last_payload: dict[str, Any] = {}
+        self._skillsbench_last_gateway_manifest: dict[str, Any] = {}
+        self._skillsbench_last_artifact_refs: list[dict[str, Any]] = []
         self.classifier = TaskClassifier()
         self.planner = TaskPlanner()
         self.router = TaskRouter()
@@ -16177,6 +16180,12 @@ class AegisForgeAgent:
             "general_purpose",
             "general-purpose agent",
             "general purpose agent",
+            "artifact_refs",
+            "artifact-refs",
+            "skillsbench_artifact_output",
+            "skillsbench-artifact-output",
+            "a2a_filepart_filewithbytes",
+            "a2a-filepart-filewithbytes",
         )
         if any(marker in blob or marker in compact for marker in direct_markers):
             return True
@@ -16202,6 +16211,22 @@ class AegisForgeAgent:
             "wyckoff",
             "d3.js",
             "data-to-d3",
+            "adaptive-cruise-control",
+            "3d-scan-calc",
+            "glm-lake-mendota",
+            "lab-unit-harmonization",
+            "citation-check",
+            "dialogue-parser",
+            "fix-build-google-auto",
+            "fix-build-agentops",
+            "court-form-filling",
+            "paper-anonymizer",
+            "pptx-reference-formatting",
+            "xlsx-recover-data",
+            "pdf-excel-diff",
+            "sales-pivot-analysis",
+            "pg-essay-to-audiobook",
+            "software-dependency-audit",
         )
         score = sum(1 for marker in category_markers if marker in blob)
         score += sum(1 for marker in tag_markers if marker in blob)
@@ -16294,9 +16319,11 @@ class AegisForgeAgent:
         if not tags:
             tag_hits = []
             for token in (
-                "python", "java", "javascript", "excel", "xlsx", "pdf", "pptx", "video", "audio", "ocr",
-                "optimization", "statistics", "simulation", "security", "vulnerability", "lean4", "stl",
-                "threejs", "d3.js", "form-filling", "redaction", "data-analysis", "github", "ci",
+                "python", "java", "javascript", "typescript", "excel", "xlsx", "csv", "pdf", "docx", "pptx", "video", "audio", "ocr",
+                "optimization", "statistics", "simulation", "security", "vulnerability", "lean4", "stl", "obj", "html", "json",
+                "threejs", "d3.js", "form-filling", "redaction", "data-analysis", "github", "ci", "dependency", "patch",
+                "adaptive-cruise-control", "3d-scan-calc", "glm-lake-mendota", "lab-unit-harmonization", "citation-check",
+                "dialogue-parser", "court-form-filling", "paper-anonymizer", "pptx-reference-formatting", "xlsx-recover-data",
             ):
                 if token in lowered:
                     tag_hits.append(token)
@@ -16311,6 +16338,9 @@ class AegisForgeAgent:
             "has_skills": self._coerce_bool(self._skillsbench_find_value(merged, ("has_skills",)), default=True),
             "text_excerpt": self._trim(text_blob, 2400),
             "metadata_keys": sorted(str(key) for key in merged.keys())[:40] if isinstance(merged, Mapping) else [],
+            "output_format": self._coerce_text(self._skillsbench_find_value(merged, ("output_format", "expected_output", "deliverable", "output_type"))).strip(),
+            "input_file_names": self._skillsbench_extract_file_names(merged),
+            "artifact_refs_present": "artifact_refs" in lowered or "artifact-refs" in lowered,
         }
 
     def _skillsbench_utility_modes(self, descriptor: Mapping[str, Any]) -> list[str]:
@@ -16319,18 +16349,18 @@ class AegisForgeAgent:
         task_id = self._coerce_text(descriptor.get("task_id")).lower()
         blob = f"{category} {tags} {task_id}"
         modes: list[str] = ["general_purpose_router", "artifact_first_delivery"]
-        if category == "software-engineering" or any(term in blob for term in ("build", "ci", "github", "repo", "react", "nextjs", "java", "python", "javascript", "maven", "unit-tests", "d3.js")):
-            modes.extend(["software_repair", "patch_plan", "test_driven_validation"])
-        if category == "office-white-collar" or any(term in blob for term in ("pdf", "form", "redaction", "pptx", "xlsx", "excel", "latex", "ocr", "pivot")):
-            modes.extend(["office_document_automation", "file_transform", "spreadsheet_or_presentation"])
+        if category == "software-engineering" or any(term in blob for term in ("build", "ci", "github", "repo", "react", "nextjs", "java", "python", "javascript", "typescript", "maven", "unit-tests", "d3.js", "fix-build", "dependency-audit")):
+            modes.extend(["software_repair", "patch_plan", "test_driven_validation", "runtime_file_synthesis"])
+        if category == "office-white-collar" or any(term in blob for term in ("pdf", "form", "redaction", "pptx", "xlsx", "excel", "latex", "ocr", "pivot", "court-form", "paper-anonymizer", "citation-check")):
+            modes.extend(["office_document_automation", "file_transform", "spreadsheet_or_presentation", "structured_manifest_output"])
         if category == "finance-economics" or any(term in blob for term in ("finance", "macrofinance", "gdp", "reserves", "excel-index-match", "statistics")):
             modes.extend(["finance_spreadsheet_analysis", "numeric_audit"])
         if category == "natural-science" or any(term in blob for term in ("science", "radar", "hydrology", "seismology", "crystallography", "bioinformatics", "signal-processing")):
             modes.extend(["scientific_computation", "data_pipeline", "model_calibration"])
         if category == "industrial-physical-systems" or any(term in blob for term in ("cad", "dxf", "stl", "geometry", "energy", "routing", "robotics", "simulation", "control")):
             modes.extend(["physical_systems_analysis", "geometry_or_optimization"])
-        if category == "media-content-production" or any(term in blob for term in ("video", "audio", "tts", "threejs", "obj", "image-processing", "multimodal")):
-            modes.extend(["media_processing", "asset_conversion"])
+        if category == "media-content-production" or any(term in blob for term in ("video", "audio", "tts", "threejs", "obj", "image-processing", "multimodal", "3d-scan", "audiobook")):
+            modes.extend(["media_processing", "asset_conversion", "binary_or_asset_manifest"])
         if category == "mathematics-or-formal-reasoning" or any(term in blob for term in ("lean4", "proof", "pddl", "planning", "integer-programming", "constraint-satisfaction")):
             modes.extend(["formal_reasoning", "optimization_solver"])
         if category == "cybersecurity" or any(term in blob for term in ("security", "cve", "vulnerability", "pcap", "intrusion", "dependency")):
@@ -16346,14 +16376,22 @@ class AegisForgeAgent:
         if "software_repair" in modes:
             add_file("solution.patch", "unified diff or concise patch description", "text/x-diff")
             add_file("tests.md", "reproducible validation commands and expected pass criteria", "text/markdown")
+            add_file("repair_manifest.json", "machine-readable repair summary, touched files, and validation status", "application/json")
         if "spreadsheet_or_presentation" in modes or "finance_spreadsheet_analysis" in modes:
             add_file("analysis.csv", "computed table or extracted normalized data", "text/csv")
             add_file("workbook_notes.md", "formulas, sheet mapping, and verification notes", "text/markdown")
+            if any(token in f"{task_id} {category}".lower() for token in ("xlsx", "excel", "pivot", "sales-pivot", "recover-data")):
+                add_file("workbook_result.json", "spreadsheet recovery/index manifest for evaluator-side reconstruction", "application/json")
         if "office_document_automation" in modes:
             if any(token in f"{task_id} {category}".lower() for token in ("pptx", "presentation", "slides", "slide")):
                 add_file("presentation_plan.md", "slide/reference formatting plan and validation notes", "text/markdown")
-            elif any(token in f"{task_id} {category}".lower() for token in ("pdf", "anonym", "redact")):
+                add_file("presentation_refs.json", "reference/citation formatting manifest", "application/json")
+            elif any(token in f"{task_id} {category}".lower() for token in ("pdf", "anonym", "redact", "paper-anonymizer")):
                 add_file("redaction_manifest.json", "redaction/anonymization manifest", "application/json")
+                add_file("anonymized_paper.md", "text-safe anonymized paper reconstruction or redaction notes", "text/markdown")
+            elif any(token in f"{task_id} {category}".lower() for token in ("court-form", "form-filling")):
+                add_file("completed_form.md", "completed court/form fields and validation notes", "text/markdown")
+                add_file("form_fields.json", "structured field-value extraction for the form", "application/json")
             else:
                 add_file("document_result.md", "document transformation/redaction/form-filling summary", "text/markdown")
         if "media_processing" in modes or "asset_conversion" in modes:
@@ -16364,6 +16402,12 @@ class AegisForgeAgent:
         if "scientific_computation" in modes or "physical_systems_analysis" in modes or "formal_reasoning" in modes:
             if any(token in f"{task_id} {category}".lower() for token in ("lean4", "lean", "proof")):
                 add_file("solution.lean", "Lean 4 proof artifact or deterministic proof scaffold", "text/plain")
+                add_file("proof_notes.md", "formal proof strategy and validation caveats", "text/markdown")
+            elif any(token in f"{task_id} {category}".lower() for token in ("3d-scan", "geometry", "obj")):
+                add_file("geometry_result.json", "structured geometry/measurement result with units and checks", "application/json")
+            elif any(token in f"{task_id} {category}".lower() for token in ("unit", "harmonization", "lab-unit")):
+                add_file("unit_harmonization.csv", "normalized unit conversion table", "text/csv")
+                add_file("unit_harmonization.json", "unit conversion audit manifest", "application/json")
             else:
                 add_file("solution.json", "structured numeric or symbolic answer with units and checks", "application/json")
         if "cybersecurity_audit" in modes:
@@ -16377,6 +16421,12 @@ class AegisForgeAgent:
             "expected_files": expected_files,
             "primary_mode": modes[-1] if modes else "general_purpose_router",
             "artifact_strategy": "emit_text_plus_named_artifacts; prefer concrete files/patches when task supplies workspace attachments",
+            "gateway_compatibility": {
+                "primary": "TaskUpdater.add_artifact(FilePart/FileWithBytes)",
+                "secondary": "final_text.artifact_refs_candidate + payload.artifact_outputs",
+                "executor": "executor_v0_4_preflight_postrun_emergency_multichannel_bridge",
+                "intent": "make artifact_refs non-empty on artifact-native SkillsBench tasks",
+            },
         }
 
     def _skillsbench_build_llm_messages(self, task_text: str, descriptor: Mapping[str, Any], modes: list[str], blueprint: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -16565,7 +16615,7 @@ class AegisForgeAgent:
             return []
         out: list[dict[str, str]] = []
         seen: set[str] = set()
-        for item in files[:4]:
+        for item in files[:8]:
             if not isinstance(item, Mapping):
                 continue
             file_name = self._skillsbench_safe_file_name(self._coerce_text(item.get("path")) or "skillsbench_artifact.md")
@@ -16646,23 +16696,227 @@ class AegisForgeAgent:
         except Exception:
             return None
 
+
+    def _skillsbench_extract_file_names(self, value: Any, *, depth: int = 0) -> list[str]:
+        if value is None or depth > 5:
+            return []
+        names: list[str] = []
+        if isinstance(value, Mapping):
+            for key, child in list(value.items())[:120]:
+                key_text = str(key).lower()
+                if key_text in {"name", "file_name", "filename", "path", "relative_path"}:
+                    text = self._coerce_text(child).strip()
+                    if text and len(text) <= 220 and not text.startswith("{"):
+                        names.append(os.path.basename(text))
+                names.extend(self._skillsbench_extract_file_names(child, depth=depth + 1))
+                if len(names) >= 24:
+                    break
+        elif isinstance(value, (list, tuple, set)):
+            for child in list(value)[:120]:
+                names.extend(self._skillsbench_extract_file_names(child, depth=depth + 1))
+                if len(names) >= 24:
+                    break
+        elif isinstance(value, str):
+            for match in re.finditer(r"(?i)\b[A-Za-z0-9_.+\-]{2,120}\.(?:py|js|ts|json|csv|xlsx|pptx|docx|pdf|md|txt|lean|obj|html|zip|patch|diff)\b", value):
+                names.append(os.path.basename(match.group(0)))
+        return self._dedupe([name for name in names if name])[:24]
+
+    def _skillsbench_catalog_hint(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+        """Optional task.py support surface for executor diagnostics.
+
+        This does not load answers. It only exposes broad catalog/track metadata
+        when the local tasks module is available, so the executor can understand
+        why a SkillsBench request was routed through the general-purpose path.
+        """
+        out: dict[str, Any] = {
+            "available": False,
+            "source": "src/aegisforge/adapters/tau2/quipu_lab/tasks.py",
+            "purpose": "diagnostic taxonomy only; no benchmark answer lookup",
+        }
+        try:
+            module = import_module(".adapters.tau2.quipu_lab.tasks", package=__package__)
+        except Exception as exc:
+            out["error"] = self._trim(str(exc), 180)
+            return out
+        try:
+            out["available"] = True
+            upstream = getattr(module, "UPSTREAM_GREEN_AGENT_REGISTRY", {})
+            if isinstance(upstream, Mapping):
+                out["tracks"] = sorted(str(key) for key in upstream.keys())[:32]
+                skillsbench = upstream.get("skillsbench")
+                if hasattr(skillsbench, "as_artifact"):
+                    out["skillsbench_profile"] = self._normalize_for_json(skillsbench.as_artifact())
+            categories = getattr(module, "SPRINT4_DOMAINS", {})
+            if isinstance(categories, Mapping):
+                out["sprint4_domain_count"] = len(categories)
+            out["descriptor_task_id"] = self._coerce_text(descriptor.get("task_id"))
+            out["descriptor_category"] = self._coerce_text(descriptor.get("category"))
+        except Exception as exc:
+            out["error"] = self._trim(str(exc), 180)
+        return out
+
+    def _skillsbench_artifact_ref_candidates(
+        self,
+        artifacts: list[Mapping[str, Any]],
+        descriptor: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
+        for index, item in enumerate(artifacts):
+            if not isinstance(item, Mapping):
+                continue
+            file_name = self._skillsbench_safe_file_name(
+                self._coerce_text(item.get("file_name") or item.get("filename") or item.get("name") or f"artifact_{index}.md")
+            )
+            text_value = self._coerce_text(item.get("text") or item.get("content") or item.get("markdown") or item.get("body"))
+            raw_value = item.get("bytes") or item.get("file_bytes") or item.get("raw_bytes") or item.get("content_bytes")
+            if isinstance(raw_value, bytes):
+                raw = raw_value
+            elif isinstance(raw_value, bytearray):
+                raw = bytes(raw_value)
+            elif isinstance(raw_value, str) and raw_value.strip():
+                try:
+                    raw = base64.b64decode(raw_value, validate=True)
+                except Exception:
+                    raw = raw_value.encode("utf-8", errors="replace")
+            else:
+                raw = text_value.encode("utf-8", errors="replace")
+            digest = hashlib.sha256(raw).hexdigest() if raw else hashlib.sha256(file_name.encode("utf-8")).hexdigest()
+            refs.append(
+                {
+                    "artifact_name": self._coerce_text(item.get("artifact_name") or item.get("artifact") or Path(file_name).stem)[:120],
+                    "file_name": file_name,
+                    "name": file_name,
+                    "mime_type": self._coerce_text(item.get("mime_type") or item.get("mime")) or self._skillsbench_mime_type_for_name(file_name),
+                    "sha256": digest,
+                    "size_bytes": len(raw),
+                    "uri": f"artifact://skillsbench/{digest[:16]}/{file_name}",
+                    "candidate_ref": f"skillsbench://{self._coerce_text(descriptor.get('task_id')) or 'task'}/{file_name}",
+                    "transport_hints": [
+                        "TaskUpdater.add_artifact",
+                        "A2A FilePart/FileWithBytes",
+                        "final_text.artifact_refs_candidate",
+                        "executor_runtime_mirror",
+                    ],
+                }
+            )
+        return refs
+
+    def _skillsbench_gateway_manifest(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        modes: list[str],
+        blueprint: Mapping[str, Any],
+        artifacts: list[Mapping[str, Any]],
+        draft: str,
+        catalog_hint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        refs = self._skillsbench_artifact_ref_candidates(artifacts, descriptor)
+        return {
+            "schema": "aegisforge.skillsbench.gateway_artifactrefs_probe.v0_5",
+            "version": SKILLSBENCH_AGENT_VERSION,
+            "track": "skillsbench",
+            "task_id": descriptor.get("task_id"),
+            "category": descriptor.get("category"),
+            "utility_modes": list(modes),
+            "artifact_refs_candidate": refs,
+            "artifact_outputs": [
+                {
+                    "artifact_name": ref["artifact_name"],
+                    "file_name": ref["file_name"],
+                    "mime_type": ref["mime_type"],
+                    "sha256": ref["sha256"],
+                    "size_bytes": ref["size_bytes"],
+                }
+                for ref in refs
+            ],
+            "files": [
+                {"name": ref["file_name"], "mime_type": ref["mime_type"], "sha256": ref["sha256"]}
+                for ref in refs
+            ],
+            "deliverables": [ref["file_name"] for ref in refs],
+            "gateway_diagnostics": {
+                "observed_failure": "previous SkillsBench quick-submit runs completed tasks with artifact_refs=[]",
+                "agent_strategy": "emit multiple named artifact records and expose artifact_refs_candidate in final payload",
+                "executor_strategy": "preflight + postrun + emergency TaskUpdater.add_artifact bridge",
+                "conversion_hypotheses": [
+                    "gateway consumes TaskUpdater artifacts before terminal completion",
+                    "gateway may also inspect final_text artifact_refs_candidate",
+                    "gateway may scan runtime mirror files under Amber output paths",
+                ],
+            },
+            "artifact_blueprint": self._normalize_for_json(dict(blueprint)),
+            "catalog_hint": self._normalize_for_json(dict(catalog_hint)),
+            "answer_excerpt": self._trim(draft, 1800),
+        }
+
+    def _skillsbench_probe_artifacts(
+        self,
+        *,
+        descriptor: Mapping[str, Any],
+        modes: list[str],
+        blueprint: Mapping[str, Any],
+        draft: str,
+        existing_artifacts: list[Mapping[str, Any]],
+        catalog_hint: Mapping[str, Any],
+    ) -> list[dict[str, str]]:
+        manifest = self._skillsbench_gateway_manifest(
+            descriptor=descriptor,
+            modes=modes,
+            blueprint=blueprint,
+            artifacts=list(existing_artifacts),
+            draft=draft,
+            catalog_hint=catalog_hint,
+        )
+        refs_text = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+        index_lines = [
+            "# SkillsBench artifact index",
+            "",
+            f"- version: `{SKILLSBENCH_AGENT_VERSION}`",
+            f"- task_id: `{self._coerce_text(descriptor.get('task_id')) or 'unknown-task'}`",
+            f"- category: `{self._coerce_text(descriptor.get('category')) or 'general-purpose'}`",
+            "",
+            "## Candidate artifact refs",
+        ]
+        for ref in manifest.get("artifact_refs_candidate", [])[:16]:
+            if isinstance(ref, Mapping):
+                index_lines.append(f"- `{ref.get('file_name')}` sha256={ref.get('sha256')} uri={ref.get('uri')}")
+        return [
+            self._skillsbench_artifact_record(
+                artifact_name="skillsbench_gateway_artifactrefs_probe",
+                file_name="skillsbench_gateway_artifactrefs_probe.json",
+                text=refs_text,
+                mime_type="application/json",
+            ),
+            self._skillsbench_artifact_record(
+                artifact_name="skillsbench_artifact_index",
+                file_name="skillsbench_artifact_index.md",
+                text="\n".join(index_lines).strip() + "\n",
+                mime_type="text/markdown",
+            ),
+        ]
+
+
     def _handle_skillsbench_turn(self, task_text: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
         descriptor = self._skillsbench_task_descriptor(task_text, metadata)
         modes = self._skillsbench_utility_modes(descriptor)
         blueprint = self._skillsbench_artifact_blueprint(descriptor, modes)
+        catalog_hint = self._skillsbench_catalog_hint(descriptor)
         old_cap = self.max_llm_calls_per_response
         self.max_llm_calls_per_response = max(old_cap, self._skillsbench_connection_budget)
         try:
             llm_text = self._call_llm(
                 messages=self._skillsbench_build_llm_messages(task_text, descriptor, modes, blueprint),
                 temperature=0.05,
-                max_tokens=1400,
+                max_tokens=1800,
             )
         finally:
             self.max_llm_calls_per_response = old_cap
+
         draft = self._sanitize_text(llm_text) if llm_text else self._skillsbench_render_default_answer(descriptor, modes, blueprint)
-        payload = {
-            "schema": "aegisforge.skillsbench.multiutility.v0_2",
+
+        payload: dict[str, Any] = {
+            "schema": "aegisforge.skillsbench.multiutility.v0_5",
             "version": SKILLSBENCH_AGENT_VERSION,
             "descriptor": self._normalize_for_json(dict(descriptor)),
             "utility_modes": modes,
@@ -16678,15 +16932,16 @@ class AegisForgeAgent:
                 "no_hardcoded_answers": True,
                 "uses_task_signals_not_solution_tables": True,
                 "artifact_first_delivery": True,
+                "catalog_hint_is_taxonomy_only": True,
+            },
+            "executor_alignment": {
+                "expected_executor": "skillsbench_artifact_bridge_v0_4_extreme_preflight_multichannel_artifactrefs_probe",
+                "agent_surface": "artifact_refs_candidate + artifact_outputs + files + deliverables + FilePart-ready records",
+                "fallback_reason": "If TaskUpdater.add_artifact is not converted into artifact_refs by the gateway, final_text still carries artifact_refs_candidate and all artifact manifests.",
             },
         }
-        artifacts = [
-            self._skillsbench_artifact_record(
-                artifact_name="skillsbench_result",
-                file_name="skillsbench_result.json",
-                text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-                mime_type="application/json",
-            ),
+
+        artifacts: list[dict[str, Any]] = [
             self._skillsbench_artifact_record(
                 artifact_name="skillsbench_deliverable",
                 file_name="skillsbench_deliverable.md",
@@ -16700,33 +16955,121 @@ class AegisForgeAgent:
                 mime_type="application/json",
             ),
         ]
+
         artifacts.extend(self._skillsbench_expected_file_artifacts(descriptor, modes, blueprint, draft))
-        artifacts = artifacts[:6]
+        artifacts = artifacts[:10]
+
+        # Add gateway probes after the concrete deliverables so they describe the
+        # actual candidates the executor will try to materialize.
+        probe_artifacts = self._skillsbench_probe_artifacts(
+            descriptor=descriptor,
+            modes=modes,
+            blueprint=blueprint,
+            draft=draft,
+            existing_artifacts=artifacts,
+            catalog_hint=catalog_hint,
+        )
+        artifacts.extend(probe_artifacts)
+
+        gateway_manifest = self._skillsbench_gateway_manifest(
+            descriptor=descriptor,
+            modes=modes,
+            blueprint=blueprint,
+            artifacts=artifacts,
+            draft=draft,
+            catalog_hint=catalog_hint,
+        )
+        payload["gateway_manifest"] = self._normalize_for_json(gateway_manifest)
+        payload["artifact_refs_candidate"] = gateway_manifest.get("artifact_refs_candidate", [])
+        payload["artifact_outputs"] = gateway_manifest.get("artifact_outputs", [])
+        payload["files"] = gateway_manifest.get("files", [])
+        payload["deliverables"] = gateway_manifest.get("deliverables", [])
+
+        # Rebuild the result artifact after adding all reference candidates.
+        artifacts.insert(
+            0,
+            self._skillsbench_artifact_record(
+                artifact_name="skillsbench_result",
+                file_name="skillsbench_result.json",
+                text=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                mime_type="application/json",
+            ),
+        )
+        artifacts = artifacts[:12]
+
+        refs = self._skillsbench_artifact_ref_candidates(artifacts, descriptor)
+        payload["artifact_refs_candidate"] = refs
         payload["artifact_outputs"] = [
             {
-                "artifact_name": item.get("artifact_name"),
-                "file_name": item.get("file_name") or item.get("name"),
-                "mime_type": item.get("mime_type"),
+                "artifact_name": ref.get("artifact_name"),
+                "file_name": ref.get("file_name"),
+                "mime_type": ref.get("mime_type"),
+                "sha256": ref.get("sha256"),
+                "size_bytes": ref.get("size_bytes"),
             }
-            for item in artifacts
+            for ref in refs
         ]
-        self._skillsbench_last_status = {
+        payload["files"] = [
+            {
+                "name": ref.get("file_name"),
+                "file_name": ref.get("file_name"),
+                "mime_type": ref.get("mime_type"),
+                "sha256": ref.get("sha256"),
+                "size_bytes": ref.get("size_bytes"),
+            }
+            for ref in refs
+        ]
+        payload["deliverables"] = [ref.get("file_name") for ref in refs]
+        payload["artifact_refs"] = [ref.get("uri") for ref in refs if ref.get("uri")]
+
+        status = {
             "mode": "skillsbench_general_purpose",
+            "protocol": "skillsbench_multiutility_artifactrefs_candidate_v0_5",
             "task_id": descriptor.get("task_id"),
             "category": descriptor.get("category"),
             "utility_modes": modes,
             "artifact_count": len(artifacts),
+            "artifact_refs_candidate_count": len(refs),
             "llm_calls_used": self._current_llm_calls,
             "last_llm_error": self._last_llm_error,
+            "gateway_manifest": payload.get("gateway_manifest"),
+            "artifact_outputs": payload.get("artifact_outputs"),
+            "files": payload.get("files"),
+            "deliverables": payload.get("deliverables"),
+            "artifacts": [dict(item) for item in artifacts],
         }
+        self._skillsbench_last_status = status
         self._skillsbench_last_artifacts = [dict(item) for item in artifacts]
+        self._skillsbench_last_payload = dict(payload)
+        self._skillsbench_last_gateway_manifest = dict(gateway_manifest)
+        self._skillsbench_last_artifact_refs = [dict(ref) for ref in refs]
+        self._last_artifacts = [dict(item) for item in artifacts]
+        self.last_artifacts = [dict(item) for item in artifacts]
+        self._last_result = {
+            "track": "skillsbench",
+            "payload": payload,
+            "artifacts": [dict(item) for item in artifacts],
+            "artifact_outputs": payload.get("artifact_outputs"),
+            "files": payload.get("files"),
+            "deliverables": payload.get("deliverables"),
+            "artifact_refs_candidate": refs,
+        }
+        self.last_result = dict(self._last_result)
+
         final_text = json.dumps(
             {
                 "status": "completed",
                 "track": "skillsbench",
+                "schema": "aegisforge.skillsbench.final_artifactrefs_candidate.v0_5",
+                "version": SKILLSBENCH_AGENT_VERSION,
                 "task_id": descriptor.get("task_id"),
                 "category": descriptor.get("category"),
                 "utility_modes": modes,
+                "artifact_refs": payload.get("artifact_refs"),
+                "artifact_refs_candidate": refs,
+                "artifact_outputs": payload.get("artifact_outputs"),
+                "files": payload.get("files"),
+                "deliverables": payload.get("deliverables"),
                 "artifact_names": [item.get("file_name") or item.get("name") for item in artifacts],
                 "answer": draft,
             },
@@ -16802,7 +17145,7 @@ class AegisForgeAgent:
             skillsbench_artifacts = [dict(item) for item in skillsbench_output.get("artifacts", []) if isinstance(item, Mapping)]
             trace = {
                 "mode": "skillsbench_general_purpose_protocol",
-                "protocol": "skillsbench_multiutility_filepart_artifact_first_v0_2",
+                "protocol": "skillsbench_multiutility_artifactrefs_candidate_v0_5",
                 "version": SKILLSBENCH_AGENT_VERSION,
                 "turn": self.turns,
                 "llm_calls_used": self._current_llm_calls,
@@ -16978,7 +17321,7 @@ class AegisForgeAgent:
                 name="AegisForgeResponse",
             )
         if skillsbench_protocol:
-            for artifact_item in skillsbench_artifacts[:6]:
+            for artifact_item in skillsbench_artifacts[:12]:
                 art_name = (
                     self._coerce_text(artifact_item.get("artifact_name")).strip()
                     or self._coerce_text(artifact_item.get("name")).strip()
