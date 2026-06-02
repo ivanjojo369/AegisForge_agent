@@ -1,28 +1,52 @@
 {
-  // MAizeBargAIn AgentBeats manifest for AegisForge.
+  // SkillsBench / General-Purpose Agent manifest for AegisForge.
   // Amber v0 accepts manifest_version ^0.1.0. Keep this file small and
-  // evaluator-specific: the participant role for this benchmark is `challenger`.
+  // evaluator-specific: the SkillsBench participant role is `agent`.
   // No secrets are hardcoded here; Amber injects config at runtime.
+  //
+  // Critical runtime intent:
+  // - start AegisForge as SkillsBench / standard-v1 / with_skills, not MAizeBargAIn;
+  // - advertise and use artifact-first file output through the A2A runtime;
+  // - preserve CyberGym and Pi-Bench non-regression guards inside the codebase,
+  //   but do not select those tracks from this manifest.
   "manifest_version": "0.1.0",
 
   metadata: {
-    name: "AegisForge MAizeBargAIn Challenger",
-    display_name: "AegisForge MAizeBargAIn Challenger",
-    description: "AegisForge NCP negotiation adapter for the MAizeBargAIn AgentBeats evaluator.",
-    agent: "AegisForge NCP Purple",
-    mode: "maizebargain_challenger",
-    benchmark: "MAizeBargAIn AgentBeats",
-    scenario_family: "maizebargain-agentbeats",
-    track: "maizebargain",
+    name: "AegisForge SkillsBench Agent",
+    display_name: "AegisForge SkillsBench General-Purpose Agent",
+    description: "AegisForge artifact-first general-purpose A2A agent for the SkillsBench standard-v1 evaluator.",
+    agent: "AegisForge Unified Purple",
+    mode: "skillsbench_artifact_first",
+    benchmark: "SkillsBench",
+    task_set: "standard-v1",
+    condition: "with_skills",
+    scenario_family: "skillsbench-standard-v1",
+    track: "skillsbench",
+    adapter: "skillsbench",
     repository: "https://github.com/ivanjojo369/AegisForge_agent",
 
-    // The MAizeBargAIn runner names the participant container `challenger`
-    // and exposes participant secrets under AMBER_CONFIG_CHALLENGER_*.
-    participant_roles: ["challenger"],
+    // The SkillsBench gateway names the participant component `agent`
+    // and binds #gateway.purple1 from #agent.a2a in the generated run manifest.
+    participant_roles: ["agent"],
 
     selected_opponent_tracks: [
-      "maizebargain"
-    ]
+      "skillsbench"
+    ],
+
+    artifact_contract: {
+      version: "skillsbench_artifact_bridge_v0_1_filepart_output",
+      output_channel: "a2a.artifacts.FilePart.FileWithBytes",
+      artifact_first: true,
+      artifact_refs_must_not_be_empty_for_file_tasks: true,
+      expected_task_set: "standard-v1",
+      expected_condition: "with_skills"
+    },
+
+    non_regression_guards: {
+      cybergym: "Do not use this manifest for CyberGym; CyberGym keeps exactly one Artifact(name='PoC') with FilePart(name='poc').",
+      maizebargain: "This manifest disables MAizeBargAIn mode so SkillsBench is not routed through bargaining output.",
+      pibench: "Pi-Bench record_decision remains code-supported but is not selected by this manifest."
+    }
   },
 
   program: {
@@ -31,26 +55,50 @@
     env: {
       PYTHONUNBUFFERED: "1",
 
-      // Evaluator-specific routing. The agent.py MAizeBargAIn path handles
-      // proposal parsing and emits compact JSON allocations such as:
-      // {"allocation_self":[...]}.
-      AEGISFORGE_TRACK: "maizebargain",
-      AEGISFORGE_BENCHMARK: "maizebargain-agentbeats",
-      AEGISFORGE_ADAPTER: "maizebargain",
-      AEGISFORGE_SELECTED_OPPONENT_MODE: "1",
-      AEGISFORGE_ENABLE_MAIZEBARGAIN: "1",
-      AEGISFORGE_MAIZEBARGAIN_MODE: "1",
-      AEGISFORGE_OUTPUT_PROTOCOL: "maizebargain_proposal",
-      AGENT_OUTPUT_PROTOCOL: "maizebargain_proposal",
+      // Evaluator-specific routing. These values are intentionally explicit
+      // because SkillsBench task payloads may not include a top-level `track`.
+      AEGISFORGE_TRACK: "skillsbench",
+      AEGISFORGE_BENCHMARK: "SkillsBench",
+      AEGISFORGE_ADAPTER: "skillsbench",
+      AEGISFORGE_TASK_SET: "standard-v1",
+      AEGISFORGE_CONDITION: "with_skills",
+      AEGISFORGE_SCENARIO_FAMILY: "skillsbench-standard-v1",
+      AEGISFORGE_DEFAULT_ASSESSMENT_MODE: "defender",
 
-      // Shared OpenAI runtime. Amber injects this from the challenger config.
+      // SkillsBench artifact bridge controls.
+      AEGISFORGE_ENABLE_SKILLSBENCH: "1",
+      AEGISFORGE_FORCE_SKILLSBENCH: "1",
+      AEGISFORGE_SELECTED_OPPONENT_MODE: "standard-v1",
+      AEGISFORGE_OUTPUT_PROTOCOL: "skillsbench_artifact_output",
+      AGENT_OUTPUT_PROTOCOL: "skillsbench_artifact_output",
+      AEGISFORGE_ARTIFACT_OUTPUT_MODE: "filepart",
+      AEGISFORGE_ARTIFACT_TRANSPORT: "a2a_filepart_filewithbytes",
+      AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS: "4",
+      AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES: "200000",
+      AEGISFORGE_SKILLSBENCH_MAX_BINARY_ARTIFACT_BYTES: "12000000",
+
+      // Explicitly disable MAizeBargAIn runtime mode for SkillsBench.
+      AEGISFORGE_ENABLE_MAIZEBARGAIN: "0",
+      AEGISFORGE_MAIZEBARGAIN_MODE: "0",
+
+      // Keep other optional benchmark modes off unless selected by code-level
+      // task metadata. This avoids stealing SkillsBench standard-v1 requests.
+      AEGISFORGE_ENABLE_OPENENV: "0",
+      AEGISFORGE_ENABLE_TAU2: "0",
+      AEGISFORGE_ENABLE_SECURITY: "0",
+      AEGISFORGE_ENABLE_OFFICEQA: "0",
+      AEGISFORGE_ENABLE_CRMARENA: "0",
+
+      // Shared OpenAI runtime. Amber injects this from the participant config.
       OPENAI_API_KEY: "${config.openai_api_key}",
       OPENAI_BASE_URL: "https://api.openai.com/v1",
       OPENAI_MODEL: "gpt-4.1",
 
-      // Keep diagnostics local/off by default.
+      // Diagnostics stay lightweight by default. Enable only if you need
+      // additional artifact logs in a later local run.
       AEGISFORGE_DEBUG_ARTIFACTS: "0",
-      AEGISFORGE_TRACE_ARTIFACTS: "0"
+      AEGISFORGE_TRACE_ARTIFACTS: "0",
+      AEGISFORGE_ACCESS_LOG: "1"
     },
     network: {
       endpoints: [
@@ -65,7 +113,7 @@
       openai_api_key: {
         type: "string",
         secret: true,
-        description: "OpenAI API key injected by AgentBeats/Amber for the challenger participant."
+        description: "OpenAI API key injected by AgentBeats/Amber for the SkillsBench participant agent."
       }
     },
     required: ["openai_api_key"],
