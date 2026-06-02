@@ -211,7 +211,7 @@ CYBERGYM_MAX_TAR_MEMBERS = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TAR_MEMBERS", 
 CYBERGYM_MAX_TEXT_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TEXT_BYTES", "24000"))
 CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "16384"))
 
-SKILLSBENCH_CONTRACT_VERSION = "skillsbench_artifact_bridge_v0_1_filepart_output"
+SKILLSBENCH_CONTRACT_VERSION = "skillsbench_artifact_bridge_v0_2_deferred_terminal_filepart"
 
 SKILLSBENCH_MAX_ARTIFACTS = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS", "4"))
 SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES", "200000"))
@@ -330,6 +330,62 @@ def _max_cached_agents() -> int:
         return 128
 
 
+class _DeferredTerminalTaskUpdater:
+    """Proxy TaskUpdater that defers terminal state transitions.
+
+    SkillsBench needs evaluator-visible artifacts to be emitted before a task
+    reaches a terminal state. Some agent paths call updater.complete() inside
+    agent.run(...), which previously prevented the executor-level artifact bridge
+    from running. This proxy forwards normal status/artifact calls immediately
+    but holds complete/failed/canceled/rejected until the executor has had a
+    chance to add FilePart artifacts.
+    """
+
+    def __init__(self, updater: TaskUpdater) -> None:
+        self._updater = updater
+        self._deferred_terminal: tuple[str, tuple[Any, ...], dict[str, Any]] | None = None
+        self._terminal_state_reached = False
+        self._flushed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._updater, name)
+
+    async def complete(self, *args: Any, **kwargs: Any) -> None:
+        self._defer("complete", args, kwargs)
+
+    async def failed(self, *args: Any, **kwargs: Any) -> None:
+        self._defer("failed", args, kwargs)
+
+    async def canceled(self, *args: Any, **kwargs: Any) -> None:
+        self._defer("canceled", args, kwargs)
+
+    async def rejected(self, *args: Any, **kwargs: Any) -> None:
+        self._defer("rejected", args, kwargs)
+
+    def _defer(self, method_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        # Keep the first terminal transition. Later attempts are ignored to
+        # match TaskUpdater's single-terminal-state contract.
+        if self._deferred_terminal is None:
+            self._deferred_terminal = (method_name, args, kwargs)
+        self._terminal_state_reached = True
+
+    @property
+    def terminal_deferred(self) -> bool:
+        return self._deferred_terminal is not None
+
+    async def flush_terminal(self) -> None:
+        if self._flushed:
+            return
+        self._flushed = True
+        if self._deferred_terminal is None:
+            return
+        if bool(getattr(self._updater, "_terminal_state_reached", False)):
+            return
+        method_name, args, kwargs = self._deferred_terminal
+        method = getattr(self._updater, method_name)
+        await method(*args, **kwargs)
+
+
 class Executor(AgentExecutor):
     def __init__(self) -> None:
         self._agents: OrderedDict[str, AegisForgeAgent] = OrderedDict()
@@ -338,6 +394,8 @@ class Executor(AgentExecutor):
         self._pibench_requests = 0
         self._cybergym_requests = 0
         self._skillsbench_requests = 0
+        self._skillsbench_artifacts_submitted = 0
+        self._skillsbench_deferred_terminal_flushes = 0
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         message = self._require_message(context)
@@ -407,9 +465,16 @@ class Executor(AgentExecutor):
 
         try:
             self._executions += 1
-            await agent.run(message, updater)
-            if is_skillsbench and not self._terminal_reached(updater):
-                await self._submit_skillsbench_artifacts(
+
+            if is_skillsbench:
+                # SkillsBench artifacts must be materialized before the task is
+                # terminal. agent.run(...) may call updater.complete() itself,
+                # so run it through a proxy that delays terminal transitions,
+                # then submit FilePart artifacts, then flush the final state.
+                deferred_updater = _DeferredTerminalTaskUpdater(updater)
+                await agent.run(message, deferred_updater)
+
+                submitted_count = await self._submit_skillsbench_artifacts(
                     agent,
                     message,
                     metadata=metadata,
@@ -418,6 +483,14 @@ class Executor(AgentExecutor):
                     task_id=task.id,
                     text=text,
                 )
+                self._skillsbench_artifacts_submitted += int(submitted_count or 0)
+
+                if deferred_updater.terminal_deferred and not self._terminal_reached(updater):
+                    self._skillsbench_deferred_terminal_flushes += 1
+                    await deferred_updater.flush_terminal()
+            else:
+                await agent.run(message, updater)
+
             if not self._terminal_reached(updater):
                 await updater.complete()
         except Exception as exc:  # pragma: no cover - defensive runtime guard
@@ -444,11 +517,13 @@ class Executor(AgentExecutor):
             "pibench_requests": self._pibench_requests,
             "cybergym_requests": self._cybergym_requests,
             "skillsbench_requests": self._skillsbench_requests,
+            "skillsbench_artifacts_submitted": self._skillsbench_artifacts_submitted,
+            "skillsbench_deferred_terminal_flushes": self._skillsbench_deferred_terminal_flushes,
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "skillsbench_contract_version": SKILLSBENCH_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses a FilePart artifact bridge after agent.run so artifact_refs do not remain empty for artifact-native tasks.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses a deferred-terminal FilePart artifact bridge so artifacts are emitted before task completion.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -552,7 +627,7 @@ class Executor(AgentExecutor):
         context_id: str,
         task_id: str,
         text: str,
-    ) -> None:
+    ) -> int:
         """Materialize SkillsBench deliverables as evaluator-visible FileParts.
 
         This bridge is deliberately outside the CyberGym branch.  It converts
@@ -580,7 +655,9 @@ class Executor(AgentExecutor):
             files = self._skillsbench_fallback_files(metadata=metadata, text=text)
 
         if not files:
-            return
+            return 0
+
+        submitted = 0
 
         await updater.update_status(
             TaskState.working,
@@ -609,6 +686,9 @@ class Executor(AgentExecutor):
                 ],
                 name=file_record["artifact_name"],
             )
+            submitted += 1
+
+        return submitted
 
     def _skillsbench_collect_artifact_candidates(
         self,
