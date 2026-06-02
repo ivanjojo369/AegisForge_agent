@@ -214,9 +214,10 @@ CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "163
 
 SKILLSBENCH_LEGACY_BRIDGE_VERSION = "skillsbench_artifact_bridge_v0_4_extreme_preflight_multichannel_artifactrefs_probe"
 SKILLSBENCH_ROUTE_PROBE_LEGACY_VERSION = "skillsbench_route_probe_direct_adapter_v0_5_2026_06_02"
-SKILLSBENCH_CONTRACT_VERSION = "skillsbench_final_response_contract_probe_v0_6_2026_06_02"
-SKILLSBENCH_ROUTE_PROBE_VERSION = "skillsbench_final_response_contract_probe_v0_6_2026_06_02"
-SKILLSBENCH_FINAL_RESPONSE_SCHEMA = "aegisforge.skillsbench.final_response_contract.v0_6"
+SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION = "skillsbench_final_response_contract_probe_v0_6_2026_06_02"
+SKILLSBENCH_CONTRACT_VERSION = "skillsbench_compact_terminal_response_contract_v0_7_2026_06_02"
+SKILLSBENCH_ROUTE_PROBE_VERSION = "skillsbench_compact_terminal_response_contract_v0_7_2026_06_02"
+SKILLSBENCH_FINAL_RESPONSE_SCHEMA = "aegisforge.skillsbench.compact_terminal_response_contract.v0_7"
 
 SKILLSBENCH_MAX_ARTIFACTS = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS", "4"))
 SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES", "200000"))
@@ -231,7 +232,12 @@ SKILLSBENCH_ROUTE_PROBE_STDOUT = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_S
 SKILLSBENCH_ROUTE_PROBE_STATUS = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_STATUS", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_FINAL_RESPONSE_CONTRACT_PROBE = os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_CONTRACT_PROBE", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_FINAL_RESPONSE_CONTRACT_STDOUT = os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_CONTRACT_STDOUT", "1").strip().lower() not in {"0", "false", "no", "off"}
-SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES", "180000"))
+# v0.6 proved that very large terminal JSON/status payloads can fail before
+# becoming the evaluator-visible final message.  v0.7 keeps artifact_refs exact
+# but uses compact inline content for the terminal response.
+SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES", "2048"))
+SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS = int(os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS", "22000"))
+SKILLSBENCH_FINAL_RESPONSE_STATUS_COMPLETED_FIRST = os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_STATUS_COMPLETED_FIRST", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 SKILLSBENCH_METADATA_MARKERS = (
     "skillsbench",
@@ -297,7 +303,9 @@ SKILLSBENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
         "legacy_bridge_version": SKILLSBENCH_LEGACY_BRIDGE_VERSION,
         "route_probe_legacy_version": SKILLSBENCH_ROUTE_PROBE_LEGACY_VERSION,
         "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+        "final_response_legacy_version": SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION,
         "final_response_schema": SKILLSBENCH_FINAL_RESPONSE_SCHEMA,
+        "terminal_response_mode": "compact_TaskState.completed_status_first",
         "direct_adapter_probe": True,
         "final_response_contract_probe": True,
         "output_channel": "a2a.artifacts.FilePart.FileWithBytes",
@@ -519,7 +527,7 @@ class Executor(AgentExecutor):
             self._executions += 1
 
             if is_skillsbench:
-                # SkillsBench route-probe v0.5:
+                # SkillsBench compact terminal response contract v0.7:
                 #   0) emit a visible route marker so logs/status can prove this
                 #      executor branch was reached;
                 #   1) call the formal SkillsBench adapter directly from the
@@ -724,6 +732,9 @@ class Executor(AgentExecutor):
             "skillsbench_last_direct_adapter_result": self._skillsbench_last_direct_adapter_result,
             "skillsbench_final_response_contract_probe_enabled": SKILLSBENCH_FINAL_RESPONSE_CONTRACT_PROBE,
             "skillsbench_final_response_schema": SKILLSBENCH_FINAL_RESPONSE_SCHEMA,
+            "skillsbench_final_response_legacy_version": SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION,
+            "skillsbench_final_response_terminal_max_chars": SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS,
+            "skillsbench_final_response_status_completed_first": SKILLSBENCH_FINAL_RESPONSE_STATUS_COMPLETED_FIRST,
             "skillsbench_final_contract_responses": self._skillsbench_final_contract_responses,
             "skillsbench_final_contract_completions": self._skillsbench_final_contract_completions,
             "skillsbench_final_contract_failures": self._skillsbench_final_contract_failures,
@@ -1163,6 +1174,97 @@ class Executor(AgentExecutor):
         }
         return payload
 
+    def _skillsbench_compact_terminal_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a compact, valid JSON payload for the terminal A2A message.
+
+        v0.6 emitted the full artifact payload, which could be hundreds of KB
+        and repeatedly failed to become the terminal response.  This v0.7 helper
+        preserves the exact top-level fields the SkillsBench worker may parse
+        (`artifact_refs`, `files`, `deliverables`, `answer`) while dropping large
+        diagnostic blobs and reducing inline content.  The full files are still
+        sent through add_artifact and runtime mirrors; this is the worker-parser
+        contract probe.
+        """
+        refs: list[dict[str, Any]] = []
+        for item in list(payload.get("artifact_refs") or [])[:SKILLSBENCH_MAX_ARTIFACTS]:
+            if not isinstance(item, Mapping):
+                continue
+            ref = {
+                "name": item.get("name") or item.get("file_name"),
+                "file_name": item.get("file_name") or item.get("name"),
+                "artifact_name": item.get("artifact_name") or item.get("name") or item.get("file_name"),
+                "mime_type": item.get("mime_type") or "application/octet-stream",
+                "sha256": item.get("sha256"),
+                "size_bytes": item.get("size_bytes"),
+                "encoding": item.get("encoding") or "base64",
+                "content_base64": str(item.get("content_base64") or "")[: max(SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES, 0)],
+                "content_truncated": bool(item.get("content_truncated")) or len(str(item.get("content_base64") or "")) > SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES,
+                "uri": item.get("uri"),
+                "phase": item.get("phase"),
+            }
+            content = item.get("content")
+            if content:
+                ref["content"] = str(content)[: min(SKILLSBENCH_FINAL_RESPONSE_MAX_INLINE_BYTES, 4096)]
+            refs.append(ref)
+
+        files = [
+            {
+                "name": ref.get("name"),
+                "file_name": ref.get("file_name"),
+                "mime_type": ref.get("mime_type"),
+                "sha256": ref.get("sha256"),
+                "size_bytes": ref.get("size_bytes"),
+                "uri": ref.get("uri"),
+            }
+            for ref in refs
+        ]
+
+        compact = {
+            "schema": SKILLSBENCH_FINAL_RESPONSE_SCHEMA,
+            "status": "completed",
+            "track": "skillsbench",
+            "benchmark": "SkillsBench",
+            "task_set": payload.get("task_set") or "standard-v1",
+            "condition": payload.get("condition") or "with_skills",
+            "task_id": payload.get("task_id") or "skillsbench_task",
+            "category": payload.get("category") or "general_purpose",
+            "family": payload.get("family") or "general",
+            "final_answer": payload.get("final_answer") or payload.get("answer") or "AegisForge completed the SkillsBench task.",
+            "answer": payload.get("answer") or payload.get("final_answer") or "AegisForge completed the SkillsBench task.",
+            "artifact_refs": refs,
+            "files": files,
+            "deliverables": [str(item.get("name") or item.get("file_name")) for item in refs],
+            "artifact_outputs": refs,
+            "artifact_refs_candidate": refs,
+            "result": {
+                "status": "completed",
+                "artifact_refs": refs,
+            },
+            "aegisforge_diagnostics": {
+                "contract_version": SKILLSBENCH_CONTRACT_VERSION,
+                "legacy_contract_version": SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION,
+                "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
+                "terminal_mode": "TaskState.completed status first, compact JSON",
+                "ref_count": len(refs),
+                "hypothesis": "If artifact_refs remains empty after v0.7, SkillsBench is not parsing A2A artifacts nor terminal assistant JSON.",
+            },
+        }
+
+        text_payload = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
+        if len(text_payload) <= SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS:
+            return compact
+
+        # If still oversized, remove inline content first but preserve refs.
+        for ref in refs:
+            ref.pop("content", None)
+            ref["content_base64"] = str(ref.get("content_base64") or "")[:1024]
+            ref["content_truncated"] = True
+        compact["artifact_refs"] = refs
+        compact["artifact_outputs"] = refs
+        compact["artifact_refs_candidate"] = refs
+        compact["result"] = {"status": "completed", "artifact_refs": refs}
+        return compact
+
     async def _skillsbench_emit_final_response_contract(
         self,
         agent: AegisForgeAgent,
@@ -1187,10 +1289,48 @@ class Executor(AgentExecutor):
         self._skillsbench_last_final_contract_refs = list(payload.get("artifact_refs") or [])
         self._skillsbench_final_contract_responses += 1
 
-        text_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        compact_payload = self._skillsbench_compact_terminal_payload(payload)
+        text_payload = json.dumps(compact_payload, ensure_ascii=False, sort_keys=True, default=str)
+        if len(text_payload) > SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS:
+            # Last-resort valid JSON: remove inline bytes but keep refs metadata.
+            compact_payload = dict(compact_payload)
+            compact_refs = []
+            for item in list(compact_payload.get("artifact_refs") or [])[:SKILLSBENCH_MAX_ARTIFACTS]:
+                if not isinstance(item, Mapping):
+                    continue
+                compact_refs.append(
+                    {
+                        "name": item.get("name"),
+                        "file_name": item.get("file_name"),
+                        "artifact_name": item.get("artifact_name"),
+                        "mime_type": item.get("mime_type"),
+                        "sha256": item.get("sha256"),
+                        "size_bytes": item.get("size_bytes"),
+                        "uri": item.get("uri"),
+                        "content_omitted_for_terminal_budget": True,
+                    }
+                )
+            compact_payload["artifact_refs"] = compact_refs
+            compact_payload["files"] = [
+                {
+                    "name": item.get("name"),
+                    "file_name": item.get("file_name"),
+                    "mime_type": item.get("mime_type"),
+                    "sha256": item.get("sha256"),
+                    "size_bytes": item.get("size_bytes"),
+                    "uri": item.get("uri"),
+                }
+                for item in compact_refs
+            ]
+            compact_payload["deliverables"] = [str(item.get("name") or item.get("file_name")) for item in compact_refs]
+            compact_payload["artifact_outputs"] = compact_refs
+            compact_payload["artifact_refs_candidate"] = compact_refs
+            compact_payload["result"] = {"status": "completed", "artifact_refs": compact_refs}
+            text_payload = json.dumps(compact_payload, ensure_ascii=False, sort_keys=True, default=str)
+
         if SKILLSBENCH_FINAL_RESPONSE_CONTRACT_STDOUT:
             try:
-                print("SKILLSBENCH_FINAL_RESPONSE_CONTRACT " + text_payload[:24000], flush=True)
+                print("SKILLSBENCH_FINAL_RESPONSE_CONTRACT " + text_payload[:SKILLSBENCH_FINAL_RESPONSE_TERMINAL_MAX_CHARS], flush=True)
             except Exception:
                 pass
 
@@ -1199,15 +1339,34 @@ class Executor(AgentExecutor):
             event="final_response_contract_emit",
             context_id=context_id,
             task_id=task_id,
-            ref_count=len(payload.get("artifact_refs") or []),
+            ref_count=len(compact_payload.get("artifact_refs") or []),
             payload_chars=len(text_payload),
             total_submitted=total_submitted,
+            terminal_mode="compact_TaskState.completed_status_first",
         )
 
         message = new_agent_text_message(text_payload, context_id=context_id, task_id=task_id)
 
-        # Best case: A2A SDK supports complete(message).  That makes the exact
-        # JSON the terminal response.  Older SDKs may only accept complete().
+        # v0.7: complete(message) was not reliable in v0.6.  Put the JSON in a
+        # completed status event first, because many A2A handlers persist the
+        # last status message as the result-facing assistant message.
+        if SKILLSBENCH_FINAL_RESPONSE_STATUS_COMPLETED_FIRST:
+            try:
+                await updater.update_status(TaskState.completed, message)
+                self._skillsbench_final_contract_completions += 1
+                await self._skillsbench_route_probe_status(
+                    updater,
+                    event="final_response_contract_completed_status",
+                    context_id=context_id,
+                    task_id=task_id,
+                    ref_count=len(compact_payload.get("artifact_refs") or []),
+                    payload_chars=len(text_payload),
+                )
+                return True
+            except Exception as exc:
+                self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
+
+        # Fallbacks for SDKs that reject completed status updates.
         try:
             await updater.complete(message)
             self._skillsbench_final_contract_completions += 1
@@ -1223,8 +1382,6 @@ class Executor(AgentExecutor):
                 self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
                 return False
         except Exception as exc:
-            # If complete(message) failed for a runtime reason, still try to
-            # surface the JSON as a working status before normal completion.
             try:
                 await updater.update_status(TaskState.working, message)
                 await updater.complete()
