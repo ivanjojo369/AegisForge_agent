@@ -33,6 +33,7 @@ import json
 import math
 import re
 import statistics
+import os
 
 from .contract import (
     SkillsBenchRequest,
@@ -52,9 +53,22 @@ from .task_catalog import (
     preferred_outputs_for_family,
 )
 from .workspace import SkillsBenchWorkspace
+from .output_contract import (
+    OUTPUT_CONTRACT_VERSION,
+    build_output_contract,
+    summarize_contract,
+)
+from .task_environment import (
+    TASK_ENVIRONMENT_VERSION,
+    discover_task_environment,
+)
+from .task_workspace_executor import (
+    TASK_WORKSPACE_EXECUTOR_VERSION,
+    SkillsBenchTaskWorkspaceExecutor,
+)
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_2_output_spec_fix_worker_contract_2026_06_02"
+HARNESS_VERSION = "skillsbench_harness_v0_3_workspace_executor_real_filesystem_probe_2026_06_02"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -282,6 +296,9 @@ class SkillsBenchHarness:
         self.last_plan: HarnessPlan | None = None
         self.last_result: HarnessResult | None = None
         self.last_emission: SkillsBenchEmission | None = None
+        self.last_task_environment: Any = None
+        self.last_output_contract: Any = None
+        self.last_workspace_execution: Any = None
         self.last_error: str = ""
 
     def handle(
@@ -375,8 +392,196 @@ class SkillsBenchHarness:
         }.get(family, self._solve_general)
 
         result = strategy(request, plan, workspace_summary)
+        result = self._augment_with_task_workspace_execution(request, plan, workspace_summary, result)
         self.last_result = result
         return result
+
+
+    def _workspace_executor_enabled(self) -> bool:
+        """Whether to run the real-filesystem SkillsBench workspace executor."""
+
+        raw = os.getenv("AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _workspace_executor_allow_writes(self) -> bool:
+        """Writes are enabled by default only for SkillsBench runtime paths.
+
+        The executor itself still refuses to write when it cannot see known task
+        roots.  This flag lets us turn the writer into dry-run diagnostics in a
+        local development run if needed.
+        """
+
+        raw = os.getenv("AEGISFORGE_SKILLSBENCH_WORKSPACE_WRITES", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off", "dry-run", "dryrun"}
+
+    def _workspace_executor_write_probe(self) -> bool:
+        raw = os.getenv("AEGISFORGE_SKILLSBENCH_WORKSPACE_WRITE_PROBE", "0").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _augment_with_task_workspace_execution(
+        self,
+        request: SkillsBenchRequest,
+        plan: HarnessPlan,
+        workspace_summary: Mapping[str, Any],
+        result: HarnessResult,
+    ) -> HarnessResult:
+        """Add real-filesystem SkillsBench execution diagnostics and writes.
+
+        The old harness emitted only A2A/result_emitter artifacts.  Quick Submit
+        showed that the SkillsBench worker keeps `artifact_refs: []` even when
+        those artifacts are present.  This v0.3 layer extracts the actual output
+        contract from the instruction, discovers task roots such as /root,
+        /app/workspace, and /home/github/build, and writes real files when the
+        task filesystem is visible.
+        """
+
+        if not self._workspace_executor_enabled():
+            diagnostics = dict(result.diagnostics)
+            diagnostics["task_workspace_executor"] = {
+                "enabled": False,
+                "version": TASK_WORKSPACE_EXECUTOR_VERSION,
+                "reason": "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR disabled",
+            }
+            return HarnessResult(
+                request=result.request,
+                plan=result.plan,
+                answer=result.answer,
+                files=result.files,
+                artifacts=result.artifacts,
+                validation=result.validation,
+                diagnostics=diagnostics,
+                status=result.status,
+            )
+
+        try:
+            contract = build_output_contract(
+                request.metadata,
+                request.prompt,
+                task_id=request.task_id,
+                category=request.category,
+                difficulty=request.difficulty,
+            )
+            environment = discover_task_environment(
+                request.metadata,
+                request.prompt,
+                task_id=request.task_id or "skillsbench_task",
+                write_probe=self._workspace_executor_write_probe(),
+                sample=True,
+            )
+            executor = SkillsBenchTaskWorkspaceExecutor(
+                allow_writes=self._workspace_executor_allow_writes(),
+                write_probe=self._workspace_executor_write_probe(),
+            )
+            execution = executor.execute(
+                request.metadata,
+                request.prompt,
+                contract=contract,
+                environment=environment,
+            )
+
+            self.last_output_contract = contract
+            self.last_task_environment = environment
+            self.last_workspace_execution = execution
+
+            diagnostics = dict(result.diagnostics)
+            diagnostics["output_contract_version"] = OUTPUT_CONTRACT_VERSION
+            diagnostics["task_environment_version"] = TASK_ENVIRONMENT_VERSION
+            diagnostics["task_workspace_executor_version"] = TASK_WORKSPACE_EXECUTOR_VERSION
+            diagnostics["output_contract"] = contract.as_context()
+            diagnostics["output_contract_summary"] = summarize_contract(contract)
+            diagnostics["task_environment"] = environment.as_context()
+            diagnostics["task_workspace_execution"] = execution.as_dict()
+
+            validation = dict(result.validation)
+            validation["task_workspace_executor"] = {
+                "ok": execution.ok,
+                "status": execution.status,
+                "workspace_visible": execution.workspace_visible,
+                "wrote_any_file": execution.wrote_any_file,
+                "write_count": len(execution.writes),
+                "ok_writes": sum(1 for item in execution.writes if item.ok),
+            }
+
+            # Add a compact, emitted diagnostic file to the existing result
+            # package.  This is not the scoring channel; it is a trace that
+            # proves whether the real task filesystem was visible and writable.
+            extra_files = list(result.files)
+            extra_files.append(
+                {
+                    "artifact_name": "task_workspace_execution",
+                    "file_name": "task_workspace_execution.json",
+                    "mime_type": "application/json",
+                    "payload": execution.as_dict(),
+                }
+            )
+            extra_files.append(
+                {
+                    "artifact_name": "output_contract",
+                    "file_name": "skillsbench_output_contract.json",
+                    "mime_type": "application/json",
+                    "payload": contract.as_dict(),
+                }
+            )
+
+            # If real filesystem writes occurred, add artifact descriptors for
+            # visibility.  result_emitter may not read absolute task paths, so
+            # these records are primarily diagnostics for executor.py.
+            extra_artifacts = list(result.artifacts)
+            for record in execution.artifact_records():
+                extra_artifacts.append(record)
+
+            answer = result.answer
+            if execution.status == "task_filesystem_not_visible":
+                answer += (
+                    "\\n\\n[SkillsBench workspace executor] No known task filesystem root was visible "
+                    "from the A2A process; this suggests the participant server is isolated from the "
+                    "Harbor task sandbox."
+                )
+            elif execution.wrote_any_file:
+                answer += (
+                    f"\\n\\n[SkillsBench workspace executor] Wrote {sum(1 for item in execution.writes if item.ok)} "
+                    "real task filesystem output(s)."
+                )
+            else:
+                answer += (
+                    f"\\n\\n[SkillsBench workspace executor] Ran with status `{execution.status}`; no real task output file was written."
+                )
+
+            return HarnessResult(
+                request=result.request,
+                plan=result.plan,
+                answer=answer,
+                files=tuple(dict(item) for item in extra_files),
+                artifacts=tuple(dict(item) for item in extra_artifacts),
+                validation=validation,
+                diagnostics=diagnostics,
+                status=result.status,
+            )
+        except Exception as exc:
+            self.last_error = str(exc)
+            diagnostics = dict(result.diagnostics)
+            diagnostics["task_workspace_executor"] = {
+                "enabled": True,
+                "version": TASK_WORKSPACE_EXECUTOR_VERSION,
+                "error_type": exc.__class__.__name__,
+                "error": str(exc)[:800],
+            }
+            validation = dict(result.validation)
+            validation["task_workspace_executor"] = {
+                "ok": False,
+                "status": "exception",
+                "error": str(exc)[:400],
+            }
+            return HarnessResult(
+                request=result.request,
+                plan=result.plan,
+                answer=result.answer + f"\\n\\n[SkillsBench workspace executor unavailable: {str(exc)[:240]}]",
+                files=result.files,
+                artifacts=result.artifacts,
+                validation=validation,
+                diagnostics=diagnostics,
+                status=result.status,
+            )
 
     def plan_request(self, request: SkillsBenchRequest, *, workspace_summary: Mapping[str, Any]) -> HarnessPlan:
         classification = classify_task(request.metadata, request.prompt)
@@ -966,6 +1171,8 @@ def validate_harness_selftest() -> dict[str, Any]:
         errors.append(f"unexpected family: {harness.last_plan.family}")
     if not emission.artifact_records:
         errors.append("no artifact records emitted")
+    if harness.last_workspace_execution is None:
+        errors.append("workspace executor did not run")
     try:
         json.loads(emission.final_text())
     except Exception as exc:
@@ -976,6 +1183,8 @@ def validate_harness_selftest() -> dict[str, Any]:
         "harness_version": HARNESS_VERSION,
         "emission_file_count": len(emission.files),
         "artifact_count": len(emission.artifact_records),
+        "workspace_execution_status": getattr(harness.last_workspace_execution, "status", ""),
+        "workspace_visible": bool(getattr(harness.last_workspace_execution, "workspace_visible", False)) if harness.last_workspace_execution else False,
         "task_id": request.task_id,
         "family": harness.last_plan.family if harness.last_plan else "",
     }
