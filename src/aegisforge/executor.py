@@ -211,7 +211,7 @@ CYBERGYM_MAX_TAR_MEMBERS = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TAR_MEMBERS", 
 CYBERGYM_MAX_TEXT_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TEXT_BYTES", "24000"))
 CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "16384"))
 
-SKILLSBENCH_CONTRACT_VERSION = "skillsbench_artifact_bridge_v0_2_deferred_terminal_filepart"
+SKILLSBENCH_CONTRACT_VERSION = "skillsbench_artifact_bridge_v0_3_forced_env_deferred_terminal_filepart"
 
 SKILLSBENCH_MAX_ARTIFACTS = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS", "4"))
 SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES", "200000"))
@@ -396,6 +396,7 @@ class Executor(AgentExecutor):
         self._skillsbench_requests = 0
         self._skillsbench_artifacts_submitted = 0
         self._skillsbench_deferred_terminal_flushes = 0
+        self._skillsbench_forced_requests = 0
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         message = self._require_message(context)
@@ -421,10 +422,17 @@ class Executor(AgentExecutor):
         # when generic words such as "cybersecurity", "artifact", or "patch"
         # appear in the request.
         is_cybergym = self._is_cybergym_request(message, metadata, text)
-        is_skillsbench = (not is_pibench) and (not is_cybergym) and self._is_skillsbench_request(metadata, text)
+        forced_skillsbench = (not is_pibench) and (not is_cybergym) and self._skillsbench_env_forced()
+        is_skillsbench = forced_skillsbench or (
+            (not is_pibench)
+            and (not is_cybergym)
+            and self._is_skillsbench_request(metadata, text)
+        )
 
         if is_skillsbench:
             self._skillsbench_requests += 1
+            if forced_skillsbench:
+                self._skillsbench_forced_requests += 1
             metadata = self._attach_skillsbench_metadata(
                 message,
                 metadata=metadata,
@@ -519,13 +527,96 @@ class Executor(AgentExecutor):
             "skillsbench_requests": self._skillsbench_requests,
             "skillsbench_artifacts_submitted": self._skillsbench_artifacts_submitted,
             "skillsbench_deferred_terminal_flushes": self._skillsbench_deferred_terminal_flushes,
+            "skillsbench_forced_requests": self._skillsbench_forced_requests,
+            "skillsbench_env_forced": self._skillsbench_env_forced(),
+            "skillsbench_env_signals": self._skillsbench_env_snapshot(),
             "cybergym_contract_version": CYBERGYM_CONTRACT_VERSION,
             "skillsbench_contract_version": SKILLSBENCH_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses a deferred-terminal FilePart artifact bridge so artifacts are emitted before task completion.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses an env-aware deferred-terminal FilePart artifact bridge so artifacts are emitted before task completion.",
             "cache_keys": list(self._agents.keys())[:8],
         }
+
+
+    def _skillsbench_env_forced(self) -> bool:
+        """Return True when the container was launched for SkillsBench.
+
+        The SkillsBench gateway may not include a clean top-level track field in
+        every A2A task message. The Amber manifest now carries explicit
+        environment signals (AEGISFORGE_FORCE_SKILLSBENCH=1,
+        AEGISFORGE_TRACK=skillsbench, AEGISFORGE_TASK_SET=standard-v1), so the
+        executor must honor those signals before falling back to request-shape
+        heuristics. CyberGym and Pi-Bench still have priority because execute()
+        calls this only after those routes are ruled out.
+        """
+        if self._read_bool_env("AEGISFORGE_FORCE_SKILLSBENCH", default=False):
+            return True
+
+        env = self._skillsbench_env_snapshot()
+        for key in (
+            "AEGISFORGE_TRACK",
+            "AEGISFORGE_BENCHMARK",
+            "AEGISFORGE_ADAPTER",
+            "AEGISFORGE_TASK_SET",
+            "AEGISFORGE_CONDITION",
+            "AEGISFORGE_SCENARIO_FAMILY",
+            "AEGISFORGE_OUTPUT_PROTOCOL",
+            "AGENT_OUTPUT_PROTOCOL",
+        ):
+            value = env.get(key)
+            if value and self._normalize_track(value) == "skillsbench":
+                return True
+
+        blob = " ".join(str(v) for v in env.values() if v).lower().replace("_", "-")
+        explicit = (
+            "skillsbench",
+            "skillsbench-leaderboard",
+            "benchflow",
+            "benchflow-ai",
+            "standard-v1",
+            "with-skills",
+            "general-purpose",
+            "artifact-first",
+            "skillsbench-artifact-output",
+            "a2a-filepart-filewithbytes",
+        )
+        if any(marker in blob for marker in explicit):
+            return True
+
+        return (
+            self._read_bool_env("AEGISFORGE_ENABLE_SKILLSBENCH", default=False)
+            and (
+                str(env.get("AEGISFORGE_TASK_SET", "")).lower().replace("_", "-") == "standard-v1"
+                or "skillsbench" in str(env.get("AEGISFORGE_OUTPUT_PROTOCOL", "")).lower()
+                or "skillsbench" in str(env.get("AGENT_OUTPUT_PROTOCOL", "")).lower()
+            )
+        )
+
+    @staticmethod
+    def _read_bool_env(name: str, *, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on", "force", "forced"}
+
+    @staticmethod
+    def _skillsbench_env_snapshot() -> dict[str, str]:
+        keys = (
+            "AEGISFORGE_FORCE_SKILLSBENCH",
+            "AEGISFORGE_ENABLE_SKILLSBENCH",
+            "AEGISFORGE_TRACK",
+            "AEGISFORGE_BENCHMARK",
+            "AEGISFORGE_ADAPTER",
+            "AEGISFORGE_TASK_SET",
+            "AEGISFORGE_CONDITION",
+            "AEGISFORGE_SCENARIO_FAMILY",
+            "AEGISFORGE_OUTPUT_PROTOCOL",
+            "AGENT_OUTPUT_PROTOCOL",
+            "AEGISFORGE_ARTIFACT_OUTPUT_MODE",
+            "AEGISFORGE_ARTIFACT_TRANSPORT",
+        )
+        return {key: str(os.getenv(key, "") or "") for key in keys}
 
 
     def _is_skillsbench_request(self, metadata: Any, text: str = "") -> bool:
@@ -536,6 +627,9 @@ class Executor(AgentExecutor):
         SkillsBench/BenchFlow/standard-v1 signals or known standard-v1 task ids,
         not merely generic words like patch, spreadsheet, or cybersecurity.
         """
+        if self._skillsbench_env_forced():
+            return True
+
         haystacks: list[str] = []
 
         if isinstance(metadata, Mapping):
