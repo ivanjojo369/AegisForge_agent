@@ -66,7 +66,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
-SKILLSBENCH_AGENT_VERSION = "skillsbench_filesystem_harness_bridge_v0_7_2026_06_03"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_filesystem_harness_bridge_v0_8_call_signature_fix_2026_06_03"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -16952,7 +16952,7 @@ class AegisForgeAgent:
         by executor.py while storing all adapter outputs on the legacy surfaces
         that executor.py already scans.
         """
-        bridge_marker = "skillsbench_agent_bridge_v0_2_harness_first_real_filesystem_no_legacy_2026_06_03"
+        bridge_marker = "skillsbench_agent_bridge_v0_3_harness_call_signature_fix_real_filesystem_2026_06_03"
         # SkillsBench standard-v1 / with_skills is scored from files written in the
         # task sandbox.  Therefore this route must call the real-filesystem harness
         # before any legacy A2A artifact-ref/gateway path.  The legacy path remains
@@ -16987,7 +16987,8 @@ class AegisForgeAgent:
 
             harness_output = handle_skillsbench_request(
                 message=skillsbench_request,
-                request=skillsbench_request,
+                metadata=skillsbench_metadata,
+                text=task_text,
             )
             if not isinstance(harness_output, Mapping):
                 raise TypeError(f"SkillsBench filesystem harness returned non-mapping: {type(harness_output)!r}")
@@ -17003,7 +17004,7 @@ class AegisForgeAgent:
             payload.setdefault("task_set", "standard-v1")
             payload.setdefault("condition", "with_skills")
             payload.setdefault("agent_bridge_marker", bridge_marker)
-            payload.setdefault("schema", "aegisforge.skillsbench.filesystem_harness_bridge.v0_7")
+            payload.setdefault("schema", "aegisforge.skillsbench.filesystem_harness_bridge.v0_8")
 
             artifacts = [dict(item) for item in harness_result.get("artifacts", []) if isinstance(item, Mapping)]
             artifact_outputs = [
