@@ -70,7 +70,7 @@ from .workspace import (
 )
 
 
-ADAPTER_VERSION = "skillsbench_adapter_v0_1_agent_executor_bridge_2026_06_02"
+ADAPTER_VERSION = "skillsbench_adapter_v0_2_solver_aligned_diagnostics_2026_06_03"
 
 AdapterLogger = Callable[[str, Mapping[str, Any]], None]
 
@@ -173,6 +173,120 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return {str(k): v for k, v in value.items()}
     return {}
+
+
+def _classify_task_safe(metadata: Mapping[str, Any], text: str) -> dict[str, Any]:
+    try:
+        data = classify_task(metadata, text)
+        if isinstance(data, Mapping):
+            return {str(k): v for k, v in data.items()}
+        return {"matched": False, "error": "classify_task returned non-mapping"}
+    except Exception as exc:
+        return {
+            "matched": False,
+            "error_type": exc.__class__.__name__,
+            "error": str(exc)[:500],
+        }
+
+
+def _compact_harness_plan(harness: SkillsBenchHarness | None) -> dict[str, Any]:
+    plan = getattr(harness, "last_plan", None)
+    if plan is None:
+        return {}
+    try:
+        data = plan.as_dict()
+        if isinstance(data, Mapping):
+            return {
+                "version": data.get("version"),
+                "task_id": data.get("task_id"),
+                "category": data.get("category"),
+                "difficulty": data.get("difficulty"),
+                "family": data.get("family"),
+                "tags": list(data.get("tags") or [])[:20],
+                "expected_outputs": list(data.get("expected_outputs") or [])[:12],
+                "warnings": list(data.get("warnings") or [])[:10],
+            }
+    except Exception:
+        pass
+    return {
+        "task_id": str(getattr(plan, "task_id", "") or ""),
+        "family": str(getattr(plan, "family", "") or ""),
+    }
+
+
+def _compact_environment_context(harness: SkillsBenchHarness | None) -> dict[str, Any]:
+    env = getattr(harness, "last_task_environment", None)
+    if env is None:
+        return {}
+    try:
+        context = env.as_context() if hasattr(env, "as_context") else {}
+        if isinstance(context, Mapping):
+            return {
+                "version": context.get("version"),
+                "task_id": context.get("task_id"),
+                "canonical_task_id": context.get("canonical_task_id"),
+                "task_identity_source": context.get("task_identity_source"),
+                "task_identity_confidence": context.get("task_identity_confidence"),
+                "family_hint": context.get("family_hint"),
+                "category": context.get("category"),
+                "canonical_category": context.get("canonical_category"),
+                "canonical_tags": list(context.get("canonical_tags") or [])[:20],
+                "workspace_visible": context.get("can_access_task_filesystem"),
+                "can_write_known_output": context.get("can_write_known_output"),
+                "best_output_roots": list(context.get("best_output_roots") or [])[:12],
+            }
+    except Exception:
+        pass
+    return {
+        "task_id": str(getattr(env, "task_id", "") or ""),
+        "canonical_task_id": str(getattr(env, "canonical_task_id", "") or ""),
+        "family_hint": str(getattr(env, "family_hint", "") or ""),
+    }
+
+
+def _compact_output_contract(harness: SkillsBenchHarness | None) -> dict[str, Any]:
+    contract = getattr(harness, "last_output_contract", None)
+    if contract is None:
+        return {}
+    try:
+        context = contract.as_context() if hasattr(contract, "as_context") else {}
+        if isinstance(context, Mapping):
+            return {
+                "version": context.get("version"),
+                "task_id": context.get("task_id"),
+                "family": context.get("family"),
+                "category": context.get("category"),
+                "primary_outputs": list(context.get("primary_outputs") or [])[:12],
+                "requirement_count": len(context.get("requirements") or []),
+            }
+    except Exception:
+        pass
+    return {
+        "task_id": str(getattr(contract, "task_id", "") or ""),
+        "family": str(getattr(contract, "family", "") or ""),
+    }
+
+
+def _compact_workspace_execution(harness: SkillsBenchHarness | None) -> dict[str, Any]:
+    execution = getattr(harness, "last_workspace_execution", None)
+    if execution is None:
+        return {}
+    try:
+        writes = tuple(getattr(execution, "writes", ()) or ())
+        return {
+            "version": getattr(execution, "version", ""),
+            "ok": bool(getattr(execution, "ok", False)),
+            "status": str(getattr(execution, "status", "") or ""),
+            "task_id": str(getattr(execution, "task_id", "") or ""),
+            "family": str(getattr(execution, "family", "") or ""),
+            "workspace_visible": bool(getattr(execution, "workspace_visible", False)),
+            "wrote_any_file": bool(getattr(execution, "wrote_any_file", False)),
+            "write_count": len(writes),
+            "ok_writes": sum(1 for item in writes if bool(getattr(item, "ok", False))),
+            "artifact_record_count": len(execution.artifact_records()) if hasattr(execution, "artifact_records") else 0,
+        }
+    except Exception as exc:
+        return {"error_type": exc.__class__.__name__, "error": str(exc)[:300]}
 
 
 def _log(logger: AdapterLogger | None, event: str, payload: Mapping[str, Any]) -> None:
@@ -300,6 +414,7 @@ class SkillsBenchAdapter:
                 response=response,
                 emission=emission,
                 ok=True,
+                harness=harness,
             )
             self.last_result = result
 
@@ -309,6 +424,10 @@ class SkillsBenchAdapter:
                 {
                     "task_id": normalized.task_id,
                     "family": normalized.family,
+                    "classification_family": result.diagnostics.get("classification", {}).get("family"),
+                    "harness_plan_family": result.diagnostics.get("harness_last_plan", {}).get("family"),
+                    "selected_solver_name": result.diagnostics.get("workspace_execution", {}).get("selected_solver_name")
+                    or result.diagnostics.get("harness_workspace_execution", {}).get("selected_solver_name", ""),
                     "artifact_count": len(result.artifacts),
                     "file_count": len(result.files),
                 },
@@ -364,6 +483,7 @@ class SkillsBenchAdapter:
         emission: SkillsBenchEmission,
         ok: bool,
         error: str = "",
+        harness: SkillsBenchHarness | None = None,
     ) -> SkillsBenchAdapterResult:
         payload = _coerce_mapping(response.get("payload"))
         artifacts = tuple(_coerce_mapping(item) for item in response.get("artifacts", []) or [])
@@ -372,6 +492,7 @@ class SkillsBenchAdapter:
         artifact_outputs = tuple(_coerce_mapping(item) for item in response.get("artifact_outputs", []) or [])
         artifact_refs_candidate = tuple(_coerce_mapping(item) for item in response.get("artifact_refs_candidate", []) or [])
 
+        classification = _classify_task_safe(request.metadata, request.prompt)
         diagnostics = {
             "adapter_version": ADAPTER_VERSION,
             "contract_version": CONTRACT_VERSION,
@@ -380,7 +501,14 @@ class SkillsBenchAdapter:
             "workspace_version": WORKSPACE_VERSION,
             "task_catalog_version": TASK_CATALOG_VERSION,
             "request_summary": request_debug_summary(request),
+            "classification": classification,
+            "solver_aligned_family": classification.get("solver_family") or classification.get("family") or "",
+            "legacy_family": classification.get("legacy_family") or request.family,
             "catalog_summary": catalog_summary(),
+            "harness_last_plan": _compact_harness_plan(harness),
+            "harness_task_environment": _compact_environment_context(harness),
+            "harness_output_contract": _compact_output_contract(harness),
+            "harness_workspace_execution": _compact_workspace_execution(harness),
             "emission": {
                 "version": emission.version,
                 "manifest_path": emission.manifest_path,
@@ -496,8 +624,17 @@ def validate_adapter_selftest() -> dict[str, Any]:
         errors.append(f"final_text is not JSON: {exc}")
 
     classification = classify_task(metadata, text)
-    if classification.get("family") != "data_json":
-        errors.append(f"unexpected classification: {classification}")
+    family = str(classification.get("family") or "")
+    allowed_families = {
+        "dialogue-parser",  # task-specific deploy-smoke route in task_catalog v0.2
+        "json_output",     # solver-aligned generic route
+        "data_json",       # legacy compatibility route
+        "general_file_output",
+    }
+    if family not in allowed_families:
+        errors.append(f"unexpected classification family {family!r}: {classification}")
+    if not classification.get("preferred_outputs"):
+        errors.append(f"classification missing preferred_outputs: {classification}")
 
     return {
         "ok": not errors,
@@ -506,6 +643,11 @@ def validate_adapter_selftest() -> dict[str, Any]:
         "artifact_count": len(result.artifacts),
         "file_count": len(result.files),
         "deliverables": list(result.deliverables),
+        "classification": classification,
+        "diagnostic_family": result.diagnostics.get("solver_aligned_family"),
+        "harness_plan": result.diagnostics.get("harness_last_plan"),
+        "harness_environment": result.diagnostics.get("harness_task_environment"),
+        "harness_workspace_execution": result.diagnostics.get("harness_workspace_execution"),
         "health": skillsbench_adapter_health(),
     }
 
