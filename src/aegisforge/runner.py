@@ -28,6 +28,7 @@ from .executor import Executor
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8001
+RUNNER_VERSION = "aegisforge_runner_v0_2_skillsbench_runtime_snapshot_2026_06_03"
 
 SELECTED_OPPONENT_TRACKS = (
     "mcu",
@@ -40,6 +41,7 @@ SELECTED_OPPONENT_TRACKS = (
     "pibench",
     "cybergym",
     "netarena",
+    "skillsbench",
 )
 
 ADDITIONAL_GENERALIST_TRACKS = (
@@ -108,6 +110,15 @@ TRACK_TAGS = (
     "cybergym",
     "cybersecurity",
     "netarena",
+    "skillsbench",
+    "skillsbench-leaderboard",
+    "benchflow-ai",
+    "standard-v1",
+    "with-skills",
+    "general-purpose-agent",
+    "filesystem-first",
+    "filesystem-output",
+    "sandbox-file-output",
     "coding-agent",
     "healthcare",
     "healthcare-agent",
@@ -135,11 +146,46 @@ SUPPORTED_MODES = (
 )
 
 
+SKILLSBENCH_OUTPUT_ROOTS = (
+    "/root",
+    "/root/output",
+    "/app/workspace",
+    "/app/output",
+    "/output",
+    "/workspace",
+    "/home/github/build/failed",
+    "/logs/verifier",
+)
+
+SKILLSBENCH_SOLVER_ALIGNED_FAMILIES = (
+    "json_output",
+    "csv_output",
+    "code_solution",
+    "office_xlsx",
+    "office_docx",
+    "pdf_document",
+    "lean_solution",
+    "security_config",
+    "general_file_output",
+)
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dedupe_strings(items: tuple[str, ...] | list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _normalize_base_url(url: str | None) -> str | None:
@@ -192,8 +238,32 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _skillsbench_runtime_metadata() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "benchmark": "SkillsBench",
+        "task_set": "standard-v1",
+        "condition": "with_skills",
+        "route": "general_purpose_filesystem_first",
+        "filesystem_output_primary": True,
+        "artifact_refs_diagnostic_only": True,
+        "a2a_file_part_optional_diagnostic": True,
+        "known_output_roots": list(SKILLSBENCH_OUTPUT_ROOTS),
+        "solver_aligned_families": list(SKILLSBENCH_SOLVER_ALIGNED_FAMILIES),
+        "expected_log_markers": [
+            "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH",
+            "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR",
+        ],
+        "non_regression_note": (
+            "SkillsBench scoring should be treated as real sandbox filesystem outputs; "
+            "artifact_refs/FilePart metadata is diagnostic compatibility only."
+        ),
+    }
+
+
 def _build_runtime_snapshot(*, host: str, port: int, card_url: str, mode: str) -> dict[str, Any]:
     return {
+        "runner_version": RUNNER_VERSION,
         "mode": mode,
         "host": host,
         "port": port,
@@ -205,15 +275,17 @@ def _build_runtime_snapshot(*, host: str, port: int, card_url: str, mode: str) -
         "default_track": os.getenv("AEGISFORGE_TRACK", "purple"),
         "officeqa_enabled": _env_bool("AEGISFORGE_ENABLE_OFFICEQA", False),
         "crmarena_enabled": _env_bool("AEGISFORGE_ENABLE_CRMARENA", False),
-        "tags": list(TRACK_TAGS),
-        "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
+        "skillsbench_enabled": _env_bool("AEGISFORGE_ENABLE_SKILLSBENCH", True),
+        "tags": _dedupe_strings(list(TRACK_TAGS)),
+        "selected_opponent_tracks": _dedupe_strings(list(SELECTED_OPPONENT_TRACKS)),
         "additional_generalist_tracks": list(ADDITIONAL_GENERALIST_TRACKS),
         "selected_scenarios": list(FINAL_SCENARIOS),
         "selected_scenario_ids": list(FINAL_SCENARIO_IDS),
         "scenario_count": len(FINAL_SCENARIOS),
-        "track_alias_note": "mcu and mcu-minecraft are the same selected Game Agent opponent; SaleForceOneSpy and LnkLifter preserve scenario-page spelling.",
-        "scenario_alignment": "AgentX-AgentBeats Phase 2 Sprint 4 generalist 16-scenario set.",
+        "track_alias_note": "mcu and mcu-minecraft are the same selected Game Agent opponent; skillsbench is the standard-v1 general-purpose filesystem-first route.",
+        "scenario_alignment": "AgentX-AgentBeats Phase 2 Sprint 4 generalist 16-scenario set plus SkillsBench standard-v1 general-purpose evaluator.",
         "supported_assessment_modes": list(SUPPORTED_MODES),
+        "skillsbench": _skillsbench_runtime_metadata(),
     }
 
 
@@ -282,6 +354,35 @@ def _build_doctor_report(*, host: str, port: int, card_url: str) -> dict[str, An
         }
     except Exception as exc:  # pragma: no cover
         checks["app_build"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+        report["status"] = "degraded"
+
+    try:
+        from .adapters.skillsbench.task_catalog import validate_task_catalog_selftest
+        from .adapters.skillsbench.task_environment import validate_task_identity_selftest
+
+        catalog_check = validate_task_catalog_selftest()
+        identity_check = validate_task_identity_selftest()
+        checks["skillsbench_routing"] = {
+            "ok": bool(catalog_check.get("ok")) and bool(identity_check.get("ok")),
+            "catalog": catalog_check,
+            "identity": identity_check,
+            "runtime": _skillsbench_runtime_metadata(),
+        }
+        if not checks["skillsbench_routing"]["ok"]:
+            report["status"] = "degraded"
+    except Exception as exc:  # pragma: no cover
+        checks["skillsbench_routing"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+        report["status"] = "degraded"
+
+    try:
+        from .artifact_policy import validate_artifact_policy_selftest
+
+        artifact_policy_check = validate_artifact_policy_selftest()
+        checks["artifact_policy"] = artifact_policy_check
+        if not artifact_policy_check.get("ok"):
+            report["status"] = "degraded"
+    except Exception as exc:  # pragma: no cover
+        checks["artifact_policy"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
         report["status"] = "degraded"
 
     return report
@@ -374,6 +475,53 @@ def main(argv: list[str] | None = None) -> int:
         access_log=args.access_log,
     )
 
+
+def validate_runner_selftest() -> dict[str, Any]:
+    """Validate runner metadata without starting uvicorn."""
+
+    snapshot = _build_runtime_snapshot(
+        host="127.0.0.1",
+        port=8001,
+        card_url="http://127.0.0.1:8001/",
+        mode="doctor",
+    )
+    errors: list[str] = []
+    selected = snapshot.get("selected_opponent_tracks", [])
+    tags = snapshot.get("tags", [])
+    skillsbench = snapshot.get("skillsbench", {})
+
+    if "skillsbench" not in selected:
+        errors.append("skillsbench missing from selected_opponent_tracks")
+    if "skillsbench" not in tags:
+        errors.append("skillsbench missing from TRACK_TAGS/runtime tags")
+    if not isinstance(skillsbench, dict) or not skillsbench.get("filesystem_output_primary"):
+        errors.append("skillsbench runtime metadata missing filesystem_output_primary")
+    if "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH" not in skillsbench.get("expected_log_markers", []):
+        errors.append("missing solver dispatch marker expectation")
+    if 8000 == DEFAULT_PORT:
+        errors.append("DEFAULT_PORT must not be 8000")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "version": RUNNER_VERSION,
+        "snapshot": snapshot,
+    }
+
+
+__all__ = [
+    "RUNNER_VERSION",
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "SELECTED_OPPONENT_TRACKS",
+    "ADDITIONAL_GENERALIST_TRACKS",
+    "TRACK_TAGS",
+    "SKILLSBENCH_OUTPUT_ROOTS",
+    "SKILLSBENCH_SOLVER_ALIGNED_FAMILIES",
+    "build_parser",
+    "main",
+    "validate_runner_selftest",
+]
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

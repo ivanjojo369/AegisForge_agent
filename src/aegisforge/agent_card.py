@@ -6,6 +6,9 @@ from .config import AppConfig
 from .models import AgentCardPayload
 
 
+AGENT_CARD_VERSION = "agent_card_v0_2_skillsbench_filesystem_first_2026_06_03"
+
+
 # Canonical selected-opponent tracks. "mcu" covers mcu-minecraft/Minecraft Benchmark.
 # SkillsBench is the General-Purpose Agent / standard-v1 evaluator.
 SELECTED_OPPONENT_TRACKS = [
@@ -85,9 +88,11 @@ TRACK_ALIASES = {
 # can bootstrap policy/tools/context instead of treating the agent as a plain text bot.
 PI_BENCH_POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
 
-# SkillsBench is file/artifact-native for many standard-v1 tasks.  This extension
-# is a discovery hint only; the runtime bridge still has to emit FilePart artifacts.
-SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION = "urn:aegisforge:skillsbench:artifact-output:v1"
+# SkillsBench scoring is filesystem-first in observed BenchFlow standard-v1 runs:
+# the verifier checks real files written inside the task sandbox.  Keep the
+# legacy artifact extension as a diagnostic/compatibility hint only.
+SKILLSBENCH_FILESYSTEM_OUTPUT_EXTENSION = "urn:aegisforge:skillsbench:filesystem-output:v1"
+SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION = "urn:aegisforge:skillsbench:artifact-output:diagnostic-v1"
 
 # Keep these as conservative A2A-compatible card hints. The runtime A2A server may
 # override them with SDK-native values, but the legacy card should not omit them.
@@ -163,12 +168,14 @@ def _build_capabilities(config: AppConfig) -> list[str]:
         "pibench-policy-bootstrap",
         "pibench-record-decision",
 
-        # SkillsBench / general-purpose artifact delivery.
+        # SkillsBench / general-purpose filesystem delivery.
         "skillsbench",
         "general-purpose-agent",
         "multi-utility",
-        "artifact-first",
-        "artifact-output",
+        "filesystem-first",
+        "filesystem-output",
+        "sandbox-file-output",
+        "artifact-diagnostic-output",
         "file-generation",
         "file-input",
         "file-output",
@@ -214,6 +221,7 @@ def _build_tracks(config: AppConfig) -> list[str]:
 def _build_extensions() -> list[str]:
     return [
         PI_BENCH_POLICY_BOOTSTRAP_EXTENSION,
+        SKILLSBENCH_FILESYSTEM_OUTPUT_EXTENSION,
         SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION,
     ]
 
@@ -234,8 +242,9 @@ def _build_a2a_skill_tags(config: AppConfig) -> list[str]:
             "standard-v1",
             "general-purpose",
             "multi-utility",
-            "artifact-first",
-            "artifact-output",
+            "filesystem-first",
+            "filesystem-output",
+            "artifact-diagnostic-output",
             "file-output",
             "xlsx",
             "docx",
@@ -257,21 +266,21 @@ def _build_a2a_skills(config: AppConfig) -> list[dict[str, Any]]:
             "description": (
                 "Unified AgentBeats Purple Agent with selected-opponent routing, "
                 "including Pi-Bench policy-bootstrap, CyberGym contract preservation, "
-                "and SkillsBench general-purpose artifact-first delivery."
+                "and SkillsBench general-purpose filesystem-first delivery."
             ),
             "tags": _build_a2a_skill_tags(config),
             "examples": [
                 "Handle Pi-Bench policy-compliance tasks using benchmark-provided policy and tools.",
                 "Call record_decision as the final Pi-Bench step with ALLOW, ALLOW-CONDITIONAL, DENY, or ESCALATE.",
                 "Route OfficeQA, CRMArena, tau2, OSWorld, CyberGym, NetArena, MAizeBargAIn, and MCU tasks through isolated profiles.",
-                "For SkillsBench standard-v1 file tasks, return concise status plus evaluator-visible artifacts such as patch, xlsx, docx, pptx, pdf, lean, obj, json, or markdown files.",
+                "For SkillsBench standard-v1 file tasks, write evaluator-visible files in the task sandbox such as patch, xlsx, docx, pptx, pdf, lean, obj, json, or markdown outputs; keep A2A artifact refs diagnostic-only.",
             ],
         },
         {
             "id": "quipuloop.aegisforge.skillsbench",
-            "name": "AegisForge SkillsBench General-Purpose Artifact Solver",
+            "name": "AegisForge SkillsBench General-Purpose Filesystem Solver",
             "description": (
-                "Artifact-first general-purpose route for SkillsBench tasks spanning "
+                "Filesystem-first general-purpose route for SkillsBench tasks spanning "
                 "software engineering, office automation, spreadsheets, slides, documents, "
                 "science, media conversion, finance/economics, formal reasoning, and defensive cybersecurity."
             ),
@@ -280,7 +289,8 @@ def _build_a2a_skills(config: AppConfig) -> list[dict[str, Any]]:
                 "standard-v1",
                 "general-purpose",
                 "multi-utility",
-                "artifact-output",
+                "filesystem-output",
+                "artifact-diagnostic-output",
                 "file-generation",
                 "patch",
                 "xlsx",
@@ -328,19 +338,63 @@ def _build_pibench_metadata() -> dict[str, Any]:
 
 def _build_skillsbench_metadata() -> dict[str, Any]:
     return {
+        "version": AGENT_CARD_VERSION,
+        "filesystem_output_extension": SKILLSBENCH_FILESYSTEM_OUTPUT_EXTENSION,
         "artifact_output_extension": SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION,
         "track": "skillsbench",
         "benchmark": "SkillsBench",
         "task_set": "standard-v1",
-        "route": "general_purpose_artifact_first",
-        "artifact_first": True,
+        "condition": "with_skills",
+        "route": "general_purpose_filesystem_first",
+        "filesystem_output_primary": True,
+        "artifact_refs_diagnostic_only": True,
+        "a2a_file_part_optional_diagnostic": True,
+        "artifact_first": False,
         "requires_file_output_for_artifact_native_tasks": True,
+        "known_output_roots": [
+            "/root",
+            "/root/output",
+            "/app/workspace",
+            "/app/output",
+            "/output",
+            "/workspace",
+            "/home/github/build/failed",
+            "/logs/verifier",
+        ],
         "artifact_families": list(SKILLSBENCH_ARTIFACT_FAMILIES),
         "task_categories": list(SKILLSBENCH_TASK_CATEGORIES),
+        "solver_aligned_families": [
+            "json_output",
+            "csv_output",
+            "code_solution",
+            "office_xlsx",
+            "office_docx",
+            "pdf_document",
+            "lean_solution",
+            "security_config",
+            "general_file_output",
+        ],
+        "task_specific_routes": [
+            "dialogue-parser",
+            "citation-check",
+            "court-form-filling",
+            "offer-letter-generator",
+            "powerlifting-coef-calc",
+        ],
         "minimum_contract": {
             "status_text": "concise",
-            "file_tasks": "emit evaluator-visible FilePart/FileWithBytes artifacts",
-            "artifact_refs": "must not be empty for artifact-native tasks",
+            "file_tasks": "write real evaluator-visible files inside the SkillsBench task sandbox",
+            "artifact_refs": "diagnostic_only; not the primary scoring channel and may be empty in official results",
+            "a2a_file_part": "optional_diagnostic_compatibility",
+            "filesystem_outputs": "primary scoring channel",
+        },
+        "output_contract": {
+            "primary_channel": "filesystem",
+            "diagnostic_channel": "a2a_artifact_refs",
+            "do_not_assume": [
+                "non_empty_artifact_refs_are_required_for_score",
+                "FilePart_is_the_primary_scoring_channel",
+            ],
         },
         "non_regression_guards": {
             "cybergym": "do not alter the single Artifact(name='PoC') / FilePart(name='poc') contract",
@@ -394,7 +448,7 @@ def build_agent_card(config: AppConfig) -> AgentCardPayload:
             "skillsbench": _build_skillsbench_metadata(),
             "note": (
                 "mcu and mcu-minecraft are aliases for the same selected Game Agent opponent; "
-                "skillsbench is the general-purpose standard-v1 artifact-first evaluator route."
+                "skillsbench is the general-purpose standard-v1 filesystem-first evaluator route."
             ),
         },
     )
@@ -436,10 +490,13 @@ def _as_response_dict(card: AgentCardPayload, config: AppConfig) -> dict[str, An
         "toolCalls": True,
         "assistantToolCalls": True,
 
-        # SkillsBench / general-purpose artifact discovery hints.
+        # SkillsBench / general-purpose filesystem discovery hints.
         "fileInput": True,
         "fileOutput": True,
+        "filesystemOutput": True,
+        "sandboxFileOutput": True,
         "artifactOutput": True,
+        "artifactOutputDiagnosticOnly": True,
         "multiArtifactOutput": True,
     }
 
@@ -466,3 +523,54 @@ def _as_response_dict(card: AgentCardPayload, config: AppConfig) -> dict[str, An
 def agent_card_response_dict(config: AppConfig) -> dict[str, object]:
     return _as_response_dict(build_agent_card(config), config)
 
+
+
+def validate_agent_card_selftest() -> dict[str, Any]:
+    """Validate that SkillsBench card metadata is filesystem-first while CyberGym remains separate."""
+
+    metadata = _build_skillsbench_metadata()
+    extensions = _build_extensions()
+    errors: list[str] = []
+
+    if SKILLSBENCH_FILESYSTEM_OUTPUT_EXTENSION not in extensions:
+        errors.append("missing SkillsBench filesystem-output extension")
+    if not metadata.get("filesystem_output_primary"):
+        errors.append("SkillsBench metadata should mark filesystem_output_primary")
+    if not metadata.get("artifact_refs_diagnostic_only"):
+        errors.append("SkillsBench metadata should mark artifact_refs_diagnostic_only")
+    minimum = metadata.get("minimum_contract", {})
+    if isinstance(minimum, dict):
+        artifact_refs = str(minimum.get("artifact_refs", "")).lower()
+        if "must not be empty" in artifact_refs:
+            errors.append("SkillsBench metadata still claims artifact_refs must not be empty")
+        if "filesystem" not in str(minimum.get("filesystem_outputs", "")).lower():
+            errors.append("SkillsBench metadata missing filesystem output contract")
+    else:
+        errors.append("minimum_contract is not a dict")
+    if "cybergym" not in metadata.get("non_regression_guards", {}):
+        errors.append("missing CyberGym non-regression guard")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "version": AGENT_CARD_VERSION,
+        "extensions": extensions,
+        "skillsbench": metadata,
+    }
+
+
+__all__ = [
+    "AGENT_CARD_VERSION",
+    "SELECTED_OPPONENT_TRACKS",
+    "TRACK_ALIASES",
+    "PI_BENCH_POLICY_BOOTSTRAP_EXTENSION",
+    "SKILLSBENCH_FILESYSTEM_OUTPUT_EXTENSION",
+    "SKILLSBENCH_ARTIFACT_OUTPUT_EXTENSION",
+    "A2A_PROTOCOL_VERSION",
+    "A2A_PREFERRED_TRANSPORT",
+    "A2A_DEFAULT_INPUT_MODES",
+    "A2A_DEFAULT_OUTPUT_MODES",
+    "build_agent_card",
+    "agent_card_response_dict",
+    "validate_agent_card_selftest",
+]
