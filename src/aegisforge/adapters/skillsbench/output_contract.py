@@ -33,23 +33,66 @@ import os
 import re
 
 
-OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_1_path_schema_extractor_2026_06_02"
+OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_2_required_outputs_filename_extractor_2026_06_03"
 
 
 ABS_PATH_RE = re.compile(
     r"(?P<quote>[`\"']?)"
     r"(?P<path>/(?:root|app|data|output|workspace|home/github/build|home/github|logs)"
-    r"[A-Za-z0-9_./{}<>:+@%=\- ]{0,260}?"
+    r"(?:/[A-Za-z0-9_.{}<>:+@%=\-]+){0,48}"
     r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh|/))"
     r"(?P=quote)"
 )
 
 REL_PATH_RE = re.compile(
     r"(?P<quote>[`\"']?)"
-    r"(?P<path>(?:output|workspace|results|patches|logs|data)/"
-    r"[A-Za-z0-9_./{}<>:+@%=\- ]{0,220}?"
+    r"(?P<path>(?:output|workspace|results|patches|logs|data|artifacts)"
+    r"(?:/[A-Za-z0-9_.{}<>:+@%=\-]+){0,48}"
     r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh))"
     r"(?P=quote)"
+)
+
+OUTPUT_SUFFIX_RE = r"(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh)"
+BARE_OUTPUT_FILE_RE = re.compile(
+    r"(?P<quote>[`\"']?)"
+    r"(?P<path>(?:[A-Za-z0-9_.+@%=\-]+/){0,5}[A-Za-z0-9][A-Za-z0-9_.+@%=\-]{0,140}\." + OUTPUT_SUFFIX_RE + r")"
+    r"(?P=quote)",
+    re.IGNORECASE,
+)
+OUTPUT_SECTION_HEADER_RE = re.compile(
+    r"^(?:[#*\-\d.) ]{0,12})"
+    r"(?P<header>(?:required\s+)?(?:output\s+files?|outputs?|deliverables?|submission\s+files?|files\s+to\s+(?:create|submit|write)|expected\s+files?|final\s+files?|artifacts?))"
+    r"\s*:?(?P<tail>.*)$",
+    re.IGNORECASE,
+)
+OUTPUT_CONTEXT_RE = re.compile(
+    r"(?:write|save|create|generate|produce|output|store|return|submit|place|put)"
+    r"[^\n.;]{0,220}?"
+    r"(?P<file>(?:[A-Za-z0-9_.+@%=\-]+/){0,5}[A-Za-z0-9][A-Za-z0-9_.+@%=\-]{0,140}\." + OUTPUT_SUFFIX_RE + r")",
+    re.IGNORECASE,
+)
+BARE_OUTPUT_BASE_KEYS: tuple[str, ...] = (
+    "output_dir",
+    "output_directory",
+    "results_dir",
+    "result_dir",
+    "artifact_dir",
+    "artifacts_dir",
+    "workspace_dir",
+    "SKILLSBENCH_OUTPUT_DIR",
+    "AEGISFORGE_SKILLSBENCH_OUTPUT_DIR",
+    "TASK_OUTPUT_DIR",
+    "OUTPUT_DIR",
+)
+RELATIVE_OUTPUT_PREFIXES: tuple[str, ...] = (
+    "output/",
+    "outputs/",
+    "workspace/",
+    "results/",
+    "patches/",
+    "logs/",
+    "data/",
+    "artifacts/",
 )
 
 PLACEHOLDER_RE = re.compile(r"<[^>/\s]+>|\{[^}/\s]+\}")
@@ -369,6 +412,214 @@ def _csv_columns_from_text(text: str, around: str = "") -> tuple[str, ...]:
     return _dedupe_preserve(columns)[:60]
 
 
+def _default_output_base(metadata: Mapping[str, Any], text: str) -> str:
+    """Choose a conservative base for bare required filenames.
+
+    SkillsBench prompts often say only `answer.json` or list a section named
+    `Required Output Files` without an absolute path.  In the official Harbor
+    tasks those bare outputs are normally looked for from `/root`; code-centric
+    `/app` tasks are the main exception.
+    """
+
+    for key in BARE_OUTPUT_BASE_KEYS:
+        raw = metadata.get(key) or os.getenv(key)
+        if raw:
+            value = normalize_path(str(raw))
+            if value.startswith("/"):
+                return value.rstrip("/") or "/"
+
+    blob = " ".join([_safe_text(metadata, limit=20000), text[:40000]]).lower()
+    if "/app/workspace" in blob:
+        return "/app/workspace"
+    if re.search(r"(?:^|\s)/app(?:\s|/|$)", blob) and "/root" not in blob:
+        return "/app"
+    if "/output" in blob and "/root" not in blob:
+        return "/output"
+    return "/root"
+
+
+def _strip_output_token(raw: str) -> str:
+    token = str(raw or "").strip()
+    token = re.sub(r"^[\s`\"'•*\-–—]+", "", token)
+    token = re.sub(r"^[\d]+[.)]\s*", "", token)
+    token = token.strip().strip("`\"'[](){}<>")
+    token = token.rstrip(".,;:)]") if token else token
+    return token.strip()
+
+
+def _is_probably_output_filename(token: str) -> bool:
+    token = _strip_output_token(token)
+    if not token or token.startswith("/"):
+        return False
+    if "://" in token or "@" in token and "/" not in token:
+        return False
+    name = Path(token).name
+    if not name or name in {".", ".."}:
+        return False
+    suffix = Path(name).suffix.lower()
+    return suffix in PATH_KIND_BY_SUFFIX
+
+
+def _materialize_output_path(raw_path: str, base_for_relative: str) -> str:
+    raw = _strip_output_token(raw_path)
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        return normalize_path(raw)
+    lowered = raw.lower()
+    base = normalize_path(base_for_relative or "/root").rstrip("/") or "/"
+    if any(lowered.startswith(prefix) for prefix in RELATIVE_OUTPUT_PREFIXES):
+        if base in {"/root", "/app", "/workspace", "/output"}:
+            return normalize_path(str(Path(base) / raw))
+        # If the configured base is already an output-like subdir, avoid nesting
+        # `/root/output/output/foo.csv`.
+        if Path(base).name.lower() in {"output", "outputs", "results", "workspace", "data", "logs", "patches"}:
+            first, _, rest = raw.partition("/")
+            return normalize_path(str(Path(base) / (rest or first)))
+    return normalize_path(str(Path(base) / raw))
+
+
+def _make_output_requirement(
+    path: str,
+    *,
+    source: str,
+    evidence: str,
+    full_text: str,
+    required: bool = True,
+    kind_override: str = "",
+    mime_override: str = "",
+    action: str = "",
+    schema_fields: Sequence[str] | None = None,
+    csv_columns: Sequence[str] | None = None,
+    constraints: Sequence[str] | None = None,
+) -> OutputRequirement | None:
+    path = normalize_path(path)
+    if not path.startswith("/"):
+        return None
+    kind, suffix, mime = path_kind(path)
+    if kind_override:
+        kind = str(kind_override)
+        mime = mime_override or MIME_BY_KIND.get(kind, mime)
+    parent = str(Path(path).parent)
+    filename = Path(path).name
+    placeholders = tuple(PLACEHOLDER_RE.findall(path))
+    around = evidence or _sentence_window(full_text, 0, min(len(full_text), 200))
+    if schema_fields is None:
+        schema_fields = _json_fields_from_text(full_text, around) if kind == "json" else tuple()
+    if csv_columns is None:
+        csv_columns = _csv_columns_from_text(full_text, around) if kind == "csv" else tuple()
+    if constraints is None:
+        constraints = _constraints_from_evidence(around, path)
+    return OutputRequirement(
+        path=path,
+        kind=kind,
+        mime_type=mime_override or mime,
+        source=source,
+        required=required,
+        parent=parent,
+        filename=filename,
+        suffix=suffix,
+        has_placeholder=bool(placeholders),
+        placeholder_tokens=placeholders,
+        is_directory=kind == "directory",
+        action=action or _action_from_evidence(around),
+        schema_fields=tuple(str(x) for x in (schema_fields or ())),
+        csv_columns=tuple(str(x) for x in (csv_columns or ())),
+        constraints=tuple(str(x) for x in (constraints or ())),
+        evidence=around[:900],
+    )
+
+
+def _iter_output_sections(text: str, *, max_lines: int = 18) -> list[tuple[str, str]]:
+    """Return output/deliverable sections likely to contain bare filenames."""
+
+    lines = text.splitlines()
+    sections: list[tuple[str, str]] = []
+    for index, line in enumerate(lines):
+        match = OUTPUT_SECTION_HEADER_RE.match(line.strip())
+        if not match:
+            continue
+        body_lines: list[str] = []
+        tail = (match.group("tail") or "").strip()
+        if tail:
+            body_lines.append(tail)
+        blanks = 0
+        for next_line in lines[index + 1 : index + 1 + max_lines]:
+            stripped = next_line.strip()
+            if not stripped:
+                blanks += 1
+                if blanks >= 2 and body_lines:
+                    break
+                continue
+            if body_lines and OUTPUT_SECTION_HEADER_RE.match(stripped):
+                break
+            if re.match(r"^#{1,6}\s+", stripped) and body_lines:
+                break
+            body_lines.append(stripped)
+        if body_lines:
+            sections.append((match.group("header"), "\n".join(body_lines)))
+    return sections
+
+
+def _requirements_from_bare_output_files(text: str, source: str, *, base_for_relative: str = "/root") -> list[OutputRequirement]:
+    """Extract required filenames that are not written as absolute paths.
+
+    This closes the gap observed in Quick Submit logs where many tasks exposed
+    `Required Output Files: answer.json, control_log.csv, ...` and v0.1 emitted
+    `no_requirements` because only `/root/...` or `output/...` paths were parsed.
+    """
+
+    requirements: list[OutputRequirement] = []
+    seen: set[str] = set()
+
+    candidates: list[tuple[str, str, str]] = []
+    for header, body in _iter_output_sections(text):
+        for match in BARE_OUTPUT_FILE_RE.finditer(body):
+            if match.start() > 0 and body[match.start() - 1] == "/":
+                continue
+            raw = match.group("path")
+            if raw.startswith("/") or not _is_probably_output_filename(raw):
+                continue
+            evidence = f"{header}: {_sentence_window(body, match.start(), match.end(), radius=180)}"
+            candidates.append((raw, f"{source}.required_output_section", evidence))
+
+    for match in OUTPUT_CONTEXT_RE.finditer(text):
+        raw_start = match.start("file")
+        if raw_start > 0 and text[raw_start - 1] == "/":
+            continue
+        raw = match.group("file")
+        if raw.startswith("/") or not _is_probably_output_filename(raw):
+            continue
+        evidence = _sentence_window(text, match.start(), match.end(), radius=220)
+        candidates.append((raw, f"{source}.output_context", evidence))
+
+    # Markdown bullets or numbered lines such as `- answer.json` immediately
+    # after an output-ish phrase are common; scanning sections above catches most
+    # of them, but this fallback helps compact prompts where the header and list
+    # are on one line.
+    for match in re.finditer(r"(?:required output files?|outputs?|deliverables?|submission files?)\s*[:\-]\s*(?P<tail>[^\n]{0,800})", text, re.IGNORECASE):
+        tail = match.group("tail")
+        for file_match in BARE_OUTPUT_FILE_RE.finditer(tail):
+            if file_match.start() > 0 and tail[file_match.start() - 1] == "/":
+                continue
+            raw = file_match.group("path")
+            if raw.startswith("/") or not _is_probably_output_filename(raw):
+                continue
+            evidence = _sentence_window(text, match.start(), match.end(), radius=220)
+            candidates.append((raw, f"{source}.inline_required_output_files", evidence))
+
+    for raw, item_source, evidence in candidates:
+        path = _materialize_output_path(raw, base_for_relative)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        requirement = _make_output_requirement(path, source=item_source, evidence=evidence, full_text=text)
+        if requirement is not None:
+            requirements.append(requirement)
+
+    return requirements
+
+
 def _requirements_from_paths(text: str, source: str, *, base_for_relative: str = "/root") -> list[OutputRequirement]:
     requirements: list[OutputRequirement] = []
     seen: set[str] = set()
@@ -380,6 +631,10 @@ def _requirements_from_paths(text: str, source: str, *, base_for_relative: str =
     for path_type, match in matches:
         raw_path = match.group("path")
         if path_type == "relative":
+            # Avoid matching the `output/foo.csv` substring inside an already
+            # absolute path such as `/root/output/foo.csv`.
+            if match.start() > 0 and text[match.start() - 1] == "/":
+                continue
             raw_path = str(Path(base_for_relative) / raw_path)
         path = normalize_path(raw_path)
         if not path.startswith("/"):
@@ -420,10 +675,10 @@ def _requirements_from_paths(text: str, source: str, *, base_for_relative: str =
     return requirements
 
 
-def _requirements_from_metadata(metadata: Mapping[str, Any]) -> list[OutputRequirement]:
+def _requirements_from_metadata(metadata: Mapping[str, Any], *, base_for_relative: str = "/root") -> list[OutputRequirement]:
     requirements: list[OutputRequirement] = []
 
-    for key in ("outputs", "output", "expected_outputs", "artifacts", "files"):
+    for key in ("outputs", "output", "expected_outputs", "artifacts", "files", "required_outputs", "output_files", "deliverables"):
         value = metadata.get(key)
         if value is None:
             continue
@@ -434,39 +689,49 @@ def _requirements_from_metadata(metadata: Mapping[str, Any]) -> list[OutputRequi
             items = [value]
         for index, item in enumerate(items):
             if isinstance(item, Mapping):
-                raw_path = item.get("path") or item.get("file") or item.get("filename") or item.get("name")
+                raw_path = item.get("path") or item.get("file") or item.get("filename") or item.get("file_name") or item.get("name")
                 if not raw_path:
                     continue
-                path = normalize_path(str(raw_path))
+                path = _materialize_output_path(str(raw_path), base_for_relative)
                 if not path.startswith("/"):
                     continue
-                kind, suffix, mime = path_kind(path)
-                parent = str(Path(path).parent)
-                requirements.append(
-                    OutputRequirement(
-                        path=path,
-                        kind=str(item.get("kind") or kind),
-                        mime_type=str(item.get("mime_type") or item.get("mime") or mime),
-                        source=f"metadata.{key}[{index}]",
-                        required=bool(item.get("required", True)),
-                        parent=parent,
-                        filename=Path(path).name,
-                        suffix=suffix,
-                        has_placeholder=bool(PLACEHOLDER_RE.search(path)),
-                        placeholder_tokens=tuple(PLACEHOLDER_RE.findall(path)),
-                        is_directory=kind == "directory",
-                        action=str(item.get("action") or "write"),
-                        schema_fields=tuple(str(x) for x in item.get("schema_fields", []) or []),
-                        csv_columns=tuple(str(x) for x in item.get("csv_columns", []) or []),
-                        constraints=tuple(str(x) for x in item.get("constraints", []) or []),
-                        evidence=f"metadata key {key}",
-                    )
+                requirement = _make_output_requirement(
+                    path,
+                    source=f"metadata.{key}[{index}]",
+                    evidence=f"metadata key {key}",
+                    full_text=_safe_text(metadata, limit=60000),
+                    required=bool(item.get("required", True)),
+                    kind_override=str(item.get("kind") or ""),
+                    mime_override=str(item.get("mime_type") or item.get("mime") or ""),
+                    action=str(item.get("action") or "write"),
+                    schema_fields=tuple(str(x) for x in item.get("schema_fields", []) or []),
+                    csv_columns=tuple(str(x) for x in item.get("csv_columns", []) or []),
+                    constraints=tuple(str(x) for x in item.get("constraints", []) or []),
                 )
+                if requirement is not None:
+                    requirements.append(requirement)
+            elif isinstance(item, (str, bytes, bytearray)):
+                raw_path = _safe_text(item, limit=500).strip()
+                if not raw_path:
+                    continue
+                path = _materialize_output_path(raw_path, base_for_relative)
+                if not path.startswith("/"):
+                    continue
+                requirement = _make_output_requirement(
+                    path,
+                    source=f"metadata.{key}[{index}]",
+                    evidence=f"metadata key {key}",
+                    full_text=_safe_text(metadata, limit=60000),
+                )
+                if requirement is not None:
+                    requirements.append(requirement)
 
-    for key in ("instruction", "description", "prompt", "task_text"):
+    for key in ("instruction", "description", "prompt", "task_text", "task", "system_prompt", "user_prompt"):
         value = metadata.get(key)
         if value:
-            requirements.extend(_requirements_from_paths(_safe_text(value), f"metadata.{key}"))
+            blob = _safe_text(value)
+            requirements.extend(_requirements_from_paths(blob, f"metadata.{key}", base_for_relative=base_for_relative))
+            requirements.extend(_requirements_from_bare_output_files(blob, f"metadata.{key}", base_for_relative=base_for_relative))
 
     return requirements
 
@@ -681,9 +946,12 @@ def build_output_contract(
     metadata = _safe_mapping(metadata)
     prompt = _safe_text(text)
 
+    base_for_relative = _default_output_base(metadata, prompt)
+
     requirements = []
-    requirements.extend(_requirements_from_paths(prompt, "prompt"))
-    requirements.extend(_requirements_from_metadata(metadata))
+    requirements.extend(_requirements_from_paths(prompt, "prompt", base_for_relative=base_for_relative))
+    requirements.extend(_requirements_from_bare_output_files(prompt, "prompt", base_for_relative=base_for_relative))
+    requirements.extend(_requirements_from_metadata(metadata, base_for_relative=base_for_relative))
     merged = _merge_requirements(requirements)
 
     family = _infer_family(metadata, prompt, merged)
@@ -784,10 +1052,22 @@ def validate_output_contract_selftest() -> dict[str, Any]:
     {"fake_citations": ["Title"]}
     ```
     Also create /root/output/report.md and /root/output/results.csv with columns `station_id`, `flood_days`.
+    Required Output Files:
+    - controller_params.json
+    - control_log.csv with columns `time`, `value`
+    - plots/pareto_frontier.csv
+    Submit artifacts: summary.md, final_answer.txt
     For build repair write `/home/github/build/failed/<repo>/<id>/patch_0.diff` and `/home/github/build/failed/failed_reasons.txt`.
     """
     contract = build_output_contract(
-        {"task_id": "selftest", "category": "software-engineering"},
+        {
+            "task_id": "selftest",
+            "category": "software-engineering",
+            "expected_outputs": [
+                {"name": "metadata_output.json", "schema_fields": ["ok", "score"]},
+                "metadata_metrics.csv",
+            ],
+        },
         sample,
     )
     paths = set(contract.primary_outputs) | {req.path for req in contract.requirements}
@@ -798,6 +1078,13 @@ def validate_output_contract_selftest() -> dict[str, Any]:
         "/root/output/results.csv",
         "/home/github/build/failed/<repo>/<id>/patch_0.diff",
         "/home/github/build/failed/failed_reasons.txt",
+        "/root/controller_params.json",
+        "/root/control_log.csv",
+        "/root/plots/pareto_frontier.csv",
+        "/root/summary.md",
+        "/root/final_answer.txt",
+        "/root/metadata_output.json",
+        "/root/metadata_metrics.csv",
     ):
         if expected not in paths:
             errors.append(f"missing path: {expected}")
@@ -809,6 +1096,14 @@ def validate_output_contract_selftest() -> dict[str, Any]:
     csv_req = contract.requirement_for_path("/root/output/results.csv")
     if not csv_req or not {"station_id", "flood_days"}.issubset(set(csv_req.csv_columns)):
         errors.append("csv columns not detected")
+
+    bare_csv_req = contract.requirement_for_path("/root/control_log.csv")
+    if not bare_csv_req or not {"time", "value"}.issubset(set(bare_csv_req.csv_columns)):
+        errors.append("bare filename csv columns not detected")
+
+    metadata_req = contract.requirement_for_path("/root/metadata_output.json")
+    if not metadata_req or not {"ok", "score"}.issubset(set(metadata_req.schema_fields)):
+        errors.append("relative metadata output schema fields not detected")
 
     if contract.family != "bugswarm_build_repair":
         errors.append(f"unexpected family: {contract.family}")
