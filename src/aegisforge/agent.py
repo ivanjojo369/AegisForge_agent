@@ -66,7 +66,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
-SKILLSBENCH_AGENT_VERSION = "skillsbench_adapter_harness_worker_contract_v0_6_2026_06_02"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_filesystem_harness_bridge_v0_7_2026_06_03"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -16952,6 +16952,235 @@ class AegisForgeAgent:
         by executor.py while storing all adapter outputs on the legacy surfaces
         that executor.py already scans.
         """
+        bridge_marker = "skillsbench_agent_bridge_v0_2_harness_first_real_filesystem_no_legacy_2026_06_03"
+        # SkillsBench standard-v1 / with_skills is scored from files written in the
+        # task sandbox.  Therefore this route must call the real-filesystem harness
+        # before any legacy A2A artifact-ref/gateway path.  The legacy path remains
+        # below only as an explicit opt-in emergency fallback via
+        # AEGISFORGE_SKILLSBENCH_ALLOW_LEGACY_FALLBACK=1.
+        try:
+            from .adapters.skillsbench.harness import handle_skillsbench_request
+
+            skillsbench_metadata = dict(metadata or {})
+            skillsbench_metadata.update(
+                {
+                    "track": "skillsbench",
+                    "task_set": "standard-v1",
+                    "condition": "with_skills",
+                    "agent_bridge_marker": bridge_marker,
+                    "agent_bridge_version": SKILLSBENCH_AGENT_VERSION,
+                    "agent_bridge_route": "agent.py::_handle_skillsbench_turn->handle_skillsbench_request",
+                    "legacy_artifactrefs_bypassed": True,
+                }
+            )
+            skillsbench_request = {
+                "task_text": task_text,
+                "prompt": task_text,
+                "text": task_text,
+                "content": task_text,
+                "metadata": skillsbench_metadata,
+                "track": "skillsbench",
+                "task_set": "standard-v1",
+                "condition": "with_skills",
+                "agent_bridge_marker": bridge_marker,
+            }
+
+            harness_output = handle_skillsbench_request(
+                message=skillsbench_request,
+                request=skillsbench_request,
+            )
+            if not isinstance(harness_output, Mapping):
+                raise TypeError(f"SkillsBench filesystem harness returned non-mapping: {type(harness_output)!r}")
+
+            harness_result = dict(harness_output)
+            payload_candidate = harness_result.get("payload")
+            payload = dict(payload_candidate) if isinstance(payload_candidate, Mapping) else dict(harness_result)
+
+            result_metadata = dict(payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {})
+            result_metadata.update(skillsbench_metadata)
+            payload["metadata"] = result_metadata
+            payload.setdefault("track", "skillsbench")
+            payload.setdefault("task_set", "standard-v1")
+            payload.setdefault("condition", "with_skills")
+            payload.setdefault("agent_bridge_marker", bridge_marker)
+            payload.setdefault("schema", "aegisforge.skillsbench.filesystem_harness_bridge.v0_7")
+
+            artifacts = [dict(item) for item in harness_result.get("artifacts", []) if isinstance(item, Mapping)]
+            artifact_outputs = [
+                dict(item) for item in harness_result.get("artifact_outputs", []) if isinstance(item, Mapping)
+            ]
+            files = [dict(item) for item in harness_result.get("files", []) if isinstance(item, Mapping)]
+            deliverables = [self._coerce_text(item) for item in harness_result.get("deliverables", [])]
+
+            diagnostics_source = harness_result.get("diagnostics")
+            if not isinstance(diagnostics_source, Mapping):
+                diagnostics_source = harness_result.get("diagnostic")
+            diagnostics = dict(diagnostics_source) if isinstance(diagnostics_source, Mapping) else {}
+            diagnostics.update(
+                {
+                    "agent_bridge_marker": bridge_marker,
+                    "agent_bridge_version": SKILLSBENCH_AGENT_VERSION,
+                    "harness_entrypoint_called": "handle_skillsbench_request",
+                    "legacy_artifactrefs_bypassed": True,
+                    "harness_return_keys": sorted(str(key) for key in harness_result.keys())[:80],
+                }
+            )
+
+            status = {
+                "mode": "skillsbench_filesystem_harness_first",
+                "protocol": "skillsbench_real_filesystem_harness_bridge_v0_7",
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "agent_bridge_marker": bridge_marker,
+                "harness_entrypoint": "handle_skillsbench_request",
+                "legacy_artifactrefs_bypassed": True,
+                "artifact_count": len(artifacts),
+                "artifact_outputs_count": len(artifact_outputs),
+                "files_count": len(files),
+                "deliverables": deliverables,
+                "diagnostics": self._normalize_for_json(diagnostics),
+                "llm_calls_used": self._current_llm_calls,
+                "last_llm_error": self._last_llm_error,
+            }
+
+            final_text = self._coerce_text(
+                harness_result.get("final_text")
+                or harness_result.get("answer")
+                or harness_result.get("output")
+                or harness_result.get("response")
+            )
+            if not final_text:
+                final_text = json.dumps(
+                    {
+                        "status": "completed",
+                        "track": "skillsbench",
+                        "task_set": "standard-v1",
+                        "condition": "with_skills",
+                        "schema": "aegisforge.skillsbench.filesystem_harness_bridge.final.v0_7",
+                        "version": SKILLSBENCH_AGENT_VERSION,
+                        "agent_bridge_marker": bridge_marker,
+                        "payload": self._normalize_for_json(payload),
+                        "diagnostics": self._normalize_for_json(diagnostics),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+
+            self._skillsbench_last_status = status
+            self._skillsbench_last_artifacts = artifacts
+            self._skillsbench_last_payload = dict(payload)
+            self._skillsbench_last_gateway_manifest = {
+                "agent_bridge_marker": bridge_marker,
+                "harness_entrypoint": "handle_skillsbench_request",
+                "legacy_artifactrefs_bypassed": True,
+                "payload": self._normalize_for_json(payload),
+                "artifact_outputs": self._normalize_for_json(artifact_outputs),
+                "files": self._normalize_for_json(files),
+                "deliverables": deliverables,
+                "diagnostics": self._normalize_for_json(diagnostics),
+            }
+            self._skillsbench_last_artifact_refs = []
+            self._last_artifacts = artifacts
+            self.last_artifacts = artifacts
+            self._last_result = {
+                "track": "skillsbench",
+                "task_set": "standard-v1",
+                "condition": "with_skills",
+                "version": SKILLSBENCH_AGENT_VERSION,
+                "agent_bridge_marker": bridge_marker,
+                "payload": dict(payload),
+                "artifacts": artifacts,
+                "artifact_outputs": artifact_outputs,
+                "files": files,
+                "deliverables": deliverables,
+                "artifact_refs_candidate": [],
+                "adapter_status": status,
+                "diagnostics": diagnostics,
+            }
+            self.last_result = dict(self._last_result)
+
+            return {
+                "final_text": final_text,
+                "payload": dict(payload),
+                "artifacts": artifacts,
+                "artifact_outputs": artifact_outputs,
+                "files": files,
+                "deliverables": deliverables,
+                "artifact_refs_candidate": [],
+                "adapter_status": status,
+                "diagnostics": diagnostics,
+            }
+        except Exception as exc:
+            harness_error = self._trim(repr(exc), 1200)
+            try:
+                LOGGER.exception("SkillsBench filesystem harness route failed")
+            except Exception:
+                pass
+            allow_legacy_fallback = str(
+                os.getenv("AEGISFORGE_SKILLSBENCH_ALLOW_LEGACY_FALLBACK", "")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if not allow_legacy_fallback:
+                payload = {
+                    "status": "completed",
+                    "track": "skillsbench",
+                    "task_set": "standard-v1",
+                    "condition": "with_skills",
+                    "schema": "aegisforge.skillsbench.filesystem_harness_bridge.error.v0_7",
+                    "version": SKILLSBENCH_AGENT_VERSION,
+                    "agent_bridge_marker": bridge_marker,
+                    "harness_failed_before_legacy": True,
+                    "legacy_artifactrefs_bypassed": True,
+                    "harness_error": harness_error,
+                    "metadata": dict(metadata or {}),
+                }
+                final_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                status = {
+                    "mode": "skillsbench_filesystem_harness_error_no_legacy",
+                    "protocol": "skillsbench_real_filesystem_harness_bridge_v0_7",
+                    "version": SKILLSBENCH_AGENT_VERSION,
+                    "agent_bridge_marker": bridge_marker,
+                    "harness_failed_before_legacy": True,
+                    "legacy_artifactrefs_bypassed": True,
+                    "harness_error": harness_error,
+                    "llm_calls_used": self._current_llm_calls,
+                    "last_llm_error": self._last_llm_error,
+                }
+                self._skillsbench_last_status = status
+                self._skillsbench_last_artifacts = []
+                self._skillsbench_last_payload = dict(payload)
+                self._skillsbench_last_gateway_manifest = {
+                    "agent_bridge_marker": bridge_marker,
+                    "harness_failed_before_legacy": True,
+                    "legacy_artifactrefs_bypassed": True,
+                    "harness_error": harness_error,
+                }
+                self._skillsbench_last_artifact_refs = []
+                self._last_artifacts = []
+                self.last_artifacts = []
+                self._last_result = {
+                    "track": "skillsbench",
+                    "task_set": "standard-v1",
+                    "condition": "with_skills",
+                    "version": SKILLSBENCH_AGENT_VERSION,
+                    "agent_bridge_marker": bridge_marker,
+                    "payload": dict(payload),
+                    "artifacts": [],
+                    "artifact_refs_candidate": [],
+                    "adapter_status": status,
+                    "harness_error": harness_error,
+                }
+                self.last_result = dict(self._last_result)
+                return {
+                    "final_text": final_text,
+                    "payload": dict(payload),
+                    "artifacts": [],
+                    "artifact_outputs": [],
+                    "files": [],
+                    "deliverables": [],
+                    "artifact_refs_candidate": [],
+                    "adapter_status": status,
+                    "harness_error": harness_error,
+                }
+
         adapter_error = ""
         try:
             from .adapters.skillsbench.adapter import (
