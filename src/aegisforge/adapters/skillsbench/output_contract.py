@@ -33,7 +33,7 @@ import os
 import re
 
 
-OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_2_required_outputs_filename_extractor_2026_06_03"
+OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_3_strict_output_filter_2026_06_03"
 
 
 ABS_PATH_RE = re.compile(
@@ -66,7 +66,7 @@ OUTPUT_SECTION_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 OUTPUT_CONTEXT_RE = re.compile(
-    r"(?:write|save|create|generate|produce|output|store|return|submit|place|put)"
+    r"(?<![A-Za-z0-9_./-])(?:write|save|create|generate|produce|output|submit|fill)(?![A-Za-z0-9_./-])"
     r"[^\n.;]{0,220}?"
     r"(?P<file>(?:[A-Za-z0-9_.+@%=\-]+/){0,5}[A-Za-z0-9][A-Za-z0-9_.+@%=\-]{0,140}\." + OUTPUT_SUFFIX_RE + r")",
     re.IGNORECASE,
@@ -110,12 +110,42 @@ OUTPUT_VERBS = (
     "generate",
     "produce",
     "output",
-    "store",
+    "submit",
     "fill",
-    "modify",
-    "update",
-    "apply",
-    "implement",
+)
+
+STRICT_OUTPUT_VERBS = OUTPUT_VERBS
+STRICT_OUTPUT_VERB_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:write|writes|written|save|saves|saved|create|creates|created|generate|generates|generated|produce|produces|produced|output|outputs|submit|submits|submitted|fill|fills|filled)(?![A-Za-z0-9_./-])",
+    re.IGNORECASE,
+)
+GENERIC_OUTPUT_DIR_DENYLIST = {
+    "/root",
+    "/app",
+    "/workspace",
+    "/root/output",
+    "/root/output_schema",
+}
+INPUT_PATH_PREFIX_DENYLIST = (
+    "/root/data/",
+    "/data/",
+)
+STRUCTURED_OUTPUT_SOURCE_MARKERS = (
+    "required_output_section",
+    "output_context",
+    "inline_required_output_files",
+    "metadata.outputs",
+    "metadata.output",
+    "metadata.expected_outputs",
+    "metadata.artifacts",
+    "metadata.files",
+    "metadata.required_outputs",
+    "metadata.output_files",
+    "metadata.deliverables",
+)
+SOURCE_INPUT_CONTEXT_RE = re.compile(
+    r"\b(?:input|inputs|source|provided|given|read|load|parse|analy[sz]e|from|dataset|data file|reference|template|starter|existing)\b",
+    re.IGNORECASE,
 )
 
 PATH_KIND_BY_SUFFIX = {
@@ -479,6 +509,53 @@ def _materialize_output_path(raw_path: str, base_for_relative: str) -> str:
     return normalize_path(str(Path(base) / raw))
 
 
+
+
+def _is_generic_denied_directory(path: str) -> bool:
+    normalized = normalize_path(path).rstrip("/") or "/"
+    return normalized in GENERIC_OUTPUT_DIR_DENYLIST
+
+
+def _is_denied_input_path(path: str) -> bool:
+    normalized = normalize_path(path)
+    return any(normalized.startswith(prefix) for prefix in INPUT_PATH_PREFIX_DENYLIST)
+
+
+def _has_strict_output_signal(evidence: str, source: str) -> bool:
+    blob = f"{source or ''}\n{evidence or ''}"
+    if any(marker in blob for marker in STRUCTURED_OUTPUT_SOURCE_MARKERS):
+        return True
+    return bool(STRICT_OUTPUT_VERB_RE.search(blob))
+
+
+def _is_source_like_without_output_signal(path: str, evidence: str, source: str) -> bool:
+    if _has_strict_output_signal(evidence, source):
+        return False
+    suffix = Path(path).suffix.lower()
+    if suffix in {".py", ".sh", ".yaml", ".yml", ".json", ".csv", ".txt", ".md", ".lean"}:
+        return True
+    return False
+
+
+def _should_accept_output_path(path: str, evidence: str, source: str, *, kind: str = "") -> tuple[bool, str]:
+    normalized = normalize_path(path)
+    inferred_kind, _suffix, _mime = path_kind(normalized)
+    kind = kind or inferred_kind
+
+    if not normalized.startswith("/"):
+        return False, "not_absolute"
+    if _is_generic_denied_directory(normalized):
+        return False, "generic_directory_denied"
+    if kind == "directory" and normalize_path(normalized).rstrip("/") in GENERIC_OUTPUT_DIR_DENYLIST:
+        return False, "generic_directory_denied"
+    if _is_denied_input_path(normalized):
+        return False, "input_path_denied"
+    if not _has_strict_output_signal(evidence, source):
+        return False, "missing_strict_output_verb_or_output_section"
+    if _is_source_like_without_output_signal(normalized, evidence, source):
+        return False, "source_like_without_output_signal"
+    return True, "accepted"
+
 def _make_output_requirement(
     path: str,
     *,
@@ -497,6 +574,9 @@ def _make_output_requirement(
     if not path.startswith("/"):
         return None
     kind, suffix, mime = path_kind(path)
+    accepted, _reject_reason = _should_accept_output_path(path, evidence, source, kind=kind)
+    if not accepted:
+        return None
     if kind_override:
         kind = str(kind_override)
         mime = mime_override or MIME_BY_KIND.get(kind, mime)
@@ -645,6 +725,9 @@ def _requirements_from_paths(text: str, source: str, *, base_for_relative: str =
 
         evidence = _sentence_window(text, match.start(), match.end())
         kind, suffix, mime = path_kind(path)
+        accepted, _reject_reason = _should_accept_output_path(path, evidence, source, kind=kind)
+        if not accepted:
+            continue
         parent = str(Path(path).parent)
         filename = Path(path).name
         placeholders = tuple(PLACEHOLDER_RE.findall(path))
@@ -827,38 +910,47 @@ def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence
             _safe_text(metadata, limit=30000),
             text[:50000],
             " ".join(req.path for req in requirements),
+            " ".join(req.filename for req in requirements),
             " ".join(req.kind for req in requirements),
         ]
     ).lower()
 
-    if "/home/github/build" in blob or "patch_" in blob or "bugswarm" in blob or "failed_reasons.txt" in blob:
-        return "bugswarm_build_repair"
-    if any(req.kind == "patch" for req in requirements):
-        return "software_patch"
-    if any(req.kind == "lean" for req in requirements) or "lean4" in blob:
-        return "formal_reasoning"
-    if any(req.kind == "presentation" for req in requirements):
-        return "presentation_editing"
-    if any(req.kind == "excel" for req in requirements) or "excel" in blob:
-        return "spreadsheet_office"
-    if any(req.kind == "document" for req in requirements) or "docx" in blob:
-        return "document_generation"
-    if any(req.kind == "pdf" for req in requirements) or "form" in blob:
-        return "pdf_document"
-    if any(req.kind == "cad" for req in requirements) or "dxf" in blob:
-        return "cad_geometry"
-    if "pcap" in blob or "vulnerability" in blob or "cve" in blob:
-        return "security_analysis"
-    if "video" in blob or "ocr" in blob or "image" in blob or ".mp4" in blob:
-        return "media_processing"
-    if any(req.kind == "python" for req in requirements) or "solution.py" in blob:
-        return "code_workspace"
-    if any(req.kind == "csv" for req in requirements):
-        return "data_csv"
-    if any(req.kind == "json" for req in requirements):
-        return "data_json"
-    return "general_file_output"
+    filenames = " ".join(req.filename.lower() for req in requirements)
+    kinds = {req.kind for req in requirements}
 
+    security_tokens = (
+        "security", "vulnerability", "cve", "pcap", "firewall", "iptables",
+        "allowlist", "denylist", "rule", "rules", "policy", "policies", "rbac",
+        "iam", "permissions", "auth", "config", "configuration", "semgrep", "yara",
+        "suricata", "snort", "detection", "audit", "sandbox", "secret", "secrets",
+    )
+    security_filenames = (
+        "config", "policy", "policies", "rules", "rule", "allowlist", "denylist",
+        "firewall", "permissions", "rbac", "iam", "detection", "audit", "secrets",
+    )
+    if any(token in blob for token in security_tokens) and (
+        kinds & {"json", "yaml", "text", "csv", "shell"}
+        or any(token in filenames for token in security_filenames)
+    ):
+        return "security_config"
+
+    if "lean" in kinds or "lean4" in blob:
+        return "lean_solution"
+    if "excel" in kinds:
+        return "office_xlsx"
+    if "document" in kinds:
+        return "office_docx"
+    if kinds & {"python", "patch", "shell"} or any(name in filenames for name in ("solution.py", "main.py", "answer.py", "patch_0.diff")):
+        return "code_solution"
+    if "csv" in kinds:
+        return "csv_output"
+    if "json" in kinds:
+        return "json_output"
+    if "presentation" in kinds:
+        return "office_pptx"
+    if "pdf" in kinds:
+        return "pdf_output"
+    return "general_file_output"
 
 def _infer_verifier_style(text: str, requirements: Sequence[OutputRequirement]) -> str:
     blob = " ".join([text[:50000], " ".join(req.evidence for req in requirements)]).lower()
@@ -1105,7 +1197,22 @@ def validate_output_contract_selftest() -> dict[str, Any]:
     if not metadata_req or not {"ok", "score"}.issubset(set(metadata_req.schema_fields)):
         errors.append("relative metadata output schema fields not detected")
 
-    if contract.family != "bugswarm_build_repair":
+
+    denied_contract = build_output_contract(
+        {"task_id": "denied"},
+        "Use /root/data/input.csv as the input dataset. The directory /root/output contains expected schemas. Read /app/main.py but do not change it.",
+    )
+    if denied_contract.requirements:
+        errors.append(f"denied/input paths should not be requirements: {[req.path for req in denied_contract.requirements]}")
+
+    security_contract = build_output_contract(
+        {"task_id": "security"},
+        "Generate security_config.yaml with firewall allowlist rules and submit audit_policy.json.",
+    )
+    if security_contract.family != "security_config":
+        errors.append(f"security config family not detected: {security_contract.family}")
+
+    if contract.family != "code_solution":
         errors.append(f"unexpected family: {contract.family}")
 
     return {
