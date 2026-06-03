@@ -69,7 +69,7 @@ from .task_workspace_executor import (
 from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_1_workspace_executor_solver_registry_fix_2026_06_02"
+HARNESS_VERSION = "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -481,6 +481,69 @@ class SkillsBenchHarness:
                 environment=environment,
             )
 
+            # Visible stdout probe for Quick Submit / GitHub logs.
+            # Official SkillsBench results hide A2A artifact diagnostics, so this
+            # line is the hard signal for whether the participant process can see
+            # and write the real task filesystem.
+            try:
+                contract_context = contract.as_context() if hasattr(contract, "as_context") else {}
+                environment_context = environment.as_context() if hasattr(environment, "as_context") else {}
+                print(
+                    "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR "
+                    + json.dumps(
+                        {
+                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "harness_version": HARNESS_VERSION,
+                            "status": execution.status,
+                            "ok": execution.ok,
+                            "workspace_visible": execution.workspace_visible,
+                            "wrote_any_file": execution.wrote_any_file,
+                            "write_count": len(execution.writes),
+                            "ok_writes": sum(1 for item in execution.writes if item.ok),
+                            "artifact_record_count": len(execution.artifact_records()),
+                            "output_contract_version": OUTPUT_CONTRACT_VERSION,
+                            "task_environment_version": TASK_ENVIRONMENT_VERSION,
+                            "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
+                            "task_id": request.task_id,
+                            "category": request.category,
+                            "difficulty": request.difficulty,
+                            "family": plan.family,
+                            "primary_outputs": list(
+                                contract_context.get("primary_outputs")
+                                or contract_context.get("outputs")
+                                or contract_context.get("expected_outputs")
+                                or []
+                            )[:8],
+                            "candidate_roots": list(
+                                environment_context.get("candidate_roots")
+                                or environment_context.get("roots")
+                                or environment_context.get("known_roots")
+                                or []
+                            )[:12],
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except Exception as log_exc:
+                print(
+                    "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_LOG_ERROR "
+                    + json.dumps(
+                        {
+                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "harness_version": HARNESS_VERSION,
+                            "error_type": log_exc.__class__.__name__,
+                            "error": str(log_exc)[:500],
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
             self.last_output_contract = contract
             self.last_task_environment = environment
             self.last_workspace_execution = execution
@@ -561,6 +624,29 @@ class SkillsBenchHarness:
             )
         except Exception as exc:
             self.last_error = str(exc)
+            try:
+                print(
+                    "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_EXCEPTION "
+                    + json.dumps(
+                        {
+                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "harness_version": HARNESS_VERSION,
+                            "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
+                            "error_type": exc.__class__.__name__,
+                            "error": str(exc)[:800],
+                            "task_id": request.task_id,
+                            "category": request.category,
+                            "difficulty": request.difficulty,
+                            "family": plan.family,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except Exception:
+                pass
             diagnostics = dict(result.diagnostics)
             diagnostics["task_workspace_executor"] = {
                 "enabled": True,
