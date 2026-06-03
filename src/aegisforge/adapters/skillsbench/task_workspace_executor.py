@@ -33,7 +33,7 @@ from .task_environment import (
 )
 
 
-TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_3_permission_hardened_fallback_writer_2026_06_03"
+TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_4_exception_safe_permission_fallback_writer_2026_06_03"
 
 SolverFn = Callable[
     [SkillsBenchOutputContract, SkillsBenchTaskEnvironment, Mapping[str, Any], str],
@@ -175,27 +175,108 @@ def _resolve_runtime_path(path: str, metadata: Mapping[str, Any], env: SkillsBen
     return result
 
 
-def _atomic_write(path: Path, data: bytes) -> WorkspaceWriteResult:
-    existed_before = path.exists()
-    parent_created = False
+
+def _path_op_error(path: Path, operation: str, exc: BaseException) -> str:
+    return f"{operation}({path}): {type(exc).__name__}: {str(exc)[:500]}"
+
+
+def _safe_exists(path: Path) -> tuple[bool, str]:
     try:
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
+        return path.exists(), ""
+    except Exception as exc:
+        return False, _path_op_error(path, "exists", exc)
+
+
+def _safe_is_dir(path: Path) -> tuple[bool, str]:
+    try:
+        return path.is_dir(), ""
+    except Exception as exc:
+        return False, _path_op_error(path, "is_dir", exc)
+
+
+def _safe_is_file(path: Path) -> tuple[bool, str]:
+    try:
+        return path.is_file(), ""
+    except Exception as exc:
+        return False, _path_op_error(path, "is_file", exc)
+
+
+def _safe_mkdir(path: Path) -> tuple[bool, str]:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True, ""
+    except Exception as exc:
+        return False, _path_op_error(path, "mkdir", exc)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except TypeError:
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _atomic_write(path: Path, data: bytes) -> WorkspaceWriteResult:
+    """Exception-safe atomic write.
+
+    Earlier versions called path.exists()/parent.exists() before the try block.
+    In the BenchFlow/Amber runtime, visible paths such as /root/answer.json may
+    raise PermissionError on metadata operations.  This function converts every
+    filesystem exception into a WorkspaceWriteResult so the caller can continue
+    to fallback roots instead of aborting the whole harness call.
+    """
+
+    parent_created = False
+    existed_before = False
+    tmp_path: Path | None = None
+    try:
+        existed_before, exists_error = _safe_exists(path)
+        if exists_error:
+            return WorkspaceWriteResult(
+                path=str(path),
+                ok=False,
+                action="write",
+                error=exists_error,
+                existed_before=False,
+            )
+
+        parent_exists, parent_exists_error = _safe_exists(path.parent)
+        if parent_exists_error:
+            return WorkspaceWriteResult(
+                path=str(path),
+                ok=False,
+                action="write",
+                error=parent_exists_error,
+                existed_before=existed_before,
+            )
+
+        if not parent_exists:
+            mkdir_ok, mkdir_error = _safe_mkdir(path.parent)
+            if not mkdir_ok:
+                return WorkspaceWriteResult(
+                    path=str(path),
+                    ok=False,
+                    action="mkdir_parent",
+                    error=mkdir_error,
+                    parent_created=False,
+                    existed_before=existed_before,
+                )
             parent_created = True
+
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
         tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(str(tmp_path), str(path))
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(tmp_path), str(path))
+
         return WorkspaceWriteResult(
             path=str(path),
             ok=True,
@@ -210,11 +291,13 @@ def _atomic_write(path: Path, data: bytes) -> WorkspaceWriteResult:
             path=str(path),
             ok=False,
             action="write",
-            error=str(exc)[:600],
+            error=f"{type(exc).__name__}: {str(exc)[:560]}",
             parent_created=parent_created,
             existed_before=existed_before,
         )
-
+    finally:
+        if tmp_path is not None:
+            _safe_unlink(tmp_path)
 
 def _with_kind(result: WorkspaceWriteResult, kind: str, action: str = "write") -> WorkspaceWriteResult:
     return WorkspaceWriteResult(
@@ -924,7 +1007,8 @@ class SkillsBenchTaskWorkspaceExecutor:
 
         if contract.needs_repo_patch and not any(Path(w.path).name == "failed_reasons.txt" for w in writes):
             note_path = "/home/github/build/failed/failed_reasons.txt"
-            if environment.can_write_path(note_path) or Path("/home/github/build/failed").exists():
+            failed_root_exists, _failed_root_error = _safe_exists(Path("/home/github/build/failed"))
+            if environment.can_write_path(note_path) or failed_root_exists:
                 note_req = OutputRequirement(
                     path=note_path,
                     kind="text",
@@ -966,7 +1050,14 @@ class SkillsBenchTaskWorkspaceExecutor:
             path = req.path
 
         target = Path(path)
-        if target.exists() and target.is_dir():
+        target_exists, target_exists_error = _safe_exists(target)
+        target_is_dir, target_is_dir_error = _safe_is_dir(target) if target_exists else (False, "")
+        if target_exists_error or target_is_dir_error:
+            # Do not abort on metadata permission errors; attempt the write path so
+            # _write_with_permission_fallbacks can record the failure and try
+            # alternate writable task roots.
+            pass
+        elif target_exists and target_is_dir:
             req = _coerce_directory_requirement(replace(req, path=str(target), is_directory=True, kind="directory"), contract)
             path = req.path
 
@@ -1007,7 +1098,9 @@ class SkillsBenchTaskWorkspaceExecutor:
                 if root_s in seen or not _path_under_safe_prefix(root_s, env):
                     continue
                 seen.add(root_s)
-                if root.exists() and root.is_file():
+                root_exists, _root_exists_error = _safe_exists(root)
+                root_is_file, _root_is_file_error = _safe_is_file(root) if root_exists else (False, "")
+                if root_exists and root_is_file:
                     continue
             except Exception:
                 continue
@@ -1048,6 +1141,8 @@ class SkillsBenchTaskWorkspaceExecutor:
             "skipped_writes": sum(1 for w in writes if w.skipped),
             "permission_denied_writes": sum(1 for w in writes if _write_error_is_permissionish(w)),
             "fallback_writes": sum(1 for w in writes if "fallback" in (w.action or "") or "fallback_from=" in (w.reason or "")),
+            "exception_safe_writer": True,
+            "metadata_permission_errors": sum(1 for w in writes if "exists(" in (w.error or "") or "is_dir(" in (w.error or "") or "is_file(" in (w.error or "")),
             "kind_counts": dict(Counter(w.kind for w in writes)),
             "safe_write_prefixes": list(_safe_write_prefixes(env)),
             "write_outcomes": [w.as_dict() for w in writes[:80]],

@@ -165,10 +165,43 @@ ENV OPENAI_BASE_URL=https://api.openai.com/v1 \
 # Make entrypoint executable.
 RUN chmod +x /app/run.sh
 
-# Run as non-root.
-RUN useradd -m -u 10001 appuser \
- && chown -R appuser:appuser /app
-USER appuser
+# SkillsBench/BenchFlow standard-v1 grades real filesystem outputs.
+# Several tasks require exact paths under /root, for example /root/answer.json,
+# /root/output/*.csv, /root/workspace/solution.py, and /root/report.pdf.
+# Running as a non-root appuser makes those required writes fail with PermissionError.
+# Do not set or modify OPENAI_API_KEY here; Amber injects runtime secrets if needed.
+ENV HOME=/root \
+    AEGISFORGE_SKILLSBENCH_OUTPUT_DIR=/root/output \
+    TASK_OUTPUT_DIR=/root/output \
+    OUTPUT_DIR=/root/output \
+    BENCHFLOW_OUTPUT_DIR=/root/output
+
+RUN mkdir -p \
+    /root/output \
+    /root/workspace \
+    /root/data \
+    /root/input \
+    /root/patches \
+    /app/output \
+    /app/workspace \
+    /output \
+    /workspace \
+    /data \
+    /logs/verifier \
+ && chmod -R 0777 \
+    /root/output \
+    /root/workspace \
+    /root/data \
+    /root/input \
+    /root/patches \
+    /app/output \
+    /app/workspace \
+    /output \
+    /workspace \
+    /data \
+    /logs/verifier
+
+USER root
 
 # AgentBeats can pass --port at runtime. Expose both common local defaults.
 EXPOSE 8000 8001
