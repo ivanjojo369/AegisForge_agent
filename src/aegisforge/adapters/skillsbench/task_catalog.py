@@ -21,7 +21,7 @@ import json
 import re
 
 
-TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_1_2026_06_02"
+TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_2_solver_aligned_routing_2026_06_03"
 TASK_SET_SCHEMA_VERSION = 'skillsbench.agentbeats.task_set.v1'
 TASK_SET_NAME = 'standard-v1'
 TASK_SET_CONDITION = 'with_skills'
@@ -45,6 +45,18 @@ SKILLSBENCH_DIFFICULTIES = [
     "medium"
 ]
 SKILLSBENCH_FAMILIES = [
+    # Solver-aligned families used by output_contract.py / solvers/__init__.py.
+    "json_output",
+    "csv_output",
+    "code_solution",
+    "office_xlsx",
+    "office_docx",
+    "pdf_document",
+    "lean_solution",
+    "security_config",
+    "general_file_output",
+
+    # Legacy public catalog families retained for compatibility/diagnostics.
     "data_json",
     "formal_reasoning",
     "industrial_control",
@@ -57,9 +69,91 @@ SKILLSBENCH_FAMILIES = [
 ]
 
 FAMILY_PREFERRED_OUTPUTS = {
-    "data_json": [
+    # Solver-aligned families.
+    "json_output": [
+        "answer.json",
         "solution.json",
-        "parser_or_mapping.md",
+        "validation_notes.md"
+    ],
+    "csv_output": [
+        "answer.csv",
+        "analysis.csv",
+        "summary.json"
+    ],
+    "code_solution": [
+        "solution.py",
+        "answer.json",
+        "implementation_notes.md"
+    ],
+    "office_xlsx": [
+        "answer.xlsx",
+        "analysis.csv",
+        "workbook_result.json"
+    ],
+    "office_docx": [
+        "answer.docx",
+        "fields_or_edits.json",
+        "validation_notes.md"
+    ],
+    "pdf_document": [
+        "answer.pdf",
+        "fields_or_edits.json",
+        "validation_notes.md"
+    ],
+    "lean_solution": [
+        "solution.lean",
+        "proof_notes.md",
+        "solution.json"
+    ],
+    "security_config": [
+        "security_report.json",
+        "findings.csv",
+        "security_config.yaml"
+    ],
+    "general_file_output": [
+        "answer.json",
+        "skillsbench_deliverable.md",
+        "validation_notes.md"
+    ],
+    "general": [
+        "answer.json",
+        "skillsbench_deliverable.md",
+        "validation_notes.md"
+    ],
+
+    # Task-specific deploy-smoke keys. These intentionally match registry keys
+    # so task_workspace_executor can select deploy_smoke_solver before generic
+    # family solvers when the harness passes the catalog family through.
+    "dialogue-parser": [
+        "answer.json",
+        "solution.json",
+        "validation_notes.md"
+    ],
+    "citation-check": [
+        "answer.json",
+        "citations.json",
+        "validation_notes.md"
+    ],
+    "court-form-filling": [
+        "answer.pdf",
+        "completed_form.pdf",
+        "fields_or_edits.json"
+    ],
+    "offer-letter-generator": [
+        "answer.docx",
+        "offer_letter_filled.docx",
+        "fields_or_edits.json"
+    ],
+    "powerlifting-coef-calc": [
+        "answer.xlsx",
+        "answer.csv",
+        "workbook_result.json"
+    ],
+
+    # Legacy aliases mapped to solver-compatible output shapes.
+    "data_json": [
+        "answer.json",
+        "solution.json",
         "validation_notes.md"
     ],
     "formal_reasoning": [
@@ -67,15 +161,10 @@ FAMILY_PREFERRED_OUTPUTS = {
         "proof_notes.md",
         "solution.json"
     ],
-    "general": [
-        "skillsbench_deliverable.md",
-        "result.json",
-        "validation_notes.md"
-    ],
     "industrial_control": [
-        "solution.json",
-        "simulation_notes.md",
-        "parameters.csv"
+        "answer.json",
+        "parameters.csv",
+        "simulation_notes.md"
     ],
     "media_processing": [
         "media_manifest.json",
@@ -83,36 +172,115 @@ FAMILY_PREFERRED_OUTPUTS = {
         "output_plan.json"
     ],
     "office_document": [
-        "document_result.md",
+        "answer.json",
         "fields_or_edits.json",
         "validation_notes.md"
     ],
     "scientific_compute": [
-        "solution.json",
-        "analysis.md",
-        "validation.csv"
+        "answer.json",
+        "analysis.csv",
+        "analysis.md"
     ],
     "security_audit": [
-        "security_report.md",
-        "findings.json",
-        "repro_or_rule.txt"
+        "security_report.json",
+        "findings.csv",
+        "security_config.yaml"
     ],
     "software_patch": [
+        "solution.py",
         "solution.patch",
-        "tests.md",
         "repair_manifest.json"
     ],
     "spreadsheet_finance": [
+        "answer.xlsx",
         "analysis.csv",
-        "workbook_result.json",
-        "workbook_notes.md"
+        "workbook_result.json"
     ]
 }
 
 FAMILY_MIME_HINTS = {
-    "data_json": [
+    "json_output": [
+        "application/json",
+        "application/json",
+        "text/markdown"
+    ],
+    "csv_output": [
+        "text/csv",
+        "text/csv",
+        "application/json"
+    ],
+    "code_solution": [
+        "text/x-python",
+        "application/json",
+        "text/markdown"
+    ],
+    "office_xlsx": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/csv",
+        "application/json"
+    ],
+    "office_docx": [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/json",
+        "text/markdown"
+    ],
+    "pdf_document": [
+        "application/pdf",
+        "application/json",
+        "text/markdown"
+    ],
+    "lean_solution": [
+        "text/plain",
+        "text/markdown",
+        "application/json"
+    ],
+    "security_config": [
+        "application/json",
+        "text/csv",
+        "text/yaml"
+    ],
+    "general_file_output": [
         "application/json",
         "text/markdown",
+        "text/markdown"
+    ],
+    "general": [
+        "application/json",
+        "text/markdown",
+        "text/markdown"
+    ],
+
+    # Task-specific deploy-smoke keys.
+    "dialogue-parser": [
+        "application/json",
+        "application/json",
+        "text/markdown"
+    ],
+    "citation-check": [
+        "application/json",
+        "application/json",
+        "text/markdown"
+    ],
+    "court-form-filling": [
+        "application/pdf",
+        "application/pdf",
+        "application/json"
+    ],
+    "offer-letter-generator": [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/json"
+    ],
+    "powerlifting-coef-calc": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/csv",
+        "application/json"
+    ],
+
+    # Legacy aliases.
+    "data_json": [
+        "application/json",
+        "application/json",
         "text/markdown"
     ],
     "formal_reasoning": [
@@ -120,15 +288,10 @@ FAMILY_MIME_HINTS = {
         "text/markdown",
         "application/json"
     ],
-    "general": [
-        "text/markdown",
-        "application/json",
-        "text/markdown"
-    ],
     "industrial_control": [
         "application/json",
-        "text/markdown",
-        "text/csv"
+        "text/csv",
+        "text/markdown"
     ],
     "media_processing": [
         "application/json",
@@ -136,30 +299,84 @@ FAMILY_MIME_HINTS = {
         "application/json"
     ],
     "office_document": [
-        "text/markdown",
+        "application/json",
         "application/json",
         "text/markdown"
     ],
     "scientific_compute": [
         "application/json",
-        "text/markdown",
-        "text/csv"
+        "text/csv",
+        "text/markdown"
     ],
     "security_audit": [
-        "text/markdown",
         "application/json",
-        "text/plain"
+        "text/csv",
+        "text/yaml"
     ],
     "software_patch": [
+        "text/x-python",
         "text/x-diff",
-        "text/markdown",
         "application/json"
     ],
     "spreadsheet_finance": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "text/csv",
-        "application/json",
-        "text/markdown"
+        "application/json"
     ]
+}
+
+SOLVER_FAMILY_ALIASES = {
+    "general": "general_file_output",
+    "data_json": "json_output",
+    "formal_reasoning": "lean_solution",
+    "industrial_control": "json_output",
+    "media_processing": "json_output",
+    "office_document": "json_output",
+    "scientific_compute": "json_output",
+    "security_audit": "security_config",
+    "software_patch": "code_solution",
+    "spreadsheet_finance": "office_xlsx",
+    "excel": "office_xlsx",
+    "xlsx_output": "office_xlsx",
+    "docx_output": "office_docx",
+    "document_generation": "office_docx",
+    "pdf_output": "pdf_document",
+    "pdf_form": "pdf_document",
+    "formal": "lean_solution",
+    "cybersecurity": "security_config",
+}
+
+TASK_SOLVER_FAMILY_OVERRIDES = {
+    # Deploy-smoke tasks: route by task id to prefer deploy_smoke_solver.
+    "citation-check": "citation-check",
+    "court-form-filling": "court-form-filling",
+    "dialogue-parser": "dialogue-parser",
+    "offer-letter-generator": "offer-letter-generator",
+    "powerlifting-coef-calc": "powerlifting-coef-calc",
+
+    # High-confidence standard-v1 routing overrides.
+    "edit-pdf": "pdf_document",
+    "paper-anonymizer": "pdf_document",
+    "latex-formula-extraction": "pdf_document",
+    "pdf-excel-diff": "office_xlsx",
+    "xlsx-recover-data": "office_xlsx",
+    "test-supply": "office_xlsx",
+    "nasa-budget-recover": "office_xlsx",
+    "nasa-budget-recovered": "office_xlsx",
+    "pptx-reference-formatting": "office_docx",
+    "exceltable-in-ppt": "office_xlsx",
+    "lean4-proof": "lean_solution",
+    "software-dependency-audit": "security_config",
+    "dapt-intrusion-detection": "security_config",
+    "azure-bgp-oscillation-route-leak": "security_config",
+    "bgp-route-leak": "security_config",
+    "fix-druid-loophole-cve": "security_config",
+    "fix-erlang-ssh-cve": "security_config",
+    "fix-build-agentops": "code_solution",
+    "fix-build-google-auto": "code_solution",
+    "debug-trl-grpo": "code_solution",
+    "flink-query": "code_solution",
+    "data-to-d3": "code_solution",
 }
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
@@ -3370,6 +3587,66 @@ def normalize_task_id(value: Any) -> str:
     return text
 
 
+def _normalize_family_key(value: Any) -> str:
+    """Normalize family keys while preserving solver-registry underscores."""
+
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9.+_-]+", "_", text)
+    text = text.replace("-", "_")
+    text = re.sub(r"_+", "_", text).strip("_.")
+    return text
+
+
+def solver_family_for_family(family: str) -> str:
+    """Return the solver-registry family for a legacy or solver family key."""
+
+    key = _normalize_family_key(family)
+    if not key:
+        return "general_file_output"
+    if key in FAMILY_PREFERRED_OUTPUTS and key not in SOLVER_FAMILY_ALIASES:
+        return key
+    return SOLVER_FAMILY_ALIASES.get(key, key if key in FAMILY_PREFERRED_OUTPUTS else "general_file_output")
+
+
+def solver_family_for_task(task_id: Any, *, fallback_family: str = "general") -> str:
+    """Return task-specific solver key/family.
+
+    For deploy-smoke tasks this intentionally returns the task_id itself so the
+    registry can prefer deploy_smoke_solver over generic JSON/XLSX/DOCX solvers.
+    """
+
+    normalized = normalize_task_id(task_id)
+    if normalized in TASK_SOLVER_FAMILY_OVERRIDES:
+        return TASK_SOLVER_FAMILY_OVERRIDES[normalized]
+    if normalized in TASK_PROFILES:
+        profile_family = str(TASK_PROFILES[normalized].get("family", fallback_family))
+        return solver_family_for_family(profile_family)
+    return solver_family_for_family(fallback_family)
+
+
+def legacy_family_for_task(task_id: Any) -> str:
+    normalized = normalize_task_id(task_id)
+    if normalized in TASK_PROFILES:
+        return str(TASK_PROFILES[normalized].get("family", "general"))
+    return "general"
+
+
+def preferred_outputs_for_task(task_id: Any, *, fallback_family: str = "general") -> list[str]:
+    solver_family = solver_family_for_task(task_id, fallback_family=fallback_family)
+    if solver_family in FAMILY_PREFERRED_OUTPUTS:
+        return list(FAMILY_PREFERRED_OUTPUTS[solver_family])
+    legacy = legacy_family_for_task(task_id)
+    return preferred_outputs_for_family(legacy)
+
+
+def mime_hints_for_task(task_id: Any, *, fallback_family: str = "general") -> list[str]:
+    solver_family = solver_family_for_task(task_id, fallback_family=fallback_family)
+    if solver_family in FAMILY_MIME_HINTS:
+        return list(FAMILY_MIME_HINTS[solver_family])
+    legacy = legacy_family_for_task(task_id)
+    return mime_hints_for_family(legacy)
+
+
 def all_task_ids() -> list[str]:
     return sorted(TASK_PROFILES)
 
@@ -3407,11 +3684,16 @@ def profiles_by_category(category: str) -> list[SkillsBenchTaskProfile]:
 
 
 def profiles_by_family(family: str) -> list[SkillsBenchTaskProfile]:
-    normalized = str(family or "").strip().lower()
+    """Return profiles matching either legacy family or solver-aligned family."""
+
+    normalized = _normalize_family_key(family)
+    solver_normalized = solver_family_for_family(normalized)
     return [
         SkillsBenchTaskProfile.from_mapping(value)
-        for value in TASK_PROFILES.values()
-        if str(value.get("family", "")).lower() == normalized
+        for key, value in TASK_PROFILES.items()
+        if _normalize_family_key(value.get("family", "")) == normalized
+        or solver_family_for_task(key, fallback_family=str(value.get("family", "general"))) == solver_normalized
+        or solver_family_for_task(key, fallback_family=str(value.get("family", "general"))) == normalized
     ]
 
 
@@ -3427,7 +3709,11 @@ def profiles_by_difficulty(difficulty: str) -> list[SkillsBenchTaskProfile]:
 def catalog_summary() -> dict[str, Any]:
     categories = Counter(str(item.get("category", "unknown")) for item in TASK_PROFILES.values())
     difficulties = Counter(str(item.get("difficulty", "unknown")) for item in TASK_PROFILES.values())
-    families = Counter(str(item.get("family", "general")) for item in TASK_PROFILES.values())
+    legacy_families = Counter(str(item.get("family", "general")) for item in TASK_PROFILES.values())
+    solver_families = Counter(
+        solver_family_for_task(task_id, fallback_family=str(item.get("family", "general")))
+        for task_id, item in TASK_PROFILES.items()
+    )
     return {
         "version": TASK_CATALOG_VERSION,
         "schema_version": TASK_SET_SCHEMA_VERSION,
@@ -3438,7 +3724,10 @@ def catalog_summary() -> dict[str, Any]:
         "allow_excluded_tasks": ALLOW_EXCLUDED_TASKS,
         "categories": dict(sorted(categories.items())),
         "difficulties": dict(sorted(difficulties.items())),
-        "families": dict(sorted(families.items())),
+        "families": dict(sorted(solver_families.items())),
+        "legacy_families": dict(sorted(legacy_families.items())),
+        "solver_family_aliases": dict(sorted(SOLVER_FAMILY_ALIASES.items())),
+        "task_solver_override_count": len(TASK_SOLVER_FAMILY_OVERRIDES),
     }
 
 
@@ -3506,70 +3795,114 @@ def extract_task_id(metadata: Mapping[str, Any] | None = None, text: str = "") -
 def infer_family_from_signals(metadata: Mapping[str, Any] | None = None, text: str = "") -> str:
     task_id = extract_task_id(metadata, text)
     if task_id:
-        profile = get_task_profile(task_id, fuzzy=False)
-        if profile:
-            return profile.family
+        return solver_family_for_task(task_id, fallback_family=legacy_family_for_task(task_id))
 
     blob = (_flatten_text(metadata or {}) + "\n" + str(text or "")).lower().replace("_", "-")
     scores: dict[str, int] = defaultdict(int)
+
+    # Direct family mentions and output names.
     for family, outputs in FAMILY_PREFERRED_OUTPUTS.items():
-        if family in blob:
-            scores[family] += 5
+        canonical_family = solver_family_for_family(family)
+        if family in blob or canonical_family in blob:
+            scores[canonical_family] += 6
         for output in outputs:
             suffix = output.rsplit(".", 1)[-1].lower() if "." in output else output.lower()
-            if suffix and suffix in blob:
-                scores[family] += 1
+            if suffix and (f".{suffix}" in blob or suffix in blob):
+                scores[canonical_family] += 1
+
+    # Task ids and routing markers from public catalog.
+    for task_key, profile in TASK_PROFILES.items():
+        if task_key in blob:
+            scores[solver_family_for_task(task_key, fallback_family=str(profile.get("family", "general")))] += 50
+        for marker in profile.get("routing_markers", []) or []:
+            marker_text = str(marker).lower().replace("_", "-")
+            if marker_text and marker_text in blob:
+                scores[solver_family_for_task(task_key, fallback_family=str(profile.get("family", "general")))] += 3
 
     keyword_groups = {
-        "software_patch": ("fix-build", "patch", "diff", "repo", "ci", "maven", "compilation", "debug"),
-        "security_audit": ("security", "vulnerability", "cve", "fuzz", "pcap", "suricata", "dependency"),
-        "office_document": ("pdf", "docx", "form", "redaction", "citation", "pptx", "slides", "latex"),
-        "spreadsheet_finance": ("excel", "xlsx", "spreadsheet", "pivot", "finance", "formula"),
-        "scientific_compute": ("science", "hydrology", "astronomy", "physics", "bioinformatics", "timeseries"),
-        "industrial_control": ("control", "pid", "mpc", "energy", "manufacturing", "geometry", "cad", "stl"),
-        "media_processing": ("video", "audio", "tts", "ocr", "threejs", "obj", "image"),
-        "formal_reasoning": ("lean", "proof", "optimization", "pddl", "routing", "scheduling"),
-        "data_json": ("json", "parser", "search", "nlp", "taxonomy", "dialogue"),
+        "code_solution": ("fix-build", "patch", "diff", "repo", "ci", "maven", "compilation", "debug", "solution.py", "pytest", "python"),
+        "security_config": ("security", "vulnerability", "cve", "fuzz", "pcap", "suricata", "dependency", "intrusion", "bgp", "route-leak"),
+        "pdf_document": ("pdf", "form", "court", "redaction", "edit-pdf", "anonymizer", "latex"),
+        "office_docx": ("docx", "word", "offer letter", "mail-merge", "template"),
+        "office_xlsx": ("excel", "xlsx", "spreadsheet", "pivot", "finance", "formula", "workbook"),
+        "lean_solution": ("lean", "lean4", "proof", "theorem", "formal method"),
+        "csv_output": ("csv", "table", "rows", "columns"),
+        "json_output": ("json", "parser", "search", "nlp", "taxonomy", "dialogue", "answer.json"),
     }
     for family, words in keyword_groups.items():
         for word in words:
             if word in blob:
-                scores[family] += 1
+                scores[family] += 2
 
     if scores:
         return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-    return "general"
+    return "general_file_output"
 
 
 def preferred_outputs_for_family(family: str) -> list[str]:
-    return list(FAMILY_PREFERRED_OUTPUTS.get(str(family or "general"), FAMILY_PREFERRED_OUTPUTS["general"]))
+    raw_key = str(family or "").strip().lower()
+    if raw_key in FAMILY_PREFERRED_OUTPUTS:
+        return list(FAMILY_PREFERRED_OUTPUTS[raw_key])
+    family_key = _normalize_family_key(family)
+    if family_key in FAMILY_PREFERRED_OUTPUTS:
+        return list(FAMILY_PREFERRED_OUTPUTS[family_key])
+    solver_key = solver_family_for_family(family_key)
+    return list(FAMILY_PREFERRED_OUTPUTS.get(solver_key, FAMILY_PREFERRED_OUTPUTS["general_file_output"]))
 
 
 def mime_hints_for_family(family: str) -> list[str]:
-    return list(FAMILY_MIME_HINTS.get(str(family or "general"), FAMILY_MIME_HINTS["general"]))
+    raw_key = str(family or "").strip().lower()
+    if raw_key in FAMILY_MIME_HINTS:
+        return list(FAMILY_MIME_HINTS[raw_key])
+    family_key = _normalize_family_key(family)
+    if family_key in FAMILY_MIME_HINTS:
+        return list(FAMILY_MIME_HINTS[family_key])
+    solver_key = solver_family_for_family(family_key)
+    return list(FAMILY_MIME_HINTS.get(solver_key, FAMILY_MIME_HINTS["general_file_output"]))
+
+
+def task_routing_profile(task_id: Any) -> dict[str, Any]:
+    normalized = normalize_task_id(task_id)
+    profile = require_task_profile(normalized)
+    legacy_family = profile.family
+    solver_family = solver_family_for_task(normalized, fallback_family=legacy_family)
+    profile_dict = profile.as_dict()
+    profile_dict["legacy_family"] = legacy_family
+    profile_dict["solver_family"] = solver_family
+    return {
+        "matched": True,
+        "source": "standard-v1-solver-aligned",
+        "task_id": normalized,
+        "profile": profile_dict,
+        "family": solver_family,
+        "legacy_family": legacy_family,
+        "solver_family": solver_family,
+        "category": profile.category,
+        "difficulty": profile.difficulty,
+        "tags": list(profile.tags),
+        "preferred_outputs": preferred_outputs_for_task(normalized, fallback_family=legacy_family),
+        "legacy_preferred_outputs": list(profile.preferred_outputs),
+        "mime_hints": mime_hints_for_task(normalized, fallback_family=legacy_family),
+        "legacy_mime_hints": list(profile.mime_hints),
+    }
 
 
 def classify_task(metadata: Mapping[str, Any] | None = None, text: str = "") -> dict[str, Any]:
     task_id = extract_task_id(metadata, text)
     if task_id:
-        profile = require_task_profile(task_id)
-        return {
-            "matched": True,
-            "source": "standard-v1",
-            "profile": profile.as_dict(),
-            "family": profile.family,
-            "preferred_outputs": list(profile.preferred_outputs),
-            "mime_hints": list(profile.mime_hints),
-        }
+        return task_routing_profile(task_id)
 
     family = infer_family_from_signals(metadata, text)
+    solver_family = solver_family_for_family(family)
     return {
         "matched": False,
-        "source": "signal-inference",
+        "source": "signal-inference-solver-aligned",
         "profile": None,
-        "family": family,
-        "preferred_outputs": preferred_outputs_for_family(family),
-        "mime_hints": mime_hints_for_family(family),
+        "family": solver_family,
+        "legacy_family": family if family != solver_family else "",
+        "solver_family": solver_family,
+        "preferred_outputs": preferred_outputs_for_family(solver_family),
+        "mime_hints": mime_hints_for_family(solver_family),
     }
 
 
@@ -3583,9 +3916,77 @@ def validate_catalog() -> dict[str, Any]:
         for key in ("task_id", "task_digest", "category", "difficulty", "tags", "family", "preferred_outputs"):
             if key not in value:
                 errors.append(f"{task_id} missing {key}")
-        if value.get("family") not in FAMILY_PREFERRED_OUTPUTS:
-            errors.append(f"{task_id} has unknown family {value.get('family')}")
+        legacy_family = str(value.get("family", "general"))
+        solver_family = solver_family_for_task(task_id, fallback_family=legacy_family)
+        if legacy_family not in FAMILY_PREFERRED_OUTPUTS:
+            errors.append(f"{task_id} has unknown legacy family {legacy_family}")
+        if solver_family not in FAMILY_PREFERRED_OUTPUTS:
+            errors.append(f"{task_id} maps to unknown solver family {solver_family}")
+        outputs = preferred_outputs_for_task(task_id, fallback_family=legacy_family)
+        mimes = mime_hints_for_task(task_id, fallback_family=legacy_family)
+        if not outputs:
+            errors.append(f"{task_id} has no solver-aligned preferred outputs")
+        if len(outputs) != len(mimes):
+            errors.append(f"{task_id} preferred output/mime length mismatch: {len(outputs)} != {len(mimes)}")
+
+    # Critical routing checks from the deploy smoke and observed standard-v1 failures.
+    expected_routes = {
+        "dialogue-parser": "dialogue-parser",
+        "citation-check": "citation-check",
+        "court-form-filling": "court-form-filling",
+        "offer-letter-generator": "offer-letter-generator",
+        "powerlifting-coef-calc": "powerlifting-coef-calc",
+        "lean4-proof": "lean_solution",
+        "edit-pdf": "pdf_document",
+        "dapt-intrusion-detection": "security_config",
+    }
+    for task_id, expected_family in expected_routes.items():
+        if task_id in TASK_PROFILES:
+            observed = solver_family_for_task(task_id)
+            if observed != expected_family:
+                errors.append(f"{task_id} expected {expected_family}, got {observed}")
+
     return {"ok": not errors, "errors": errors, "summary": catalog_summary()}
+
+
+def validate_task_catalog_selftest() -> dict[str, Any]:
+    checks = {
+        "dialogue-parser": "dialogue-parser",
+        "citation-check": "citation-check",
+        "court-form-filling": "court-form-filling",
+        "offer-letter-generator": "offer-letter-generator",
+        "powerlifting-coef-calc": "powerlifting-coef-calc",
+        "lean4-proof": "lean_solution",
+        "edit-pdf": "pdf_document",
+        "software-dependency-audit": "security_config",
+    }
+    errors: list[str] = []
+    results: dict[str, Any] = {}
+    for task_id, expected in checks.items():
+        if task_id not in TASK_PROFILES:
+            continue
+        routed = classify_task({"task_id": task_id}, "")
+        results[task_id] = {
+            "family": routed.get("family"),
+            "preferred_outputs": routed.get("preferred_outputs"),
+            "mime_hints": routed.get("mime_hints"),
+        }
+        if routed.get("family") != expected:
+            errors.append(f"{task_id}: expected {expected}, got {routed.get('family')}")
+    signal_pdf = classify_task({}, "Please edit the PDF and save /root/answer.pdf")
+    if signal_pdf.get("family") != "pdf_document":
+        errors.append(f"signal pdf route failed: {signal_pdf.get('family')}")
+    signal_xlsx = classify_task({}, "Generate /root/answer.xlsx with formulas")
+    if signal_xlsx.get("family") != "office_xlsx":
+        errors.append(f"signal xlsx route failed: {signal_xlsx.get('family')}")
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "version": TASK_CATALOG_VERSION,
+        "results": results,
+        "signal_pdf": signal_pdf,
+        "signal_xlsx": signal_xlsx,
+    }
 
 
 __all__ = [
@@ -3600,6 +4001,8 @@ __all__ = [
     "SKILLSBENCH_FAMILIES",
     "FAMILY_PREFERRED_OUTPUTS",
     "FAMILY_MIME_HINTS",
+    "SOLVER_FAMILY_ALIASES",
+    "TASK_SOLVER_FAMILY_OVERRIDES",
     "TASK_PROFILES",
     "SkillsBenchTaskProfile",
     "all_task_ids",
@@ -3608,14 +4011,22 @@ __all__ = [
     "extract_task_id",
     "get_task_profile",
     "infer_family_from_signals",
+    "legacy_family_for_task",
     "mime_hints_for_family",
+    "mime_hints_for_task",
     "normalize_task_id",
+    "_normalize_family_key",
     "preferred_outputs_for_family",
+    "preferred_outputs_for_task",
     "profiles_by_category",
     "profiles_by_difficulty",
     "profiles_by_family",
     "require_task_profile",
     "shard_task_ids",
+    "solver_family_for_family",
+    "solver_family_for_task",
     "task_exists",
+    "task_routing_profile",
     "validate_catalog",
+    "validate_task_catalog_selftest",
 ]
