@@ -36,10 +36,15 @@ from .task_catalog import (
     normalize_task_id,
     preferred_outputs_for_family,
 )
+from .task_environment import (
+    TASK_ENVIRONMENT_VERSION,
+    canonicalize_task_metadata,
+    infer_task_identity,
+)
 from .workspace import SkillsBenchWorkspace, build_workspace_context
 
 
-CONTRACT_VERSION = "skillsbench_contract_v0_1_request_response_normalizer_2026_06_02"
+CONTRACT_VERSION = "skillsbench_contract_v0_2_canonical_solver_aligned_request_2026_06_03"
 
 SKILLSBENCH_ENV_MARKERS = (
     "AEGISFORGE_FORCE_SKILLSBENCH",
@@ -155,7 +160,8 @@ class SkillsBenchRequest:
 
     @property
     def is_standard_v1(self) -> bool:
-        return self.task_set == "standard-v1" or self.classification.get("source") == "standard-v1"
+        source = str(self.classification.get("source") or "")
+        return self.task_set == "standard-v1" or source.startswith("standard-v1")
 
 
 @dataclass(frozen=True)
@@ -464,6 +470,53 @@ def _string_list(value: Any) -> tuple[str, ...]:
     return tuple()
 
 
+def _merge_string_lists(*values: Any, limit: int = 40) -> tuple[str, ...]:
+    merged: list[str] = []
+    for value in values:
+        merged.extend(_string_list(value))
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in merged:
+        item = str(item or "").strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return tuple(out[:limit])
+
+
+def _preliminary_task_id(metadata: Mapping[str, Any], prompt: str) -> str:
+    return str(
+        _deep_find_first(metadata, ("task_id", "taskId", "id", "task", "name", "challenge_id", "scenario_id", "trial_id"))
+        or extract_task_id(metadata, prompt)
+        or ""
+    )
+
+
+def _canonical_metadata_safe(metadata: Mapping[str, Any], prompt: str) -> dict[str, Any]:
+    try:
+        preliminary = _preliminary_task_id(metadata, prompt)
+        return canonicalize_task_metadata(metadata, prompt, task_id=preliminary)
+    except Exception:
+        return _coerce_mapping(metadata)
+
+
+def _identity_context_safe(metadata: Mapping[str, Any], prompt: str) -> dict[str, Any]:
+    try:
+        preliminary = _preliminary_task_id(metadata, prompt)
+        identity = infer_task_identity(metadata, prompt, task_id=preliminary)
+        return identity.as_context() if hasattr(identity, "as_context") else identity.as_dict()
+    except Exception as exc:
+        return {"source": "identity_error", "error": str(exc)[:300]}
+
+
+def _classification_profile(classification: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    profile = classification.get("profile")
+    return profile if isinstance(profile, Mapping) else None
+
+
 def _artifact_requests_for(classification: Mapping[str, Any]) -> tuple[SkillsBenchArtifactRequest, ...]:
     family = str(classification.get("family") or "general")
     outputs = list(classification.get("preferred_outputs") or preferred_outputs_for_family(family))
@@ -499,8 +552,10 @@ def normalize_skillsbench_request(
     message_text = extract_message_text(message)
     prompt = "\n".join(part for part in (message_text, str(text or "")) if part and str(part).strip())[:SAFE_TEXT_LIMIT]
 
-    classification = classify_task(merged_metadata, prompt)
-    profile = classification.get("profile") if isinstance(classification.get("profile"), Mapping) else None
+    canonical_metadata = _canonical_metadata_safe(merged_metadata, prompt)
+    identity_context = _identity_context_safe(canonical_metadata, prompt)
+    classification = classify_task(canonical_metadata, prompt)
+    profile = _classification_profile(classification)
 
     task_id = ""
     category = ""
@@ -508,25 +563,41 @@ def normalize_skillsbench_request(
     tags: tuple[str, ...] = tuple()
 
     if profile:
-        task_id = str(profile.get("task_id", ""))
-        category = str(profile.get("category", ""))
-        difficulty = str(profile.get("difficulty", ""))
-        tags = _string_list(profile.get("tags"))
+        task_id = str(profile.get("task_id", "") or classification.get("task_id", ""))
+        category = str(classification.get("category") or profile.get("category", ""))
+        difficulty = str(classification.get("difficulty") or profile.get("difficulty", ""))
+        tags = _merge_string_lists(profile.get("tags"), classification.get("tags"), canonical_metadata.get("canonical_tags"))
     else:
         task_id = normalize_task_id(
-            _deep_find_first(merged_metadata, ("task_id", "id", "task", "name", "challenge_id", "scenario_id"))
-            or extract_task_id(merged_metadata, prompt)
+            canonical_metadata.get("canonical_task_id")
+            or canonical_metadata.get("task_id")
+            or _deep_find_first(canonical_metadata, ("task_id", "id", "task", "name", "challenge_id", "scenario_id", "trial_id"))
+            or extract_task_id(canonical_metadata, prompt)
         )
-        category = str(_deep_find_first(merged_metadata, ("category", "task_category")) or "general-purpose")
-        difficulty = str(_deep_find_first(merged_metadata, ("difficulty", "level")) or "unknown")
-        tags = _string_list(_deep_find_first(merged_metadata, ("tags", "labels")))
+        category = str(
+            classification.get("category")
+            or canonical_metadata.get("canonical_category")
+            or _deep_find_first(canonical_metadata, ("category", "task_category"))
+            or "general-purpose"
+        )
+        difficulty = str(_deep_find_first(canonical_metadata, ("difficulty", "level")) or "unknown")
+        tags = _merge_string_lists(
+            classification.get("tags"),
+            canonical_metadata.get("canonical_tags"),
+            _deep_find_first(canonical_metadata, ("tags", "labels")),
+        )
 
-    family = str(classification.get("family") or infer_family_from_signals(merged_metadata, prompt) or "general")
-    task_set = str(_deep_find_first(merged_metadata, ("task_set", "suite")) or os.getenv("AEGISFORGE_TASK_SET") or TASK_SET_NAME or "standard-v1")
-    condition = str(_deep_find_first(merged_metadata, ("condition", "skills_condition")) or os.getenv("AEGISFORGE_CONDITION") or TASK_SET_CONDITION or "with_skills")
-    benchmark = str(_deep_find_first(merged_metadata, ("benchmark", "leaderboard")) or os.getenv("AEGISFORGE_BENCHMARK") or "SkillsBench")
-    track = str(_deep_find_first(merged_metadata, ("track", "adapter")) or os.getenv("AEGISFORGE_TRACK") or "skillsbench")
+    family = str(classification.get("family") or infer_family_from_signals(canonical_metadata, prompt) or "general_file_output")
+    task_set = str(_deep_find_first(canonical_metadata, ("task_set", "suite")) or os.getenv("AEGISFORGE_TASK_SET") or TASK_SET_NAME or "standard-v1")
+    condition = str(_deep_find_first(canonical_metadata, ("condition", "skills_condition")) or os.getenv("AEGISFORGE_CONDITION") or TASK_SET_CONDITION or "with_skills")
+    benchmark = str(_deep_find_first(canonical_metadata, ("benchmark", "leaderboard")) or os.getenv("AEGISFORGE_BENCHMARK") or "SkillsBench")
+    track = str(_deep_find_first(canonical_metadata, ("track", "adapter")) or os.getenv("AEGISFORGE_TRACK") or "skillsbench")
 
+    if identity_context.get("canonical_task_id") and identity_context.get("canonical_task_id") != merged_metadata.get("task_id"):
+        warnings.append(
+            "Canonical SkillsBench task_id inferred as "
+            f"{identity_context.get('canonical_task_id')!r} from {identity_context.get('source', 'unknown')}."
+        )
     if not task_id:
         warnings.append("No exact standard-v1 task_id was detected; using signal-inferred family only.")
     if not prompt.strip():
@@ -535,7 +606,7 @@ def normalize_skillsbench_request(
     workspace_context: dict[str, Any] = {}
     if include_workspace:
         try:
-            workspace_context = build_workspace_context(merged_metadata, prompt, include_text=False)
+            workspace_context = build_workspace_context(canonical_metadata, prompt, include_text=False)
         except Exception as exc:
             warnings.append(f"workspace context unavailable: {str(exc)[:240]}")
 
@@ -543,7 +614,7 @@ def normalize_skillsbench_request(
 
     route_reason = "env/metadata/text indicates SkillsBench" if is_skillsbench_request(
         message=message,
-        metadata=merged_metadata,
+        metadata=canonical_metadata,
         text=prompt,
         trust_environment=trust_environment,
     ) else "not-skillsbench-by-heuristic"
@@ -602,6 +673,10 @@ def build_result_payload(
         "expected_outputs": [item.as_dict() for item in request.expected_outputs],
         "route_reason": request.route_reason,
         "warnings": list(request.warnings),
+        "task_environment_version": TASK_ENVIRONMENT_VERSION,
+        "classification": _coerce_mapping(request.classification),
+        "canonical_task_id": request.metadata.get("canonical_task_id") or request.task_id,
+        "task_identity": _coerce_mapping(request.metadata.get("task_identity")),
     }
     if diagnostics:
         base_diagnostics.update(_coerce_mapping(diagnostics))
@@ -638,6 +713,12 @@ def request_debug_summary(request: SkillsBenchRequest) -> dict[str, Any]:
         "difficulty": request.difficulty,
         "family": request.family,
         "known_task": request.has_known_task,
+        "classification_source": request.classification.get("source"),
+        "solver_family": request.classification.get("solver_family") or request.classification.get("family"),
+        "legacy_family": request.classification.get("legacy_family"),
+        "canonical_task_id": request.metadata.get("canonical_task_id") or request.metadata.get("task_id"),
+        "task_identity_source": (request.metadata.get("task_identity") or {}).get("source") if isinstance(request.metadata.get("task_identity"), Mapping) else "",
+        "task_identity_confidence": (request.metadata.get("task_identity") or {}).get("confidence") if isinstance(request.metadata.get("task_identity"), Mapping) else "",
         "expected_outputs": [item.as_dict() for item in request.expected_outputs],
         "shard_index": request.shard_index,
         "num_shards": request.num_shards,
@@ -663,8 +744,10 @@ def validate_contract_selftest() -> dict[str, Any]:
     errors: list[str] = []
     if request.task_id != "dialogue-parser":
         errors.append(f"unexpected task_id: {request.task_id}")
-    if request.family != "data_json":
+    if request.family not in {"dialogue-parser", "json_output", "data_json", "general_file_output"}:
         errors.append(f"unexpected family: {request.family}")
+    if not request.expected_outputs:
+        errors.append("expected_outputs is empty")
     if result.status != "completed":
         errors.append(f"unexpected status: {result.status}")
     try:
@@ -676,6 +759,7 @@ def validate_contract_selftest() -> dict[str, Any]:
         "errors": errors,
         "contract_version": CONTRACT_VERSION,
         "sample_request": request_debug_summary(request),
+        "classification": request.classification,
     }
 
 
