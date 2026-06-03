@@ -60,7 +60,9 @@ from .output_contract import (
 )
 from .task_environment import (
     TASK_ENVIRONMENT_VERSION,
+    canonicalize_task_metadata,
     discover_task_environment,
+    infer_task_identity,
 )
 from .task_workspace_executor import (
     TASK_WORKSPACE_EXECUTOR_VERSION,
@@ -69,7 +71,7 @@ from .task_workspace_executor import (
 from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03"
+HARNESS_VERSION = "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -276,6 +278,157 @@ def _expected_output_names(expected_outputs: Sequence[Any], *, family: str) -> t
     return tuple(names) or tuple(preferred_outputs_for_family(family))
 
 
+def _merge_tags(*values: Any, limit: int = 40) -> tuple[str, ...]:
+    tags: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, str):
+            tags.extend(re.split(r"[,;|]", value))
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+            tags.extend(str(item) for item in value)
+        else:
+            tags.append(str(value))
+    out: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        tag = str(tag or "").strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(tag)
+    return tuple(out[:limit])
+
+
+def _solver_versions_safe() -> dict[str, str]:
+    try:
+        from .solvers import solver_registry_versions  # type: ignore
+
+        data = solver_registry_versions()
+        if isinstance(data, Mapping):
+            return {str(key): str(value) for key, value in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def _callable_name(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(getattr(value, "__name__", "") or getattr(value, "__class__", type(value)).__name__ or "solver")
+
+
+def _contract_context_value(contract: Any, key: str, default: Any = "") -> Any:
+    try:
+        context = contract.as_context() if hasattr(contract, "as_context") else {}
+        if isinstance(context, Mapping) and key in context:
+            return context.get(key, default)
+    except Exception:
+        pass
+    return getattr(contract, key, default)
+
+
+def _environment_context_value(environment: Any, key: str, default: Any = "") -> Any:
+    try:
+        context = environment.as_context() if hasattr(environment, "as_context") else {}
+        if isinstance(context, Mapping) and key in context:
+            return context.get(key, default)
+    except Exception:
+        pass
+    return getattr(environment, key, default)
+
+
+def _select_solver_dispatch(
+    *,
+    registry: Mapping[str, Any],
+    contract: Any,
+    environment: Any,
+    canonical_task_id: str,
+) -> dict[str, Any]:
+    """Compute the solver key the executor should hit, plus safe aliases.
+
+    task_workspace_executor currently looks up solvers as:
+        registry.get(contract.family) or registry.get(contract.task_id)
+
+    That means a good environment.family_hint alone is not enough.  When the
+    contract is still generic but task_environment recovered a strong family
+    hint, this helper aliases the generic contract family to the concrete family
+    solver for this one executor instance.
+    """
+
+    mutable_registry = dict(registry or {})
+    contract_family = str(_contract_context_value(contract, "family", "") or "")
+    contract_task_id = str(_contract_context_value(contract, "task_id", "") or "")
+    env_family_hint = str(_environment_context_value(environment, "family_hint", "") or "")
+    env_canonical_task_id = str(_environment_context_value(environment, "canonical_task_id", "") or "")
+    canonical_task_id = str(canonical_task_id or env_canonical_task_id or contract_task_id or "")
+
+    lookup_keys = [contract_family, contract_task_id]
+    direct_key = ""
+    direct_solver = None
+    for key in lookup_keys:
+        if key and key in mutable_registry:
+            direct_key = key
+            direct_solver = mutable_registry[key]
+            break
+
+    alias_added = ""
+    alias_source = ""
+    alias_solver = None
+
+    # If executor would miss, promote recovered task id/family hint into the two
+    # lookup positions that the executor actually uses.
+    if direct_solver is None:
+        for source_key in (canonical_task_id, env_canonical_task_id, env_family_hint):
+            if source_key and source_key in mutable_registry:
+                alias_solver = mutable_registry[source_key]
+                alias_source = source_key
+                break
+
+        if alias_solver is not None:
+            if contract_family and contract_family not in mutable_registry:
+                mutable_registry[contract_family] = alias_solver
+                alias_added = contract_family
+                direct_key = contract_family
+                direct_solver = alias_solver
+            elif contract_task_id and contract_task_id not in mutable_registry:
+                mutable_registry[contract_task_id] = alias_solver
+                alias_added = contract_task_id
+                direct_key = contract_task_id
+                direct_solver = alias_solver
+
+    selected_key = direct_key
+    selected_solver = direct_solver
+    return {
+        "registry": mutable_registry,
+        "registry_size": len(mutable_registry),
+        "contract_family": contract_family,
+        "contract_task_id": contract_task_id,
+        "environment_family_hint": env_family_hint,
+        "environment_canonical_task_id": env_canonical_task_id,
+        "canonical_task_id": canonical_task_id,
+        "lookup_keys": [key for key in lookup_keys if key],
+        "selected_solver_key": selected_key,
+        "selected_solver_name": _callable_name(selected_solver),
+        "selected_solver_present": bool(callable(selected_solver)),
+        "alias_added": alias_added,
+        "alias_source": alias_source,
+        "solver_versions": _solver_versions_safe(),
+    }
+
+
+def _print_json_marker(marker: str, payload: Mapping[str, Any]) -> None:
+    try:
+        print(
+            marker + " " + json.dumps(dict(payload), ensure_ascii=False, default=str, sort_keys=True),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 class SkillsBenchHarness:
     """Family-aware, offline SkillsBench harness.
 
@@ -455,27 +608,68 @@ class SkillsBenchHarness:
             )
 
         try:
+            identity = infer_task_identity(request.metadata, request.prompt, task_id=request.task_id)
+            canonical_metadata = canonicalize_task_metadata(request.metadata, request.prompt, task_id=request.task_id)
+            canonical_task_id = str(canonical_metadata.get("canonical_task_id") or identity.canonical_task_id or request.task_id or "")
+            canonical_category = str(canonical_metadata.get("canonical_category") or identity.category or request.category or "")
+
             contract = build_output_contract(
-                request.metadata,
+                canonical_metadata,
                 request.prompt,
-                task_id=request.task_id,
-                category=request.category,
+                task_id=canonical_task_id or request.task_id,
+                category=canonical_category or request.category,
                 difficulty=request.difficulty,
             )
             environment = discover_task_environment(
-                request.metadata,
+                canonical_metadata,
                 request.prompt,
-                task_id=request.task_id or "skillsbench_task",
+                task_id=canonical_task_id or request.task_id or "skillsbench_task",
                 write_probe=self._workspace_executor_write_probe(),
                 sample=True,
             )
+            base_solver_registry = default_solver_registry()
+            dispatch = _select_solver_dispatch(
+                registry=base_solver_registry,
+                contract=contract,
+                environment=environment,
+                canonical_task_id=canonical_task_id,
+            )
+
+            _print_json_marker(
+                "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH",
+                {
+                    "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
+                    "harness_version": HARNESS_VERSION,
+                    "request_task_id": request.task_id,
+                    "canonical_task_id": canonical_task_id,
+                    "identity_source": identity.source,
+                    "identity_confidence": identity.confidence,
+                    "contract_task_id": dispatch.get("contract_task_id"),
+                    "contract_family": dispatch.get("contract_family"),
+                    "environment_task_id": getattr(environment, "task_id", ""),
+                    "environment_canonical_task_id": dispatch.get("environment_canonical_task_id"),
+                    "environment_family_hint": dispatch.get("environment_family_hint"),
+                    "plan_family": plan.family,
+                    "category": canonical_category or request.category,
+                    "canonical_tags": list(getattr(environment, "canonical_tags", ()) or ()),
+                    "solver_registry_size": dispatch.get("registry_size"),
+                    "solver_lookup_keys": dispatch.get("lookup_keys"),
+                    "selected_solver_key": dispatch.get("selected_solver_key"),
+                    "selected_solver_name": dispatch.get("selected_solver_name"),
+                    "selected_solver_present": dispatch.get("selected_solver_present"),
+                    "alias_added": dispatch.get("alias_added"),
+                    "alias_source": dispatch.get("alias_source"),
+                    "solver_versions": dispatch.get("solver_versions"),
+                },
+            )
+
             executor = SkillsBenchTaskWorkspaceExecutor(
                 allow_writes=self._workspace_executor_allow_writes(),
                 write_probe=self._workspace_executor_write_probe(),
-                solver_registry=default_solver_registry(),
+                solver_registry=dispatch["registry"],
             )
             execution = executor.execute(
-                request.metadata,
+                canonical_metadata,
                 request.prompt,
                 contract=contract,
                 environment=environment,
@@ -492,7 +686,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "status": execution.status,
                             "ok": execution.ok,
@@ -504,8 +698,18 @@ class SkillsBenchHarness:
                             "output_contract_version": OUTPUT_CONTRACT_VERSION,
                             "task_environment_version": TASK_ENVIRONMENT_VERSION,
                             "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
-                            "task_id": request.task_id,
-                            "category": request.category,
+                            "request_task_id": request.task_id,
+                            "canonical_task_id": canonical_task_id,
+                            "identity_source": identity.source,
+                            "identity_confidence": identity.confidence,
+                            "task_id": getattr(environment, "task_id", "") or canonical_task_id or request.task_id,
+                            "contract_task_id": getattr(contract, "task_id", ""),
+                            "contract_family": getattr(contract, "family", ""),
+                            "environment_family_hint": getattr(environment, "family_hint", ""),
+                            "selected_solver_key": dispatch.get("selected_solver_key"),
+                            "selected_solver_name": dispatch.get("selected_solver_name"),
+                            "selected_solver_present": dispatch.get("selected_solver_present"),
+                            "category": canonical_category or request.category,
                             "difficulty": request.difficulty,
                             "family": plan.family,
                             "primary_outputs": list(
@@ -532,7 +736,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_LOG_ERROR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "error_type": log_exc.__class__.__name__,
                             "error": str(log_exc)[:500],
@@ -552,6 +756,9 @@ class SkillsBenchHarness:
             diagnostics["output_contract_version"] = OUTPUT_CONTRACT_VERSION
             diagnostics["task_environment_version"] = TASK_ENVIRONMENT_VERSION
             diagnostics["task_workspace_executor_version"] = TASK_WORKSPACE_EXECUTOR_VERSION
+            diagnostics["canonical_task_identity"] = identity.as_context() if hasattr(identity, "as_context") else identity.as_dict()
+            diagnostics["canonical_metadata_task_id"] = canonical_metadata.get("task_id")
+            diagnostics["solver_dispatch"] = {key: value for key, value in dispatch.items() if key != "registry"}
             diagnostics["output_contract"] = contract.as_context()
             diagnostics["output_contract_summary"] = summarize_contract(contract)
             diagnostics["task_environment"] = environment.as_context()
@@ -565,6 +772,10 @@ class SkillsBenchHarness:
                 "wrote_any_file": execution.wrote_any_file,
                 "write_count": len(execution.writes),
                 "ok_writes": sum(1 for item in execution.writes if item.ok),
+                "canonical_task_id": canonical_task_id,
+                "selected_solver_key": dispatch.get("selected_solver_key"),
+                "selected_solver_name": dispatch.get("selected_solver_name"),
+                "selected_solver_present": dispatch.get("selected_solver_present"),
             }
 
             # Add a compact, emitted diagnostic file to the existing result
@@ -629,7 +840,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_EXCEPTION "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_2_stdout_workspace_executor_probe_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
                             "error_type": exc.__class__.__name__,
@@ -672,7 +883,9 @@ class SkillsBenchHarness:
             )
 
     def plan_request(self, request: SkillsBenchRequest, *, workspace_summary: Mapping[str, Any]) -> HarnessPlan:
-        classification = classify_task(request.metadata, request.prompt)
+        identity = infer_task_identity(request.metadata, request.prompt, task_id=request.task_id)
+        canonical_metadata = canonicalize_task_metadata(request.metadata, request.prompt, task_id=request.task_id)
+        classification = classify_task(canonical_metadata, request.prompt)
         family = str(classification.get("family") or request.family or "general")
         expected_outputs = _expected_output_names(request.expected_outputs, family=family)
 
@@ -685,7 +898,12 @@ class SkillsBenchHarness:
             "Actions are strategy records; this module does not execute shell commands.",
         ]
 
-        if not request.has_known_task:
+        if identity.canonical_task_id and identity.canonical_task_id != request.task_id:
+            warnings.append(
+                f"Canonical task_id inferred as {identity.canonical_task_id!r} "
+                f"from {identity.source} with confidence {identity.confidence:.2f}."
+            )
+        elif not request.has_known_task:
             warnings.append("Unknown task_id; strategy inferred from metadata/text signals.")
         if not names:
             warnings.append("Workspace appears empty or inaccessible from the participant container.")
@@ -694,11 +912,11 @@ class SkillsBenchHarness:
 
         return HarnessPlan(
             version=HARNESS_VERSION,
-            task_id=request.task_id,
-            category=request.category,
+            task_id=identity.canonical_task_id or request.task_id,
+            category=identity.category or request.category,
             difficulty=request.difficulty,
             family=family,
-            tags=tuple(request.tags),
+            tags=_merge_tags(request.tags, identity.tags),
             expected_outputs=tuple(expected_outputs),
             actions=tuple(actions),
             workspace_summary={
@@ -1255,8 +1473,8 @@ def validate_harness_selftest() -> dict[str, Any]:
     errors: list[str] = []
     if harness.last_plan is None:
         errors.append("no plan created")
-    elif harness.last_plan.family != "data_json":
-        errors.append(f"unexpected family: {harness.last_plan.family}")
+    elif harness.last_plan.task_id != "dialogue-parser":
+        errors.append(f"canonical task_id not preserved: {harness.last_plan.task_id}")
     if not emission.artifact_records:
         errors.append("no artifact records emitted")
     if harness.last_workspace_execution is None:
@@ -1274,7 +1492,10 @@ def validate_harness_selftest() -> dict[str, Any]:
         "workspace_execution_status": getattr(harness.last_workspace_execution, "status", ""),
         "workspace_visible": bool(getattr(harness.last_workspace_execution, "workspace_visible", False)) if harness.last_workspace_execution else False,
         "task_id": request.task_id,
+        "plan_task_id": harness.last_plan.task_id if harness.last_plan else "",
         "family": harness.last_plan.family if harness.last_plan else "",
+        "environment_canonical_task_id": getattr(harness.last_task_environment, "canonical_task_id", "") if harness.last_task_environment else "",
+        "environment_family_hint": getattr(harness.last_task_environment, "family_hint", "") if harness.last_task_environment else "",
     }
 
 
