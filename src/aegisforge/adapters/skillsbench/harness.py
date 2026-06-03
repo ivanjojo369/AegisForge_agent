@@ -71,7 +71,7 @@ from .task_workspace_executor import (
 from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03"
+HARNESS_VERSION = "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -340,22 +340,136 @@ def _environment_context_value(environment: Any, key: str, default: Any = "") ->
     return getattr(environment, key, default)
 
 
+SOLVER_FAMILY_ALIASES: dict[str, str] = {
+    # Legacy / catalog names -> solver-registry names.
+    "data_json": "json_output",
+    "data-json": "json_output",
+    "spreadsheet": "office_xlsx",
+    "spreadsheet_finance": "office_xlsx",
+    "spreadsheet-finance": "office_xlsx",
+    "excel": "office_xlsx",
+    "xlsx_output": "office_xlsx",
+    "xlsx-output": "office_xlsx",
+    "office_document": "office_docx",
+    "office-document": "office_docx",
+    "document": "office_docx",
+    "document_generation": "office_docx",
+    "document-generation": "office_docx",
+    "docx_output": "office_docx",
+    "docx-output": "office_docx",
+    "pdf_form": "pdf_document",
+    "pdf-form": "pdf_document",
+    "pdf_output": "pdf_document",
+    "pdf-output": "pdf_document",
+    "formal_reasoning": "lean_solution",
+    "formal-reasoning": "lean_solution",
+    "lean": "lean_solution",
+    "lean4": "lean_solution",
+    "security_audit": "security_config",
+    "security-audit": "security_config",
+    "security_analysis": "security_config",
+    "security-analysis": "security_config",
+    "cybersecurity": "security_config",
+    "software_patch": "code_solution",
+    "software-patch": "code_solution",
+    "code_workspace": "code_solution",
+    "code-workspace": "code_solution",
+    "fix_build": "code_solution",
+    "fix-build": "code_solution",
+    "general": "general_file_output",
+    "general_task_filesystem": "general_file_output",
+    "general-task-filesystem": "general_file_output",
+}
+
+GENERIC_SOLVER_KEYS: frozenset[str] = frozenset(
+    {
+        "",
+        "general",
+        "general_file_output",
+        "general-file-output",
+        "general_task_filesystem",
+        "general-task-filesystem",
+    }
+)
+
+
+def _normalize_solver_key(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    if not key:
+        return ""
+    key = re.sub(r"[^a-z0-9_.+\-]+", "_", key)
+    return key.strip("_.")
+
+
+def _candidate_registry_keys(value: Any) -> list[str]:
+    """Return registry lookup candidates for one raw identity/family value."""
+
+    raw = _normalize_solver_key(value)
+    if not raw:
+        return []
+    candidates: list[str] = []
+    for item in (raw, raw.replace("-", "_"), raw.replace("_", "-")):
+        if item and item not in candidates:
+            candidates.append(item)
+    for item in list(candidates):
+        alias = SOLVER_FAMILY_ALIASES.get(item)
+        if alias and alias not in candidates:
+            candidates.append(alias)
+    return candidates
+
+
+def _is_generic_solver_key(value: Any) -> bool:
+    key = _normalize_solver_key(value)
+    return key in GENERIC_SOLVER_KEYS or SOLVER_FAMILY_ALIASES.get(key) in GENERIC_SOLVER_KEYS
+
+
+def _first_registered_solver(
+    *,
+    registry: Mapping[str, Any],
+    raw_values: Sequence[Any],
+) -> tuple[str, Any, str]:
+    """Return (registered_key, solver, source_value) by expanded key order."""
+
+    for raw in raw_values:
+        for key in _candidate_registry_keys(raw):
+            solver = registry.get(key)
+            if callable(solver):
+                return key, solver, str(raw or "")
+    return "", None, ""
+
+
 def _select_solver_dispatch(
     *,
     registry: Mapping[str, Any],
     contract: Any,
     environment: Any,
     canonical_task_id: str,
+    plan_family: str = "",
 ) -> dict[str, Any]:
-    """Compute the solver key the executor should hit, plus safe aliases.
+    """Choose and force the solver priority used by task_workspace_executor.
 
-    task_workspace_executor currently looks up solvers as:
+    User-required priority:
+
+    1. canonical_task_id
+    2. environment_canonical_task_id
+    3. contract_task_id
+    4. environment_family_hint
+    5. plan.family
+    6. contract_family only if it is NOT general_file_output
+    7. general_file_output as the last fallback
+
+    Important guard:
+    `general_file_output` must never win over a concrete solver family such as
+    code_solution, office_docx/office_xlsx, pdf_document, security_config,
+    lean_solution/formal_reasoning, spreadsheet/office_xlsx, etc.
+
+    Implementation detail:
+    SkillsBenchTaskWorkspaceExecutor currently does:
         registry.get(contract.family) or registry.get(contract.task_id)
 
-    That means a good environment.family_hint alone is not enough.  When the
-    contract is still generic but task_environment recovered a strong family
-    hint, this helper aliases the generic contract family to the concrete family
-    solver for this one executor instance.
+    Therefore, after selecting the desired solver, this function overrides the
+    temporary registry entry for contract.family and/or contract.task_id so the
+    executor cannot accidentally pick `general_file_output` first.
     """
 
     mutable_registry = dict(registry or {})
@@ -364,43 +478,79 @@ def _select_solver_dispatch(
     env_family_hint = str(_environment_context_value(environment, "family_hint", "") or "")
     env_canonical_task_id = str(_environment_context_value(environment, "canonical_task_id", "") or "")
     canonical_task_id = str(canonical_task_id or env_canonical_task_id or contract_task_id or "")
+    plan_family = str(plan_family or "")
 
-    lookup_keys = [contract_family, contract_task_id]
-    direct_key = ""
-    direct_solver = None
-    for key in lookup_keys:
-        if key and key in mutable_registry:
-            direct_key = key
-            direct_solver = mutable_registry[key]
-            break
+    # Concrete sources always beat contract_family=general_file_output.
+    preferred_raw_sources: list[str] = [
+        canonical_task_id,
+        env_canonical_task_id,
+        contract_task_id,
+        env_family_hint,
+        plan_family,
+    ]
+
+    if contract_family and not _is_generic_solver_key(contract_family):
+        preferred_raw_sources.append(contract_family)
+
+    selected_key, selected_solver, selected_source = _first_registered_solver(
+        registry=mutable_registry,
+        raw_values=preferred_raw_sources,
+    )
+
+    fallback_key = ""
+    fallback_solver = None
+    if selected_solver is None:
+        fallback_key, fallback_solver, fallback_source = _first_registered_solver(
+            registry=mutable_registry,
+            raw_values=("general_file_output", contract_family, contract_task_id),
+        )
+        selected_key = fallback_key
+        selected_solver = fallback_solver
+        selected_source = fallback_source
 
     alias_added = ""
-    alias_source = ""
-    alias_solver = None
+    alias_source = selected_source
+    registry_overrides: list[dict[str, str]] = []
 
-    # If executor would miss, promote recovered task id/family hint into the two
-    # lookup positions that the executor actually uses.
-    if direct_solver is None:
-        for source_key in (canonical_task_id, env_canonical_task_id, env_family_hint):
-            if source_key and source_key in mutable_registry:
-                alias_solver = mutable_registry[source_key]
-                alias_source = source_key
-                break
+    def force_alias(target_key: str, reason: str) -> None:
+        nonlocal alias_added
+        target_key = str(target_key or "")
+        if not target_key or selected_solver is None:
+            return
+        previous = mutable_registry.get(target_key)
+        if previous is selected_solver:
+            return
+        mutable_registry[target_key] = selected_solver
+        registry_overrides.append(
+            {
+                "key": target_key,
+                "reason": reason,
+                "previous_solver": _callable_name(previous),
+                "new_solver": _callable_name(selected_solver),
+            }
+        )
+        alias_added = target_key if not alias_added else alias_added
 
-        if alias_solver is not None:
-            if contract_family and contract_family not in mutable_registry:
-                mutable_registry[contract_family] = alias_solver
-                alias_added = contract_family
-                direct_key = contract_family
-                direct_solver = alias_solver
-            elif contract_task_id and contract_task_id not in mutable_registry:
-                mutable_registry[contract_task_id] = alias_solver
-                alias_added = contract_task_id
-                direct_key = contract_task_id
-                direct_solver = alias_solver
+    # Executor checks contract.family first. If it is generic, or if it points to
+    # a lower-priority solver than the selected key, override it for this request.
+    if contract_family:
+        force_alias(contract_family, "executor_checks_contract_family_first")
 
-    selected_key = direct_key
-    selected_solver = direct_solver
+    # Executor checks contract.task_id second. Alias it too when needed.
+    if contract_task_id:
+        force_alias(contract_task_id, "executor_checks_contract_task_id_second")
+
+    # Also alias UUID/canonical IDs to the selected solver for diagnostics/future
+    # lookup, but never rely on those over concrete families.
+    for identity_key in (canonical_task_id, env_canonical_task_id):
+        if identity_key:
+            force_alias(identity_key, "identity_alias_to_selected_solver")
+
+    lookup_keys: list[str] = []
+    for raw in preferred_raw_sources + ["contract_family_non_generic" if contract_family and not _is_generic_solver_key(contract_family) else "", "general_file_output"]:
+        if raw and raw not in lookup_keys:
+            lookup_keys.append(raw)
+
     return {
         "registry": mutable_registry,
         "registry_size": len(mutable_registry),
@@ -409,12 +559,30 @@ def _select_solver_dispatch(
         "environment_family_hint": env_family_hint,
         "environment_canonical_task_id": env_canonical_task_id,
         "canonical_task_id": canonical_task_id,
-        "lookup_keys": [key for key in lookup_keys if key],
+        "plan_family": plan_family,
+        "lookup_keys": lookup_keys,
+        "expanded_lookup_keys": {
+            "canonical_task_id": _candidate_registry_keys(canonical_task_id),
+            "environment_canonical_task_id": _candidate_registry_keys(env_canonical_task_id),
+            "contract_task_id": _candidate_registry_keys(contract_task_id),
+            "environment_family_hint": _candidate_registry_keys(env_family_hint),
+            "plan_family": _candidate_registry_keys(plan_family),
+            "contract_family": _candidate_registry_keys(contract_family),
+            "fallback": _candidate_registry_keys("general_file_output"),
+        },
         "selected_solver_key": selected_key,
         "selected_solver_name": _callable_name(selected_solver),
         "selected_solver_present": bool(callable(selected_solver)),
+        "selected_source": selected_source,
         "alias_added": alias_added,
         "alias_source": alias_source,
+        "registry_overrides": registry_overrides,
+        "generic_family_guard_applied": bool(
+            selected_solver is not None
+            and _is_generic_solver_key(contract_family)
+            and selected_key
+            and not _is_generic_solver_key(selected_key)
+        ),
         "solver_versions": _solver_versions_safe(),
     }
 
@@ -531,8 +699,20 @@ class SkillsBenchHarness:
         plan = self.plan_request(request, workspace_summary=workspace_summary)
         self.last_plan = plan
 
-        family = request.family or plan.family or "general"
+        family = plan.family or request.family or "general"
         strategy = {
+            # Solver-aligned families.
+            "json_output": self._solve_data_json,
+            "csv_output": self._solve_spreadsheet_finance,
+            "code_solution": self._solve_software_patch,
+            "office_xlsx": self._solve_spreadsheet_finance,
+            "office_docx": self._solve_office_document,
+            "pdf_document": self._solve_office_document,
+            "lean_solution": self._solve_formal_reasoning,
+            "security_config": self._solve_security_audit,
+            "general_file_output": self._solve_general,
+
+            # Legacy families retained for compatibility.
             "software_patch": self._solve_software_patch,
             "security_audit": self._solve_security_audit,
             "office_document": self._solve_office_document,
@@ -633,12 +813,13 @@ class SkillsBenchHarness:
                 contract=contract,
                 environment=environment,
                 canonical_task_id=canonical_task_id,
+                plan_family=plan.family,
             )
 
             _print_json_marker(
                 "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH",
                 {
-                    "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
+                    "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
                     "harness_version": HARNESS_VERSION,
                     "request_task_id": request.task_id,
                     "canonical_task_id": canonical_task_id,
@@ -654,6 +835,11 @@ class SkillsBenchHarness:
                     "canonical_tags": list(getattr(environment, "canonical_tags", ()) or ()),
                     "solver_registry_size": dispatch.get("registry_size"),
                     "solver_lookup_keys": dispatch.get("lookup_keys"),
+                    "expanded_solver_lookup_keys": dispatch.get("expanded_lookup_keys"),
+                    "dispatch_plan_family": dispatch.get("plan_family"),
+                    "selected_source": dispatch.get("selected_source"),
+                    "generic_family_guard_applied": dispatch.get("generic_family_guard_applied"),
+                    "registry_overrides": dispatch.get("registry_overrides"),
                     "selected_solver_key": dispatch.get("selected_solver_key"),
                     "selected_solver_name": dispatch.get("selected_solver_name"),
                     "selected_solver_present": dispatch.get("selected_solver_present"),
@@ -686,7 +872,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "status": execution.status,
                             "ok": execution.ok,
@@ -707,6 +893,9 @@ class SkillsBenchHarness:
                             "contract_family": getattr(contract, "family", ""),
                             "environment_family_hint": getattr(environment, "family_hint", ""),
                             "selected_solver_key": dispatch.get("selected_solver_key"),
+                            "selected_source": dispatch.get("selected_source"),
+                            "generic_family_guard_applied": dispatch.get("generic_family_guard_applied"),
+                            "registry_overrides": dispatch.get("registry_overrides"),
                             "selected_solver_name": dispatch.get("selected_solver_name"),
                             "selected_solver_present": dispatch.get("selected_solver_present"),
                             "category": canonical_category or request.category,
@@ -736,7 +925,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_LOG_ERROR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "error_type": log_exc.__class__.__name__,
                             "error": str(log_exc)[:500],
@@ -840,7 +1029,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_EXCEPTION "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_3_canonical_identity_solver_dispatch_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
                             "error_type": exc.__class__.__name__,
@@ -887,7 +1076,9 @@ class SkillsBenchHarness:
         canonical_metadata = canonicalize_task_metadata(request.metadata, request.prompt, task_id=request.task_id)
         classification = classify_task(canonical_metadata, request.prompt)
         family = str(classification.get("family") or request.family or "general")
-        expected_outputs = _expected_output_names(request.expected_outputs, family=family)
+        expected_outputs = tuple(str(item) for item in (classification.get("preferred_outputs") or ()) if str(item).strip())
+        if not expected_outputs:
+            expected_outputs = _expected_output_names(request.expected_outputs, family=family)
 
         names = _workspace_file_names(workspace_summary)
         suffixes = _suffix_counts(workspace_summary)
@@ -1461,6 +1652,63 @@ def handle_skillsbench_request(
     return SkillsBenchHarness(reasoner=reasoner).handle(message=message, metadata=metadata, text=text)
 
 
+def validate_harness_dispatch_selftest() -> dict[str, Any]:
+    """Validate solver priority: concrete solvers beat general_file_output."""
+
+    class DummyContract:
+        family = "general_file_output"
+        task_id = "uuid-like-task"
+
+        def as_context(self) -> dict[str, Any]:
+            return {"family": self.family, "task_id": self.task_id}
+
+    class DummyEnvironment:
+        family_hint = "code_solution"
+        canonical_task_id = ""
+
+        def as_context(self) -> dict[str, Any]:
+            return {"family_hint": self.family_hint, "canonical_task_id": self.canonical_task_id}
+
+    def general_solver(*args: Any, **kwargs: Any) -> str:
+        return "general"
+
+    def code_solver(*args: Any, **kwargs: Any) -> str:
+        return "code"
+
+    dispatch = _select_solver_dispatch(
+        registry={
+            "general_file_output": general_solver,
+            "code_solution": code_solver,
+        },
+        contract=DummyContract(),
+        environment=DummyEnvironment(),
+        canonical_task_id="",
+        plan_family="general_file_output",
+    )
+
+    errors: list[str] = []
+    if dispatch.get("selected_solver_key") != "code_solution":
+        errors.append(f"expected code_solution, got {dispatch.get('selected_solver_key')}")
+    if dispatch.get("selected_solver_name") != "code_solver":
+        errors.append(f"expected code_solver, got {dispatch.get('selected_solver_name')}")
+    if not dispatch.get("generic_family_guard_applied"):
+        errors.append("generic_family_guard_applied should be true")
+    registry = dispatch.get("registry") or {}
+    if getattr(registry.get("general_file_output"), "__name__", "") != "code_solver":
+        errors.append("general_file_output was not overridden for executor priority")
+
+    dispatch_selftest = validate_harness_dispatch_selftest()
+    if not dispatch_selftest.get("ok"):
+        errors.append(f"dispatch selftest failed: {dispatch_selftest.get('errors')}")
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "dispatch_selftest": dispatch_selftest,
+        "harness_version": HARNESS_VERSION,
+        "dispatch": {key: value for key, value in dispatch.items() if key != "registry"},
+    }
+
+
 def validate_harness_selftest() -> dict[str, Any]:
     request = normalize_skillsbench_request(
         message={
@@ -1507,5 +1755,6 @@ __all__ = [
     "PathLikeSuffix",
     "SkillsBenchHarness",
     "handle_skillsbench_request",
+    "validate_harness_dispatch_selftest",
     "validate_harness_selftest",
 ]
