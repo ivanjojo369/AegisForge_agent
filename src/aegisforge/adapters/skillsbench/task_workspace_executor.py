@@ -33,7 +33,7 @@ from .task_environment import (
 )
 
 
-TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_2_robust_materializing_writer_2026_06_03"
+TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_3_permission_hardened_fallback_writer_2026_06_03"
 
 SolverFn = Callable[
     [SkillsBenchOutputContract, SkillsBenchTaskEnvironment, Mapping[str, Any], str],
@@ -556,6 +556,170 @@ def _path_under_safe_prefix(path: str, env: SkillsBenchTaskEnvironment) -> bool:
     return False
 
 
+def _write_error_is_permissionish(result: WorkspaceWriteResult) -> bool:
+    blob = " ".join([result.error or "", result.reason or ""]).lower()
+    return any(
+        token in blob
+        for token in (
+            "permission denied",
+            "read-only file system",
+            "operation not permitted",
+            "not a directory",
+            "no such file or directory",
+            "not-existing-directory",
+        )
+    )
+
+
+def _relative_payload_path_for_fallback(path: str, req: OutputRequirement, contract: SkillsBenchOutputContract) -> str:
+    """Return a stable relative filename/path to preserve intent across fallback roots."""
+
+    normalized = str(Path(str(path or req.path or "answer.json")))
+    prefixes = (
+        "/root/output",
+        "/root/workspace",
+        "/root/data",
+        "/root/patches",
+        "/root",
+        "/app/workspace",
+        "/app/output",
+        "/output",
+        "/workspace",
+        "/data",
+        "/home/github/build/failed",
+    )
+    for prefix in prefixes:
+        if normalized == prefix:
+            filename, _kind = _default_filename_for_directory(req, contract)
+            return filename
+        if normalized.startswith(prefix.rstrip("/") + "/"):
+            rel = normalized[len(prefix.rstrip("/") + "/") :]
+            if rel and not _path_has_unresolved_placeholder(rel):
+                # Avoid recreating deep repo placeholders in generic fallback roots.
+                parts = [part for part in Path(rel).parts if part not in {"failed", "passed"}]
+                if parts and Path(parts[-1]).suffix:
+                    return str(Path(*parts[-3:])) if len(parts) > 3 else str(Path(*parts))
+                return Path(rel).name or _default_filename_for_directory(req, contract)[0]
+    name = Path(normalized).name
+    if not name or _path_has_unresolved_placeholder(name):
+        name = req.filename or _default_filename_for_directory(req, contract)[0]
+    if not Path(name).suffix:
+        filename, _kind = _default_filename_for_directory(req, contract)
+        name = filename
+    return name
+
+
+def _candidate_fallback_paths(
+    path: str,
+    req: OutputRequirement,
+    contract: SkillsBenchOutputContract,
+    env: SkillsBenchTaskEnvironment,
+) -> tuple[str, ...]:
+    """Build alternate paths when the visible task path is not writable.
+
+    In Quick Submit, `/root` is often visible but not writable from the participant
+    server.  This keeps the exact requested path as the primary attempt, then tries
+    other known SkillsBench roots so logs and artifacts prove what was materialized.
+    """
+
+    rel = _relative_payload_path_for_fallback(path, req, contract)
+    roots: list[str] = []
+    roots.extend(str(root) for root in getattr(env, "best_output_roots", ()) or ())
+
+    if contract.needs_repo_patch or contract.family in {"software_patch", "bugswarm_build_repair"} or req.kind == "patch":
+        roots.extend(
+            [
+                "/home/github/build/failed",
+                "/home/github/build",
+                "/workspace/patches",
+                "/app/workspace/patches",
+                "/output/patches",
+            ]
+        )
+
+    roots.extend(
+        [
+            "/app/output",
+            "/output",
+            "/workspace",
+            "/app/workspace",
+            "/data",
+            "/root/output",
+            "/root",
+        ]
+    )
+
+    out: list[str] = []
+    seen: set[str] = {str(Path(path))}
+    for raw_root in roots:
+        try:
+            root = Path(str(raw_root))
+        except Exception:
+            continue
+        if not _path_under_safe_prefix(str(root), env):
+            continue
+        target = root / rel
+        # If rel accidentally maps to a directory-like path, force a concrete file.
+        if str(target).endswith("/") or not Path(target.name).suffix:
+            filename, kind = _default_filename_for_directory(req, contract)
+            target = target / filename
+        target_s = str(target)
+        if target_s in seen:
+            continue
+        seen.add(target_s)
+        out.append(target_s)
+    return tuple(out[:24])
+
+
+def _write_with_permission_fallbacks(
+    path: str,
+    data: bytes,
+    req: OutputRequirement,
+    contract: SkillsBenchOutputContract,
+    env: SkillsBenchTaskEnvironment,
+) -> WorkspaceWriteResult:
+    action = req.action or "write"
+    primary = _with_kind(_atomic_write(Path(path), data), req.kind, action=action)
+    if primary.ok:
+        return primary
+
+    if not _write_error_is_permissionish(primary):
+        return primary
+
+    attempts = [f"{primary.path}: {primary.error or primary.reason}".strip()]
+    for alt_path in _candidate_fallback_paths(path, req, contract, env):
+        alt = _with_kind(_atomic_write(Path(alt_path), data), req.kind, action=f"{action}_fallback")
+        if alt.ok:
+            return WorkspaceWriteResult(
+                path=alt.path,
+                ok=True,
+                action=alt.action,
+                kind=alt.kind,
+                bytes_written=alt.bytes_written,
+                sha256=alt.sha256,
+                skipped=False,
+                reason=f"primary target was not writable; fallback_from={path}",
+                error="",
+                parent_created=alt.parent_created,
+                existed_before=alt.existed_before,
+            )
+        attempts.append(f"{alt.path}: {alt.error or alt.reason}".strip())
+
+    return WorkspaceWriteResult(
+        path=primary.path,
+        ok=False,
+        action=primary.action,
+        kind=primary.kind,
+        bytes_written=primary.bytes_written,
+        sha256=primary.sha256,
+        skipped=primary.skipped,
+        reason=primary.reason,
+        error=("primary and fallback writes failed: " + " | ".join(attempts))[:600],
+        parent_created=primary.parent_created,
+        existed_before=primary.existed_before,
+    )
+
+
 def _default_filename_for_directory(req: OutputRequirement, contract: SkillsBenchOutputContract) -> tuple[str, str]:
     blob = " ".join([req.path, req.filename, contract.family, contract.task_id]).lower()
     if "patch" in blob or contract.needs_repo_patch or contract.family in {"software_patch", "bugswarm_build_repair"}:
@@ -714,7 +878,21 @@ class SkillsBenchTaskWorkspaceExecutor:
             warnings.append(f"registered solver failed and generic writer was used: {solver_error}")
 
         if not contract.requirements:
-            warnings.append("No output requirements detected; no filesystem writes attempted.")
+            warnings.append("No output requirements detected; attempting best-effort answer.json fallback.")
+            if environment.can_access_task_filesystem and self.allow_writes:
+                fallback = self._write_best_effort_fallback(contract, environment, metadata)
+                if fallback is not None:
+                    writes.append(fallback)
+                    if fallback.ok:
+                        warnings.append(f"generic no-requirements fallback wrote {fallback.path}")
+                    elif fallback.error:
+                        errors.append(f"{fallback.path}: {fallback.error}")
+                    elif fallback.skipped:
+                        warnings.append(f"skipped {fallback.path}: {fallback.reason}")
+                status = "completed" if any(w.ok for w in writes) else "no_requirements"
+                result = self._finish(contract, environment, writes, warnings, errors, status=status)
+                self.last_execution = result
+                return result
             return self._finish(contract, environment, writes, warnings, errors, status="no_requirements")
 
         if not environment.can_access_task_filesystem:
@@ -803,8 +981,7 @@ class SkillsBenchTaskWorkspaceExecutor:
         if not data:
             return WorkspaceWriteResult(path=path, ok=False, action="render", kind=req.kind, error="rendered empty payload")
 
-        write = _atomic_write(Path(path), data)
-        return _with_kind(write, req.kind, action=req.action or "write")
+        return _write_with_permission_fallbacks(path, data, req, contract, env)
 
     def _write_best_effort_fallback(
         self,
@@ -812,29 +989,44 @@ class SkillsBenchTaskWorkspaceExecutor:
         env: SkillsBenchTaskEnvironment,
         metadata: Mapping[str, Any],
     ) -> WorkspaceWriteResult | None:
-        roots = list(env.best_output_roots or ()) + ["/root/output", "/root", "/app/output", "/output", "/workspace"]
-        chosen_root = ""
+        roots = list(env.best_output_roots or ()) + [
+            "/app/output",
+            "/output",
+            "/workspace",
+            "/app/workspace",
+            "/data",
+            "/root/output",
+            "/root",
+        ]
+        last: WorkspaceWriteResult | None = None
+        seen: set[str] = set()
         for raw in roots:
             try:
                 root = Path(raw)
-                if root.exists() and root.is_dir() and _path_under_safe_prefix(str(root), env):
-                    chosen_root = str(root)
-                    break
+                root_s = str(root)
+                if root_s in seen or not _path_under_safe_prefix(root_s, env):
+                    continue
+                seen.add(root_s)
+                if root.exists() and root.is_file():
+                    continue
             except Exception:
                 continue
-        if not chosen_root:
-            return None
-        pseudo = OutputRequirement(
-            path=str(Path(chosen_root) / "answer.json"),
-            kind="json",
-            mime_type="application/json",
-            source="task_workspace_executor.best_effort_fallback",
-            parent=chosen_root,
-            filename="answer.json",
-            suffix=".json",
-            action="write_best_effort_fallback",
-        )
-        return self._write_requirement(pseudo, contract, env, metadata)
+
+            pseudo = OutputRequirement(
+                path=str(Path(raw) / "answer.json"),
+                kind="json",
+                mime_type="application/json",
+                source="task_workspace_executor.best_effort_fallback",
+                parent=str(raw),
+                filename="answer.json",
+                suffix=".json",
+                action="write_best_effort_fallback",
+            )
+            last = self._write_requirement(pseudo, contract, env, metadata)
+            if last.ok:
+                return last
+
+        return last
 
     def _finish(
         self,
@@ -854,6 +1046,8 @@ class SkillsBenchTaskWorkspaceExecutor:
             "write_count": len(writes),
             "ok_writes": sum(1 for w in writes if w.ok),
             "skipped_writes": sum(1 for w in writes if w.skipped),
+            "permission_denied_writes": sum(1 for w in writes if _write_error_is_permissionish(w)),
+            "fallback_writes": sum(1 for w in writes if "fallback" in (w.action or "") or "fallback_from=" in (w.reason or "")),
             "kind_counts": dict(Counter(w.kind for w in writes)),
             "safe_write_prefixes": list(_safe_write_prefixes(env)),
             "write_outcomes": [w.as_dict() for w in writes[:80]],
