@@ -71,7 +71,7 @@ from .task_workspace_executor import (
 from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03"
+HARNESS_VERSION = "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -427,11 +427,23 @@ def _first_registered_solver(
     *,
     registry: Mapping[str, Any],
     raw_values: Sequence[Any],
+    allow_generic: bool = True,
 ) -> tuple[str, Any, str]:
-    """Return (registered_key, solver, source_value) by expanded key order."""
+    """Return (registered_key, solver, source_value) by expanded key order.
+
+    When allow_generic=False, generic values such as `general_task_filesystem`,
+    `general`, and `general_file_output` are ignored even if they expand to a
+    callable registry entry.  This prevents broad environment hints from beating
+    concrete plan/task families like code_solution, office_xlsx, pdf_document,
+    security_config, and lean_solution.
+    """
 
     for raw in raw_values:
+        if not allow_generic and _is_generic_solver_key(raw):
+            continue
         for key in _candidate_registry_keys(raw):
+            if not allow_generic and _is_generic_solver_key(key):
+                continue
             solver = registry.get(key)
             if callable(solver):
                 return key, solver, str(raw or "")
@@ -480,7 +492,9 @@ def _select_solver_dispatch(
     canonical_task_id = str(canonical_task_id or env_canonical_task_id or contract_task_id or "")
     plan_family = str(plan_family or "")
 
-    # Concrete sources always beat contract_family=general_file_output.
+    # Concrete sources always beat any generic filesystem hint.  The first pass
+    # deliberately ignores generic keys such as general_task_filesystem and
+    # general_file_output, even when those keys have registered solvers.
     preferred_raw_sources: list[str] = [
         canonical_task_id,
         env_canonical_task_id,
@@ -492,17 +506,26 @@ def _select_solver_dispatch(
     if contract_family and not _is_generic_solver_key(contract_family):
         preferred_raw_sources.append(contract_family)
 
+    generic_sources_skipped = [
+        str(value)
+        for value in (canonical_task_id, env_canonical_task_id, contract_task_id, env_family_hint, plan_family, contract_family)
+        if value and _is_generic_solver_key(value)
+    ]
+
     selected_key, selected_solver, selected_source = _first_registered_solver(
         registry=mutable_registry,
         raw_values=preferred_raw_sources,
+        allow_generic=False,
     )
 
     fallback_key = ""
     fallback_solver = None
+    fallback_source = ""
     if selected_solver is None:
         fallback_key, fallback_solver, fallback_source = _first_registered_solver(
             registry=mutable_registry,
             raw_values=("general_file_output", contract_family, contract_task_id),
+            allow_generic=True,
         )
         selected_key = fallback_key
         selected_solver = fallback_solver
@@ -577,11 +600,12 @@ def _select_solver_dispatch(
         "alias_added": alias_added,
         "alias_source": alias_source,
         "registry_overrides": registry_overrides,
+        "generic_sources_skipped": generic_sources_skipped,
         "generic_family_guard_applied": bool(
             selected_solver is not None
-            and _is_generic_solver_key(contract_family)
             and selected_key
             and not _is_generic_solver_key(selected_key)
+            and bool(generic_sources_skipped)
         ),
         "solver_versions": _solver_versions_safe(),
     }
@@ -819,7 +843,7 @@ class SkillsBenchHarness:
             _print_json_marker(
                 "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH",
                 {
-                    "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
+                    "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
                     "harness_version": HARNESS_VERSION,
                     "request_task_id": request.task_id,
                     "canonical_task_id": canonical_task_id,
@@ -839,6 +863,7 @@ class SkillsBenchHarness:
                     "dispatch_plan_family": dispatch.get("plan_family"),
                     "selected_source": dispatch.get("selected_source"),
                     "generic_family_guard_applied": dispatch.get("generic_family_guard_applied"),
+                    "generic_sources_skipped": dispatch.get("generic_sources_skipped"),
                     "registry_overrides": dispatch.get("registry_overrides"),
                     "selected_solver_key": dispatch.get("selected_solver_key"),
                     "selected_solver_name": dispatch.get("selected_solver_name"),
@@ -872,7 +897,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "status": execution.status,
                             "ok": execution.ok,
@@ -895,6 +920,7 @@ class SkillsBenchHarness:
                             "selected_solver_key": dispatch.get("selected_solver_key"),
                             "selected_source": dispatch.get("selected_source"),
                             "generic_family_guard_applied": dispatch.get("generic_family_guard_applied"),
+                            "generic_sources_skipped": dispatch.get("generic_sources_skipped"),
                             "registry_overrides": dispatch.get("registry_overrides"),
                             "selected_solver_name": dispatch.get("selected_solver_name"),
                             "selected_solver_present": dispatch.get("selected_solver_present"),
@@ -925,7 +951,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_LOG_ERROR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "error_type": log_exc.__class__.__name__,
                             "error": str(log_exc)[:500],
@@ -1029,7 +1055,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_EXCEPTION "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_4_solver_priority_guard_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
                             "harness_version": HARNESS_VERSION,
                             "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
                             "error_type": exc.__class__.__name__,
@@ -1653,7 +1679,13 @@ def handle_skillsbench_request(
 
 
 def validate_harness_dispatch_selftest() -> dict[str, Any]:
-    """Validate solver priority: concrete solvers beat general_file_output."""
+    """Validate solver priority: concrete solvers beat generic hints.
+
+    Regression covered:
+    environment_family_hint=general_task_filesystem used to expand to
+    general_file_output and beat plan_family=code_solution.  That must never
+    happen again.
+    """
 
     class DummyContract:
         family = "general_file_output"
@@ -1663,7 +1695,14 @@ def validate_harness_dispatch_selftest() -> dict[str, Any]:
             return {"family": self.family, "task_id": self.task_id}
 
     class DummyEnvironment:
-        family_hint = "code_solution"
+        family_hint = "general_task_filesystem"
+        canonical_task_id = ""
+
+        def as_context(self) -> dict[str, Any]:
+            return {"family_hint": self.family_hint, "canonical_task_id": self.canonical_task_id}
+
+    class PdfEnvironment:
+        family_hint = "pdf_document"
         canonical_task_id = ""
 
         def as_context(self) -> dict[str, Any]:
@@ -1675,11 +1714,33 @@ def validate_harness_dispatch_selftest() -> dict[str, Any]:
     def code_solver(*args: Any, **kwargs: Any) -> str:
         return "code"
 
-    dispatch = _select_solver_dispatch(
-        registry={
-            "general_file_output": general_solver,
-            "code_solution": code_solver,
-        },
+    def pdf_solver(*args: Any, **kwargs: Any) -> str:
+        return "pdf"
+
+    base_registry = {
+        "general_file_output": general_solver,
+        "code_solution": code_solver,
+        "pdf_document": pdf_solver,
+    }
+
+    generic_env_dispatch = _select_solver_dispatch(
+        registry=base_registry,
+        contract=DummyContract(),
+        environment=DummyEnvironment(),
+        canonical_task_id="",
+        plan_family="code_solution",
+    )
+
+    pdf_env_dispatch = _select_solver_dispatch(
+        registry=base_registry,
+        contract=DummyContract(),
+        environment=PdfEnvironment(),
+        canonical_task_id="",
+        plan_family="code_solution",
+    )
+
+    fallback_dispatch = _select_solver_dispatch(
+        registry=base_registry,
         contract=DummyContract(),
         environment=DummyEnvironment(),
         canonical_task_id="",
@@ -1687,25 +1748,36 @@ def validate_harness_dispatch_selftest() -> dict[str, Any]:
     )
 
     errors: list[str] = []
-    if dispatch.get("selected_solver_key") != "code_solution":
-        errors.append(f"expected code_solution, got {dispatch.get('selected_solver_key')}")
-    if dispatch.get("selected_solver_name") != "code_solver":
-        errors.append(f"expected code_solver, got {dispatch.get('selected_solver_name')}")
-    if not dispatch.get("generic_family_guard_applied"):
-        errors.append("generic_family_guard_applied should be true")
-    registry = dispatch.get("registry") or {}
-    if getattr(registry.get("general_file_output"), "__name__", "") != "code_solver":
-        errors.append("general_file_output was not overridden for executor priority")
 
-    dispatch_selftest = validate_harness_dispatch_selftest()
-    if not dispatch_selftest.get("ok"):
-        errors.append(f"dispatch selftest failed: {dispatch_selftest.get('errors')}")
+    if generic_env_dispatch.get("selected_solver_key") != "code_solution":
+        errors.append(
+            "generic environment hint should be skipped in favor of plan_family=code_solution; "
+            f"got {generic_env_dispatch.get('selected_solver_key')}"
+        )
+    if generic_env_dispatch.get("selected_solver_name") != "code_solver":
+        errors.append(f"expected code_solver, got {generic_env_dispatch.get('selected_solver_name')}")
+    if not generic_env_dispatch.get("generic_family_guard_applied"):
+        errors.append("generic_family_guard_applied should be true for generic-env/code-plan case")
+    registry = generic_env_dispatch.get("registry") or {}
+    if getattr(registry.get("general_file_output"), "__name__", "") != "code_solver":
+        errors.append("general_file_output was not overridden to code_solver for executor priority")
+
+    if pdf_env_dispatch.get("selected_solver_key") != "pdf_document":
+        errors.append(f"concrete environment hint should beat plan_family; got {pdf_env_dispatch.get('selected_solver_key')}")
+    pdf_registry = pdf_env_dispatch.get("registry") or {}
+    if getattr(pdf_registry.get("general_file_output"), "__name__", "") != "pdf_solver":
+        errors.append("general_file_output was not overridden to pdf_solver for executor priority")
+
+    if fallback_dispatch.get("selected_solver_key") != "general_file_output":
+        errors.append(f"pure generic fallback should remain general_file_output; got {fallback_dispatch.get('selected_solver_key')}")
+
     return {
         "ok": not errors,
         "errors": errors,
-        "dispatch_selftest": dispatch_selftest,
         "harness_version": HARNESS_VERSION,
-        "dispatch": {key: value for key, value in dispatch.items() if key != "registry"},
+        "generic_env_dispatch": {key: value for key, value in generic_env_dispatch.items() if key != "registry"},
+        "pdf_env_dispatch": {key: value for key, value in pdf_env_dispatch.items() if key != "registry"},
+        "fallback_dispatch": {key: value for key, value in fallback_dispatch.items() if key != "registry"},
     }
 
 
