@@ -1,0 +1,20 @@
+{
+  "name": "skillsbench_tests_fixtures_fix",
+  "file_count": 14,
+  "files": [
+    "tests/fixtures/skillsbench/sample_aegisforge_final_contract.json",
+    "tests/fixtures/skillsbench/sample_flat_legacy_results.json",
+    "tests/fixtures/skillsbench/sample_gateway_zero_result.json",
+    "tests/fixtures/skillsbench/sample_mixed_results.json",
+    "tests/fixtures/skillsbench/sample_nested_results.json",
+    "tests/fixtures/skillsbench/sample_standard_v1_taskset.json",
+    "tests/fixtures/skillsbench/sample_workspace_execution.json",
+    "tests/skillsbench/test_agent_skillsbench_harness_surface_preserves_refs.py",
+    "tests/skillsbench/test_artifact_ref_survival.py",
+    "tests/skillsbench/test_artifact_writer_safe_manifest.py",
+    "tests/skillsbench/test_failure_taxonomy_skillsbench_labels.py",
+    "tests/skillsbench/test_result_shape_compat.py",
+    "tests/skillsbench/test_solver_registry_selftests.py",
+    "tests/skillsbench/test_task_environment_output_path_extraction.py"
+  ]
+}

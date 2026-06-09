@@ -1,0 +1,68 @@
+{
+  "status": "completed",
+  "participants": {
+    "green": "green-participant",
+    "agent": "agent-under-test"
+  },
+  "results": [
+    {
+      "shard_index": 0,
+      "status": "completed",
+      "results": [
+        {
+          "task_id": "dialogue-parser",
+          "task_digest": "sha256:dialogue",
+          "category": "office-white-collar",
+          "difficulty": "easy",
+          "condition": "with_skills",
+          "score_eligible": true,
+          "passed": true,
+          "reward": 1.0,
+          "max_reward": 1.0,
+          "time_used": 12.5,
+          "artifact_refs": [
+            "artifact://dialogue-parser/answer.json"
+          ],
+          "infra_failure_type": null,
+          "error_type": null
+        },
+        {
+          "task_id": "court-form-filling",
+          "task_digest": "sha256:court",
+          "category": "office-white-collar",
+          "difficulty": "medium",
+          "condition": "with_skills",
+          "score_eligible": true,
+          "passed": false,
+          "reward": 0.0,
+          "max_reward": 1.0,
+          "time_used": 20.0,
+          "artifact_refs": [],
+          "infra_failure_type": null,
+          "error_type": null
+        }
+      ]
+    },
+    {
+      "shard_index": 1,
+      "status": "completed",
+      "results": [
+        {
+          "task_id": "fix-build-agentops",
+          "task_digest": "sha256:agentops",
+          "category": "software-engineering",
+          "difficulty": "hard",
+          "condition": "with_skills",
+          "score_eligible": true,
+          "passed": false,
+          "reward": 0.0,
+          "max_reward": 1.0,
+          "time_used": 45.0,
+          "artifact_refs": [],
+          "infra_failure_type": null,
+          "error_type": null
+        }
+      ]
+    }
+  ]
+}

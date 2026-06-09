@@ -9,8 +9,9 @@ This module must:
 - For Pi-Bench, advertise the policy bootstrap contract that tells the
   orchestrator the decision must be emitted as an assistant tool_call to
   record_decision, not as a generic TextPart/DataPart payload.
-- For SkillsBench, advertise file/artifact output so standard-v1 tasks can
-  discover that this agent can return evaluator-visible FilePart artifacts.
+- For SkillsBench, advertise filesystem-output-primary behavior: the agent
+  writes evaluator-visible files into the task sandbox when available, while
+  preserving A2A artifacts/artifact_refs as diagnostic compatibility signals.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from .executor import Executor
 
 
-RUNTIME_VERSION = "1.3.0-pibench-skillsbench-artifact-output"
+RUNTIME_VERSION = "1.4.0-pibench-skillsbench-filesystem-output-primary"
 
 # One selected opponent per AgentX-AgentBeats category.
 # "mcu" covers the MCU/Minecraft benchmark; we do not treat mcu-minecraft as a separate track.
@@ -92,6 +93,11 @@ AGENT_CARD_TAGS = (
     "standard-v1",
     "general-purpose-agent",
     "multi-utility",
+    "filesystem-first",
+    "filesystem-output-primary",
+    "sandbox-file-output",
+    "artifact-refs-diagnostic",
+    "workspace-output",
     "artifact-first",
     "artifact-output",
     "file-output",
@@ -174,26 +180,49 @@ PI_BENCH_POLICY_BOOTSTRAP: dict[str, Any] = {
 }
 
 
+SKILLSBENCH_FILESYSTEM_OUTPUT_URN = "urn:aegisforge:skillsbench:filesystem-output:v2"
+# Backward-compatible extension name.  Older harness probes looked for this URN,
+# but the params now explicitly say that artifact_refs are diagnostic rather than
+# the primary scoring channel.
 SKILLSBENCH_ARTIFACT_OUTPUT_URN = "urn:aegisforge:skillsbench:artifact-output:v1"
 
-SKILLSBENCH_ARTIFACT_FAMILIES = (
-    "text",
-    "markdown",
+SKILLSBENCH_OUTPUT_FAMILIES = (
+    "json_output",
+    "csv_output",
+    "code_solution",
+    "office_xlsx",
+    "office_pptx",
+    "office_docx",
+    "pdf_document",
+    "lean_solution",
+    "security_config",
+    "media_output",
+    "general_file_output",
+)
+
+SKILLSBENCH_FILE_EXTENSIONS = (
+    "txt",
+    "md",
     "json",
-    "python",
+    "py",
     "patch",
     "diff",
     "csv",
     "xlsx",
+    "xls",
     "docx",
     "pptx",
     "pdf",
     "lean",
+    "yaml",
+    "yml",
+    "sh",
     "obj",
     "html",
     "zip",
-    "audio",
-    "video",
+    "wav",
+    "mp3",
+    "mp4",
 )
 
 SKILLSBENCH_TASK_CATEGORIES = (
@@ -207,12 +236,25 @@ SKILLSBENCH_TASK_CATEGORIES = (
     "cybersecurity",
 )
 
-SKILLSBENCH_ARTIFACT_OUTPUT: dict[str, Any] = {
-    "uri": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
-    "version": "1",
+SKILLSBENCH_SAFE_OUTPUT_ROOTS = (
+    "/root",
+    "/root/output",
+    "/app/workspace",
+    "/app/output",
+    "/output",
+    "/workspace",
+    "/home/github/build/failed",
+    "/logs/verifier",
+)
+
+SKILLSBENCH_FILESYSTEM_OUTPUT: dict[str, Any] = {
+    "uri": SKILLSBENCH_FILESYSTEM_OUTPUT_URN,
+    "version": "2",
     "track": "skillsbench",
     "benchmark": "SkillsBench",
+    "benchmark_source": "benchflow-ai/skillsbench-leaderboard",
     "task_set": "standard-v1",
+    "condition": "with_skills",
     "benchmark_aliases": [
         "skillsbench",
         "skillsbench-leaderboard",
@@ -224,22 +266,51 @@ SKILLSBENCH_ARTIFACT_OUTPUT: dict[str, Any] = {
         "general_purpose",
         "general-purpose-agent",
         "multi-utility",
-        "artifact-first",
+        "filesystem-first",
+        "filesystem-output-primary",
+        "sandbox-file-output",
     ],
-    "artifact_first": True,
-    "expected_transport": "A2A FilePart/FileWithBytes",
+    "scoring_channel": "filesystem_output_primary",
+    "a2a_artifacts": "diagnostic_and_compatibility_signal",
+    "artifact_refs": "preserved_when_available_but_not_assumed_as_primary_scoring_channel",
+    "expected_runtime_behavior": {
+        "discover_task_environment": True,
+        "extract_output_contract": True,
+        "write_required_files_to_task_sandbox": True,
+        "preserve_artifact_refs_candidate": True,
+        "emit_forensic_manifest": True,
+    },
+    "safe_output_roots": list(SKILLSBENCH_SAFE_OUTPUT_ROOTS),
+    "output_families": list(SKILLSBENCH_OUTPUT_FAMILIES),
+    "file_extensions": list(SKILLSBENCH_FILE_EXTENSIONS),
+    "task_categories": list(SKILLSBENCH_TASK_CATEGORIES),
     "minimum_contract": {
         "status_text": "concise",
-        "artifact_native_tasks": "emit evaluator-visible file artifacts",
-        "artifact_refs": "must not be empty for artifact-native standard-v1 tasks",
+        "primary_outputs": "real files written into the visible task filesystem when the sandbox is accessible",
+        "artifact_refs_candidate": "non-empty diagnostic evidence when files/artifacts are produced",
+        "no_hidden_answer_lookup": True,
+        "no_network_required": True,
     },
-    "artifact_families": list(SKILLSBENCH_ARTIFACT_FAMILIES),
-    "task_categories": list(SKILLSBENCH_TASK_CATEGORIES),
+    "known_output_examples": [
+        "/root/answer.json",
+        "/root/output/report.md",
+        "/app/workspace/solution.py",
+        "/home/github/build/failed/<repo>/<id>/patch_0.diff",
+    ],
     "non_regression_guards": {
         "cybergym": "preserve exactly one Artifact(name='PoC') with FilePart(name='poc')",
         "maizebargain": "preserve the stable EF1-repair baseline unless explicitly requested",
         "pibench": "preserve record_decision assistant tool-call discovery metadata",
     },
+}
+
+# Compatibility alias used by older code paths and old card probes.  Keep the
+# variable name, but expose filesystem-primary semantics in its payload.
+SKILLSBENCH_ARTIFACT_OUTPUT: dict[str, Any] = {
+    **SKILLSBENCH_FILESYSTEM_OUTPUT,
+    "uri": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
+    "version": "1-compat-filesystem-primary",
+    "legacy_name": "artifact-output",
 }
 
 
@@ -280,7 +351,7 @@ def _merge_unique_list(existing: Any, additions: list[Any]) -> list[Any]:
 
 
 def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
-    """Add Pi-Bench/A2A discovery fields to the public JSON card.
+    """Add Pi-Bench/SkillsBench/A2A discovery fields to the public JSON card.
 
     The in-memory AgentCard is kept SDK-compatible, and this function enriches only
     the JSON served at /.well-known/agent-card.json and /.well-known/agent.json.
@@ -338,9 +409,16 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         "params": PI_BENCH_POLICY_BOOTSTRAP,
     }
 
+    skillsbench_filesystem_extension_record = {
+        "uri": SKILLSBENCH_FILESYSTEM_OUTPUT_URN,
+        "description": "SkillsBench standard-v1 filesystem-output-primary discovery.",
+        "required": False,
+        "params": SKILLSBENCH_FILESYSTEM_OUTPUT,
+    }
+
     skillsbench_extension_record = {
         "uri": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
-        "description": "SkillsBench standard-v1 artifact-first file output discovery.",
+        "description": "SkillsBench legacy artifact-output compatibility discovery; filesystem output is primary.",
         "required": False,
         "params": SKILLSBENCH_ARTIFACT_OUTPUT,
     }
@@ -357,6 +435,15 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         for item in extensions
     ):
         extensions.append(extension_record)
+
+    if SKILLSBENCH_FILESYSTEM_OUTPUT_URN not in extensions:
+        extensions.append(SKILLSBENCH_FILESYSTEM_OUTPUT_URN)
+
+    if not any(
+        isinstance(item, dict) and item.get("uri") == SKILLSBENCH_FILESYSTEM_OUTPUT_URN
+        for item in extensions
+    ):
+        extensions.append(skillsbench_filesystem_extension_record)
 
     if SKILLSBENCH_ARTIFACT_OUTPUT_URN not in extensions:
         extensions.append(SKILLSBENCH_ARTIFACT_OUTPUT_URN)
@@ -382,6 +469,7 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
         },
     )
     metadata["pi_bench_policy_bootstrap"] = PI_BENCH_POLICY_BOOTSTRAP
+    metadata["skillsbench_filesystem_output"] = SKILLSBENCH_FILESYSTEM_OUTPUT
     metadata["skillsbench_artifact_output"] = SKILLSBENCH_ARTIFACT_OUTPUT
 
     # Tool declarations are duplicated under a few conventional keys because public
@@ -392,12 +480,50 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
     data["tool_declarations"] = tools
 
     data["x-aegisforge-pibench-policy-bootstrap"] = PI_BENCH_POLICY_BOOTSTRAP
+    data["x-aegisforge-skillsbench-filesystem-output"] = SKILLSBENCH_FILESYSTEM_OUTPUT
     data["x-aegisforge-skillsbench-artifact-output"] = SKILLSBENCH_ARTIFACT_OUTPUT
     return data
 
 
 def _card_to_dict(card: AgentCard) -> dict[str, Any]:
     return _enrich_agent_card_dict(_card_to_raw_dict(card))
+
+
+
+def validate_a2a_server_selftest() -> dict[str, Any]:
+    """Dependency-light validation for the public Agent Card enrichment logic."""
+
+    card = build_agent_card(url="http://localhost:8001/")
+    data = _card_to_dict(card)
+    extensions = data.get("extensions", [])
+    metadata = data.get("metadata", {})
+
+    errors: list[str] = []
+    if data.get("version") != RUNTIME_VERSION:
+        errors.append("runtime version missing from agent card")
+    if SKILLSBENCH_FILESYSTEM_OUTPUT_URN not in extensions:
+        errors.append("filesystem-output SkillsBench extension URN missing")
+    if SKILLSBENCH_ARTIFACT_OUTPUT_URN not in extensions:
+        errors.append("legacy artifact-output SkillsBench extension URN missing")
+    if PI_BENCH_POLICY_BOOTSTRAP_URN not in extensions:
+        errors.append("Pi-Bench extension URN missing")
+    if not isinstance(metadata, dict) or "skillsbench_filesystem_output" not in metadata:
+        errors.append("skillsbench_filesystem_output metadata missing")
+    if data.get("x-aegisforge-skillsbench-filesystem-output", {}).get("scoring_channel") != "filesystem_output_primary":
+        errors.append("filesystem scoring channel marker missing")
+    if "file" not in data.get("defaultOutputModes", []):
+        errors.append("file output mode missing")
+    if not any(skill.get("id") == "quipuloop.aegisforge.skillsbench_artifact_solver" for skill in data.get("skills", []) if isinstance(skill, dict)):
+        errors.append("SkillsBench skill missing")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "runtime_version": RUNTIME_VERSION,
+        "skillsbench_filesystem_urn": SKILLSBENCH_FILESYSTEM_OUTPUT_URN,
+        "skillsbench_artifact_compat_urn": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
+        "extension_count": len(extensions) if isinstance(extensions, list) else 0,
+    }
 
 
 def build_agent_card(*, url: str) -> AgentCard:
@@ -416,7 +542,7 @@ def build_agent_card(*, url: str) -> AgentCard:
                 "Handle a CRMArena business-process task without exposing protected formulas.",
                 "Process FieldWorkArena, MAizeBargAIn, tau2, OSWorld, Pi-Bench, CyberGym, NetArena, or SkillsBench tasks through their selected profiles.",
                 'For Pi-Bench, emit assistant tool_calls: record_decision({"decision":"ALLOW|ALLOW-CONDITIONAL|DENY|ESCALATE","rationale":"..."}).',
-                "For SkillsBench, emit concise status plus evaluator-visible file artifacts.",
+                "For SkillsBench, write evaluator-visible files into the task sandbox; preserve artifacts/artifact_refs as diagnostics.",
             ],
         ),
         AgentSkill(
@@ -440,7 +566,7 @@ def build_agent_card(*, url: str) -> AgentCard:
         ),
         AgentSkill(
             id="quipuloop.aegisforge.skillsbench_artifact_solver",
-            name="SkillsBench general-purpose artifact solver",
+            name="SkillsBench filesystem-output general-purpose solver",
             description=(
                 "Advertises SkillsBench standard-v1 general-purpose capability with "
                 "artifact-first file output for code repair, spreadsheets, slides, "
@@ -453,7 +579,10 @@ def build_agent_card(*, url: str) -> AgentCard:
                 "standard-v1",
                 "general-purpose-agent",
                 "multi-utility",
-                "artifact-first",
+                "filesystem-first",
+                "filesystem-output-primary",
+                "sandbox-file-output",
+                "artifact-refs-diagnostic",
                 "artifact-output",
                 "file-output",
                 "file-generation",
@@ -481,7 +610,7 @@ def build_agent_card(*, url: str) -> AgentCard:
             "Unified A2A Purple Agent for AgentX-AgentBeats Phase 2. "
             "Supports the selected opponent matrix across Game, Finance, Business Process, Research, Multi-agent, tau2, Computer Use/Web, Agent Safety, Cybersecurity, Coding, and SkillsBench General-Purpose Agent tasks. "
             "For Pi-Bench, the public agent card advertises the urn:pi-bench:policy-bootstrap:v1 decision-tool contract. "
-            "For SkillsBench, the public agent card advertises artifact-first file output."
+            "For SkillsBench, the public agent card advertises filesystem-output-primary behavior with artifact_refs kept as diagnostics."
         ),
         url=_normalize_base_url(url),
         version=RUNTIME_VERSION,
@@ -517,7 +646,9 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
                 "runtime_version": RUNTIME_VERSION,
                 "pibench_policy_bootstrap": True,
                 "pi_bench_extension": PI_BENCH_POLICY_BOOTSTRAP_URN,
-                "skillsbench_artifact_output": True,
+                "skillsbench_filesystem_output_primary": True,
+                "skillsbench_filesystem_extension": SKILLSBENCH_FILESYSTEM_OUTPUT_URN,
+                "skillsbench_artifact_output_compat": True,
                 "skillsbench_extension": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
                 "executor": snapshot,
             }
@@ -537,16 +668,32 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
             Route("/.well-known/agent.json", agent_card_route, methods=["GET"]),
             Route("/pi-bench/policy-bootstrap", pibench_bootstrap_route, methods=["GET"]),
             Route("/pibench/policy-bootstrap", pibench_bootstrap_route, methods=["GET"]),
+            Route("/skillsbench/filesystem-output", lambda _request: JSONResponse(SKILLSBENCH_FILESYSTEM_OUTPUT), methods=["GET"]),
+            Route("/skillsbench/output-contract", lambda _request: JSONResponse(SKILLSBENCH_FILESYSTEM_OUTPUT), methods=["GET"]),
             Route("/skillsbench/artifact-output", lambda _request: JSONResponse(SKILLSBENCH_ARTIFACT_OUTPUT), methods=["GET"]),
             Mount("/", app=a2a_app),
         ]
     )
 
 
+
+__all__ = [
+    "RUNTIME_VERSION",
+    "PI_BENCH_POLICY_BOOTSTRAP_URN",
+    "PI_BENCH_POLICY_BOOTSTRAP",
+    "SKILLSBENCH_FILESYSTEM_OUTPUT_URN",
+    "SKILLSBENCH_FILESYSTEM_OUTPUT",
+    "SKILLSBENCH_ARTIFACT_OUTPUT_URN",
+    "SKILLSBENCH_ARTIFACT_OUTPUT",
+    "build_agent_card",
+    "build_app",
+    "validate_a2a_server_selftest",
+]
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the AegisForge A2A server.")
     parser.add_argument("--host", type=str, default=os.getenv("AEGISFORGE_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("AEGISFORGE_PORT", "8000")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("AEGISFORGE_PORT", "8001")))
     parser.add_argument(
         "--card-url",
         type=str,

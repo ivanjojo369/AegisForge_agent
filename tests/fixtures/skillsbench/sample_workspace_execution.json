@@ -1,0 +1,43 @@
+{
+  "version": "skillsbench_task_workspace_executor_fixture",
+  "ok": true,
+  "status": "completed",
+  "task_id": "dialogue-parser",
+  "family": "json_output",
+  "workspace_visible": true,
+  "wrote_any_file": true,
+  "primary_outputs": [
+    "/root/answer.json",
+    "/root/output/skillsbench_answer.md"
+  ],
+  "writes": [
+    {
+      "path": "/root/answer.json",
+      "ok": true,
+      "action": "write_json",
+      "kind": "json",
+      "bytes_written": 64,
+      "sha256": "a1b2c3",
+      "skipped": false,
+      "source": "fixture"
+    },
+    {
+      "path": "/root/output/skillsbench_answer.md",
+      "ok": true,
+      "action": "write_markdown",
+      "kind": "markdown",
+      "bytes_written": 128,
+      "sha256": "d4e5f6",
+      "skipped": false,
+      "source": "fixture"
+    }
+  ],
+  "diagnostics": {
+    "primary_outputs": [
+      "/root/answer.json",
+      "/root/output/skillsbench_answer.md"
+    ]
+  },
+  "warnings": [],
+  "errors": []
+}

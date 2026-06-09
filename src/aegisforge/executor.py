@@ -9,10 +9,13 @@ Pi-Bench-specific revision:
 - extracts Pi-Bench indicators from message.metadata and nested A2A DataPart payloads
 - injects Pi-Bench policy-bootstrap metadata into the incoming A2A message when
   the request/card/payload indicates the pibench/agent-safety track
+- routes SkillsBench through a filesystem-output-primary path before terminal
+  completion, while keeping A2A artifacts/artifact_refs as diagnostics
 - does not touch API keys, secrets, authentication, or external network settings
 """
 
 from collections import OrderedDict
+from pathlib import Path
 import base64
 import hashlib
 import io
@@ -126,6 +129,12 @@ TRACK_ALIASES = {
     "multi_utility": "skillsbench",
     "artifact-first": "skillsbench",
     "artifact_first": "skillsbench",
+    "filesystem-first": "skillsbench",
+    "filesystem_first": "skillsbench",
+    "filesystem-output-primary": "skillsbench",
+    "filesystem_output_primary": "skillsbench",
+    "sandbox-file-output": "skillsbench",
+    "sandbox_file_output": "skillsbench",
 }
 
 PI_BENCH_POLICY_BOOTSTRAP_URN = "urn:pi-bench:policy-bootstrap:v1"
@@ -212,12 +221,13 @@ CYBERGYM_MAX_TAR_MEMBERS = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TAR_MEMBERS", 
 CYBERGYM_MAX_TEXT_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_TEXT_BYTES", "24000"))
 CYBERGYM_MAX_POC_BYTES = int(os.getenv("AEGISFORGE_CYBERGYM_MAX_POC_BYTES", "16384"))
 
+SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION = "skillsbench_executor_filesystem_output_primary_v0_8_2026_06_09"
 SKILLSBENCH_LEGACY_BRIDGE_VERSION = "skillsbench_artifact_bridge_v0_4_extreme_preflight_multichannel_artifactrefs_probe"
 SKILLSBENCH_ROUTE_PROBE_LEGACY_VERSION = "skillsbench_route_probe_direct_adapter_v0_5_2026_06_02"
 SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION = "skillsbench_final_response_contract_probe_v0_6_2026_06_02"
-SKILLSBENCH_CONTRACT_VERSION = "skillsbench_compact_terminal_response_contract_v0_7_2026_06_02"
-SKILLSBENCH_ROUTE_PROBE_VERSION = "skillsbench_compact_terminal_response_contract_v0_7_2026_06_02"
-SKILLSBENCH_FINAL_RESPONSE_SCHEMA = "aegisforge.skillsbench.compact_terminal_response_contract.v0_7"
+SKILLSBENCH_CONTRACT_VERSION = "skillsbench_filesystem_output_primary_contract_v0_8_2026_06_09"
+SKILLSBENCH_ROUTE_PROBE_VERSION = "skillsbench_filesystem_output_primary_contract_v0_8_2026_06_09"
+SKILLSBENCH_FINAL_RESPONSE_SCHEMA = "aegisforge.skillsbench.filesystem_output_primary_contract.v0_8"
 
 SKILLSBENCH_MAX_ARTIFACTS = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_ARTIFACTS", "4"))
 SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES = int(os.getenv("AEGISFORGE_SKILLSBENCH_MAX_TEXT_ARTIFACT_BYTES", "200000"))
@@ -228,6 +238,7 @@ SKILLSBENCH_SHADOW_TEXT_ARTIFACTS = os.getenv("AEGISFORGE_SKILLSBENCH_SHADOW_TEX
 SKILLSBENCH_RUNTIME_FILE_MIRROR = os.getenv("AEGISFORGE_SKILLSBENCH_RUNTIME_FILE_MIRROR", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_GATEWAY_PROBE_ARTIFACT = os.getenv("AEGISFORGE_SKILLSBENCH_GATEWAY_PROBE_ARTIFACT", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_DIRECT_ADAPTER_PROBE = os.getenv("AEGISFORGE_SKILLSBENCH_DIRECT_ADAPTER_PROBE", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILLSBENCH_WORKSPACE_EXECUTOR = os.getenv("AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_ROUTE_PROBE_STDOUT = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_STDOUT", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_ROUTE_PROBE_STATUS = os.getenv("AEGISFORGE_SKILLSBENCH_ROUTE_PROBE_STATUS", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILLSBENCH_FINAL_RESPONSE_CONTRACT_PROBE = os.getenv("AEGISFORGE_SKILLSBENCH_FINAL_RESPONSE_CONTRACT_PROBE", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -256,6 +267,13 @@ SKILLSBENCH_METADATA_MARKERS = (
     "artifact-first",
     "artifact_first",
     "artifact_refs",
+    "filesystem-first",
+    "filesystem_first",
+    "filesystem-output-primary",
+    "filesystem_output_primary",
+    "sandbox-file-output",
+    "sandbox_file_output",
+    "task_workspace_executor",
 )
 
 SKILLSBENCH_TASK_MARKERS = (
@@ -267,6 +285,7 @@ SKILLSBENCH_TASK_MARKERS = (
     "court-form-filling",
     "paper-anonymizer",
     "pptx-reference-formatting",
+    "exceltable-in-ppt",
     "xlsx-recover-data",
     "pdf-excel-diff",
     "sales-pivot-analysis",
@@ -300,16 +319,20 @@ SKILLSBENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
     "assessment_mode": "defender",
     "skillsbench_artifact_bridge": {
         "version": SKILLSBENCH_CONTRACT_VERSION,
+        "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
         "legacy_bridge_version": SKILLSBENCH_LEGACY_BRIDGE_VERSION,
         "route_probe_legacy_version": SKILLSBENCH_ROUTE_PROBE_LEGACY_VERSION,
         "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
         "final_response_legacy_version": SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION,
         "final_response_schema": SKILLSBENCH_FINAL_RESPONSE_SCHEMA,
         "terminal_response_mode": "compact_TaskState.completed_status_first",
+        "workspace_executor": True,
         "direct_adapter_probe": True,
         "final_response_contract_probe": True,
-        "output_channel": "a2a.artifacts.FilePart.FileWithBytes",
-        "artifact_refs_must_not_be_empty_for_file_tasks": True,
+        "output_channel": "filesystem_output_primary",
+        "a2a_artifacts": "diagnostic_and_compatibility_signal",
+        "artifact_refs_must_not_be_empty_for_diagnostics": True,
+        "task_sandbox_paths": ["/root/answer.json", "/root/output", "/app/workspace", "/home/github/build/failed"],
         "cybergym_non_regression": "never use this bridge for CyberGym; preserve the single PoC/poc artifact contract",
     },
 }
@@ -444,6 +467,12 @@ class Executor(AgentExecutor):
         self._skillsbench_agent_run_completed = 0
         self._skillsbench_agent_last_result_seen = 0
         self._skillsbench_last_direct_adapter_result: dict[str, Any] = {}
+        self._skillsbench_workspace_executor_invocations = 0
+        self._skillsbench_workspace_executor_successes = 0
+        self._skillsbench_workspace_executor_failures = 0
+        self._skillsbench_workspace_files_written = 0
+        self._skillsbench_workspace_artifacts_submitted = 0
+        self._skillsbench_last_workspace_execution: dict[str, Any] = {}
         self._skillsbench_final_contract_responses = 0
         self._skillsbench_final_contract_completions = 0
         self._skillsbench_final_contract_failures = 0
@@ -548,7 +577,24 @@ class Executor(AgentExecutor):
                     forced=forced_skillsbench,
                     metadata_track=str(metadata.get("track") or metadata.get("track_hint") or ""),
                     text_chars=len(str(text or "")),
+                    scoring_channel="filesystem_output_primary",
+                    artifact_refs_role="diagnostic",
                 )
+
+                if SKILLSBENCH_WORKSPACE_EXECUTOR:
+                    workspace_count = await self._submit_skillsbench_workspace_execution(
+                        message,
+                        metadata=metadata,
+                        updater=updater,
+                        context_id=context_id,
+                        task_id=task.id,
+                        text=text,
+                        phase="filesystem_preflight",
+                    )
+                    workspace_count = int(workspace_count or 0)
+                    self._skillsbench_workspace_artifacts_submitted += workspace_count
+                    self._skillsbench_artifacts_submitted += workspace_count
+                    total_submitted += workspace_count
 
                 if SKILLSBENCH_DIRECT_ADAPTER_PROBE:
                     direct_adapter_count = await self._submit_skillsbench_direct_adapter_artifacts(
@@ -722,6 +768,14 @@ class Executor(AgentExecutor):
             "skillsbench_route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
             "skillsbench_route_probe_events": list(self._skillsbench_route_probe_events)[-24:],
             "skillsbench_direct_adapter_probe_enabled": SKILLSBENCH_DIRECT_ADAPTER_PROBE,
+            "skillsbench_workspace_executor_enabled": SKILLSBENCH_WORKSPACE_EXECUTOR,
+            "skillsbench_filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+            "skillsbench_workspace_executor_invocations": self._skillsbench_workspace_executor_invocations,
+            "skillsbench_workspace_executor_successes": self._skillsbench_workspace_executor_successes,
+            "skillsbench_workspace_executor_failures": self._skillsbench_workspace_executor_failures,
+            "skillsbench_workspace_files_written": self._skillsbench_workspace_files_written,
+            "skillsbench_workspace_artifacts_submitted": self._skillsbench_workspace_artifacts_submitted,
+            "skillsbench_last_workspace_execution": self._skillsbench_last_workspace_execution,
             "skillsbench_direct_adapter_invocations": self._skillsbench_direct_adapter_invocations,
             "skillsbench_direct_adapter_successes": self._skillsbench_direct_adapter_successes,
             "skillsbench_direct_adapter_failures": self._skillsbench_direct_adapter_failures,
@@ -744,7 +798,7 @@ class Executor(AgentExecutor):
             "skillsbench_contract_version": SKILLSBENCH_CONTRACT_VERSION,
             "pibench_cache_suffix": PI_BENCH_CACHE_SUFFIX,
             "selected_opponent_tracks": list(SELECTED_OPPONENT_TRACKS),
-            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses v0.6 final-response contract probe + v0.5 direct adapter route probe + preflight/postrun FilePart/TextPart bridge so both route activation and worker artifact_refs parsing are diagnosable.",
+            "track_alias_note": "mcu-minecraft is normalized to mcu; pi-bench/agent-safety is normalized to pibench; CyberGym aliases stay on cybergym; v0.15 keeps the single PoC artifact contract. SkillsBench/standard-v1 is normalized to skillsbench and uses filesystem-output-primary v0.8 before terminal completion, while keeping direct adapter artifacts and compact final artifact_refs as diagnostic compatibility probes.",
             "cache_keys": list(self._agents.keys())[:8],
         }
 
@@ -805,6 +859,209 @@ class Executor(AgentExecutor):
         except Exception as exc:
             self._skillsbench_artifact_failures += 1
             self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
+
+
+    async def _submit_skillsbench_workspace_execution(
+        self,
+        message: Any,
+        *,
+        metadata: Mapping[str, Any],
+        updater: TaskUpdater,
+        context_id: str,
+        task_id: str,
+        text: str,
+        phase: str = "filesystem_preflight",
+    ) -> int:
+        """Run the real SkillsBench filesystem executor before terminal state.
+
+        This is the v0.8 bridge: write required files into visible task sandbox
+        locations first, then mirror a compact manifest through A2A artifacts as
+        diagnostics. A2A artifact_refs are not treated as the primary scoring
+        channel.
+        """
+
+        phase = self._skillsbench_slug(phase or "filesystem_preflight")
+        self._skillsbench_workspace_executor_invocations += 1
+
+        await self._skillsbench_route_probe_status(
+            updater,
+            event="workspace_executor_start",
+            context_id=context_id,
+            task_id=task_id,
+            phase=phase,
+            scoring_channel="filesystem_output_primary",
+        )
+
+        try:
+            from .adapters.skillsbench.output_contract import build_output_contract, summarize_contract  # type: ignore
+            from .adapters.skillsbench.task_environment import discover_task_environment  # type: ignore
+            from .adapters.skillsbench.task_workspace_executor import SkillsBenchTaskWorkspaceExecutor  # type: ignore
+
+            contract = build_output_contract(
+                metadata,
+                text,
+                task_id=str(metadata.get("task_id") or metadata.get("id") or task_id or ""),
+                category=str(metadata.get("category") or metadata.get("task_category") or ""),
+                difficulty=str(metadata.get("difficulty") or ""),
+            )
+            environment = discover_task_environment(
+                metadata,
+                text,
+                task_id=contract.task_id or str(metadata.get("task_id") or task_id or ""),
+                write_probe=False,
+            )
+            workspace_executor = SkillsBenchTaskWorkspaceExecutor(
+                allow_writes=True,
+                write_probe=False,
+            )
+            execution = workspace_executor.execute(
+                metadata,
+                text,
+                contract=contract,
+                environment=environment,
+            )
+            execution_dict = execution.as_dict() if hasattr(execution, "as_dict") else dict(execution)  # type: ignore[arg-type]
+            self._skillsbench_last_workspace_execution = self._skillsbench_small_json(execution_dict, max_chars=24000)
+
+            writes = list(getattr(execution, "writes", ()) or [])
+            ok_writes = [write for write in writes if bool(getattr(write, "ok", False))]
+            self._skillsbench_workspace_files_written += len(ok_writes)
+            self._skillsbench_runtime_files_written += len(ok_writes)
+
+            if ok_writes:
+                self._skillsbench_workspace_executor_successes += 1
+            else:
+                self._skillsbench_workspace_executor_failures += 1
+
+            diagnostics = {
+                "bridge": SKILLSBENCH_CONTRACT_VERSION,
+                "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+                "phase": phase,
+                "context_id": context_id,
+                "task_id": str(metadata.get("task_id") or metadata.get("id") or task_id or "skillsbench_task"),
+                "expected_family": getattr(contract, "family", ""),
+                "scoring_channel": "filesystem_output_primary",
+                "artifact_refs_role": "diagnostic_and_compatibility_signal",
+                "workspace_executor": {
+                    "enabled": True,
+                    "execution_version": str(getattr(execution, "version", "")),
+                    "status": str(getattr(execution, "status", "")),
+                    "ok": bool(getattr(execution, "ok", False)),
+                    "workspace_visible": bool(getattr(execution, "workspace_visible", False)),
+                    "wrote_any_file": bool(getattr(execution, "wrote_any_file", False)),
+                    "write_count": len(writes),
+                    "ok_writes": len(ok_writes),
+                    "contract_summary": summarize_contract(contract),
+                    "selected_solver_key": (getattr(execution, "diagnostics", {}) or {}).get("selected_solver_key", ""),
+                },
+            }
+            self._skillsbench_last_bridge_diagnostics = diagnostics
+
+            file_candidates: list[dict[str, Any]] = []
+            for write in ok_writes[:SKILLSBENCH_MAX_ARTIFACTS]:
+                path = str(getattr(write, "path", "") or "")
+                if not path:
+                    continue
+                candidate = {
+                    "path": path,
+                    "name": os.path.basename(path) or "skillsbench_workspace_output.bin",
+                    "mime_type": self._skillsbench_mime_for_name(path),
+                    "artifact_name": f"skillsbench_workspace_{self._skillsbench_slug(os.path.basename(path) or 'output')}",
+                    "kind": getattr(write, "kind", ""),
+                }
+                converted = self._skillsbench_candidate_to_file(candidate, metadata=metadata, text=text)
+                if converted is not None:
+                    file_candidates.append(converted)
+
+            manifest_payload = {
+                "schema": "aegisforge.skillsbench.workspace_execution_manifest.v0_8",
+                "bridge": SKILLSBENCH_CONTRACT_VERSION,
+                "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+                "phase": phase,
+                "context_id": context_id,
+                "task_id": task_id,
+                "scoring_channel": "filesystem_output_primary",
+                "artifact_refs_role": "diagnostic",
+                "contract": contract.as_context(),
+                "environment": environment.as_context(),
+                "execution": self._skillsbench_small_json(execution_dict, max_chars=18000),
+            }
+            file_candidates.append(
+                {
+                    "artifact_name": "skillsbench_workspace_execution_manifest",
+                    "name": f"skillsbench_{phase}_workspace_execution_manifest.json",
+                    "mime_type": "application/json",
+                    "bytes": (json.dumps(manifest_payload, indent=2, ensure_ascii=False, sort_keys=True, default=str) + "\n").encode("utf-8"),
+                    "family": "json",
+                }
+            )
+
+            files = self._skillsbench_diversify_files(
+                file_candidates,
+                metadata=metadata,
+                text=text,
+                phase=phase,
+                diagnostics=diagnostics,
+            )
+
+            refs = self._skillsbench_final_refs_from_files(files, phase=phase)
+            if refs:
+                self._skillsbench_last_final_contract_refs = refs
+
+            await self._skillsbench_status_probe(
+                updater,
+                files=files,
+                diagnostics=diagnostics,
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+            )
+
+            submitted = 0
+            for index, file_record in enumerate(files[:SKILLSBENCH_MAX_ARTIFACTS]):
+                result = await self._skillsbench_emit_artifact_record(
+                    updater,
+                    file_record,
+                    context_id=context_id,
+                    task_id=task_id,
+                    phase=phase,
+                    index=index,
+                    diagnostics=diagnostics,
+                )
+                submitted += int(result.get("submitted", 0) or 0)
+
+            await self._skillsbench_route_probe_status(
+                updater,
+                event="workspace_executor_complete",
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+                submitted=submitted,
+                workspace_visible=bool(getattr(execution, "workspace_visible", False)),
+                wrote_any_file=bool(getattr(execution, "wrote_any_file", False)),
+                ok_writes=len(ok_writes),
+                status=str(getattr(execution, "status", "")),
+            )
+            return submitted
+        except Exception as exc:
+            self._skillsbench_workspace_executor_failures += 1
+            self._skillsbench_artifact_failures += 1
+            self._skillsbench_last_artifact_failure = self._safe_error_message(exc)
+            self._skillsbench_last_workspace_execution = {
+                "ok": False,
+                "error": self._safe_error_message(exc),
+                "version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+            }
+            await self._skillsbench_route_probe_status(
+                updater,
+                event="workspace_executor_failed",
+                context_id=context_id,
+                task_id=task_id,
+                phase=phase,
+                error=self._safe_error_message(exc),
+            )
+            return 0
+
 
     async def _submit_skillsbench_direct_adapter_artifacts(
         self,
@@ -1148,6 +1405,9 @@ class Executor(AgentExecutor):
             "category": category,
             "family": family,
             "context_id": context_id,
+            "scoring_channel": "filesystem_output_primary",
+            "artifact_refs_role": "diagnostic_and_compatibility_signal",
+            "workspace_execution": self._skillsbench_last_workspace_execution,
             "final_answer": final_answer,
             "answer": final_answer,
             "result": {
@@ -1163,13 +1423,14 @@ class Executor(AgentExecutor):
             "artifact_refs_candidate": refs,
             "aegisforge_diagnostics": {
                 "contract_version": SKILLSBENCH_CONTRACT_VERSION,
+                "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
                 "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
                 "legacy_route_probe_version": SKILLSBENCH_ROUTE_PROBE_LEGACY_VERSION,
                 "total_submitted_via_taskupdater": total_submitted,
                 "direct_adapter": self._skillsbench_last_direct_adapter_result,
                 "route_probe_events": list(self._skillsbench_route_probe_events)[-12:],
                 "agent_payload_summary": self._skillsbench_small_json(agent_payload, max_chars=6000),
-                "hypothesis": "If final artifact_refs remains empty after this payload, the SkillsBench worker is not parsing A2A artifacts nor final assistant JSON for artifact_refs.",
+                "hypothesis": "Filesystem outputs are primary. If official results remain zero while workspace_execution shows ok writes, investigate evaluator sandbox visibility/result-shape rather than artifact_refs alone.",
             },
         }
         return payload
@@ -1229,6 +1490,9 @@ class Executor(AgentExecutor):
             "task_id": payload.get("task_id") or "skillsbench_task",
             "category": payload.get("category") or "general_purpose",
             "family": payload.get("family") or "general",
+            "scoring_channel": payload.get("scoring_channel") or "filesystem_output_primary",
+            "artifact_refs_role": payload.get("artifact_refs_role") or "diagnostic_and_compatibility_signal",
+            "workspace_execution": payload.get("workspace_execution") or {},
             "final_answer": payload.get("final_answer") or payload.get("answer") or "AegisForge completed the SkillsBench task.",
             "answer": payload.get("answer") or payload.get("final_answer") or "AegisForge completed the SkillsBench task.",
             "artifact_refs": refs,
@@ -1243,10 +1507,11 @@ class Executor(AgentExecutor):
             "aegisforge_diagnostics": {
                 "contract_version": SKILLSBENCH_CONTRACT_VERSION,
                 "legacy_contract_version": SKILLSBENCH_FINAL_RESPONSE_LEGACY_VERSION,
+                "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
                 "route_probe_version": SKILLSBENCH_ROUTE_PROBE_VERSION,
                 "terminal_mode": "TaskState.completed status first, compact JSON",
                 "ref_count": len(refs),
-                "hypothesis": "If artifact_refs remains empty after v0.7, SkillsBench is not parsing A2A artifacts nor terminal assistant JSON.",
+                "hypothesis": "Filesystem outputs are primary; artifact_refs are diagnostic parser probes in v0.8.",
             },
         }
 
@@ -1432,6 +1697,9 @@ class Executor(AgentExecutor):
             "general-purpose",
             "artifact-first",
             "skillsbench-artifact-output",
+            "filesystem-first",
+            "filesystem-output-primary",
+            "sandbox-file-output",
             "a2a-filepart-filewithbytes",
         )
         if any(marker in blob for marker in explicit):
@@ -1468,6 +1736,8 @@ class Executor(AgentExecutor):
             "AGENT_OUTPUT_PROTOCOL",
             "AEGISFORGE_ARTIFACT_OUTPUT_MODE",
             "AEGISFORGE_ARTIFACT_TRANSPORT",
+            "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR",
+            "AEGISFORGE_FILESYSTEM_OUTPUT_PRIMARY",
         )
         return {key: str(os.getenv(key, "") or "") for key in keys}
 
@@ -1547,7 +1817,9 @@ class Executor(AgentExecutor):
             "aegisforge_executor",
             {
                 "skillsbench_artifact_bridge": SKILLSBENCH_CONTRACT_VERSION,
-                "output_channel": "a2a.artifacts.FilePart.FileWithBytes",
+                "filesystem_executor_version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+                "output_channel": "filesystem_output_primary",
+                "a2a_artifacts": "diagnostic_and_compatibility_signal",
                 "non_regression": [
                     "CyberGym remains routed before SkillsBench and keeps exactly one PoC/poc artifact.",
                     "Pi-Bench record_decision bootstrap remains isolated.",
@@ -1721,7 +1993,7 @@ class Executor(AgentExecutor):
             "phase": phase,
             "file_count": len(files),
             "file_names": [str(item.get("name", "")) for item in files[:SKILLSBENCH_MAX_ARTIFACTS]],
-            "expected_gateway_effect": "task artifact_refs should become non-empty if TaskUpdater.add_artifact is the correct SkillsBench transport",
+            "expected_gateway_effect": "filesystem outputs should be scored when task sandbox is visible; artifact_refs are diagnostic compatibility probes",
             "diagnostic_summary": {
                 "env_forced": diagnostics.get("env_forced"),
                 "expected_family": diagnostics.get("expected_family"),
@@ -1733,7 +2005,7 @@ class Executor(AgentExecutor):
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message(
-                    "SkillsBench artifact bridge probe "
+                    "SkillsBench filesystem-output bridge probe "
                     + json.dumps(preview, ensure_ascii=False, sort_keys=True, default=str),
                     context_id=context_id,
                     task_id=task_id,
@@ -2127,11 +2399,11 @@ class Executor(AgentExecutor):
             "direct_adapter_probe": self._skillsbench_last_direct_adapter_result,
             "route_probe_events": list(self._skillsbench_route_probe_events)[-12:],
             "failure_reasoning": [
-                "Prior Quick Submit showed the exact v0_6 agent/adapter image, but artifact_refs remained empty.",
-                "This v0_5 executor calls the formal SkillsBench adapter directly before agent.run to prove whether the route is reached.",
-                "It still emits preflight artifacts before agent.run to test terminal-timing failure.",
-                "It emits post-run artifacts from agent.py state to test candidate-conversion failure.",
-                "It emits TextPart shadows and runtime file mirrors to test gateway FilePart conversion failure.",
+                "Prior Quick Submit showed artifact_refs remained empty even when A2A artifacts were emitted.",
+                "v0_8 treats filesystem writes as the primary SkillsBench scoring channel.",
+                "The workspace executor runs before agent.run and before terminal completion to write real sandbox files.",
+                "Direct adapter artifacts, TextPart shadows, and compact final artifact_refs remain diagnostic compatibility probes.",
+                "If official results remain zero after workspace writes, the failure is likely evaluator visibility/scoring rather than A2A artifact emission alone.",
             ],
         }
         return diagnostics
@@ -2402,10 +2674,11 @@ class Executor(AgentExecutor):
             "task_id": task_id,
             "category": category,
             "expected_family": family,
-            "status": "artifact_bridge_fallback",
-            "artifact_refs_strategy": {
-                "preflight": "emit before agent.run and before terminal completion",
-                "postrun": "emit after agent.py creates task-specific artifacts",
+            "status": "filesystem_output_primary_fallback",
+            "output_strategy": {
+                "workspace_executor": "write real files to the visible SkillsBench task sandbox before terminal completion",
+                "preflight": "emit diagnostic A2A artifacts before agent.run",
+                "postrun": "emit diagnostic A2A artifacts after agent.py creates task-specific surfaces",
                 "shadow_text": "emit a TextPart shadow to test non-FilePart gateway persistence",
                 "runtime_mirror": "write files to likely mounted output directories",
             },
@@ -2462,6 +2735,90 @@ class Executor(AgentExecutor):
                 }
             )
         return files[:SKILLSBENCH_MAX_ARTIFACTS]
+
+
+    @staticmethod
+    def _skillsbench_xml_escape(value: Any) -> str:
+        text = str(value or "")
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+        )
+
+    @staticmethod
+    def _skillsbench_zip_from_entries(entries: Mapping[str, str | bytes]) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for name in sorted(entries):
+                payload = entries[name]
+                if isinstance(payload, str):
+                    payload = payload.encode("utf-8")
+                bundle.writestr(name, payload)
+        return buffer.getvalue()
+
+    def _skillsbench_minimal_pptx_bytes(self, *, task_id: str, family: str) -> bytes:
+        title = self._skillsbench_xml_escape("AegisForge SkillsBench Output")
+        subtitle = self._skillsbench_xml_escape(f"task_id={task_id or 'unknown'} family={family}")
+        return self._skillsbench_zip_from_entries({
+            "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/></Types>',
+            "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>',
+            "ppt/presentation.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>',
+            "ppt/_rels/presentation.xml.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>',
+            "ppt/slides/slide1.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>' + title + '</a:t></a:r></a:p><a:p><a:r><a:t>' + subtitle + '</a:t></a:r></a:p></p:txBody></p></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:sld>',
+        })
+
+    def _skillsbench_minimal_docx_bytes(self, *, task_id: str, family: str) -> bytes:
+        body = self._skillsbench_xml_escape(f"AegisForge SkillsBench output. task_id={task_id or 'unknown'} family={family}.")
+        return self._skillsbench_zip_from_entries({
+            "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+            "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+            "word/document.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>' + body + '</w:t></w:r></w:p><w:sectPr/></w:body></w:document>',
+        })
+
+    def _skillsbench_minimal_xlsx_bytes(self, *, task_id: str, family: str) -> bytes:
+        rows = [("field", "value"), ("task_id", task_id or "unknown"), ("family", family), ("writer", SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION)]
+        sheet_rows: list[str] = []
+        for r_index, row in enumerate(rows, start=1):
+            cells = []
+            for c_index, value in enumerate(row, start=1):
+                col = chr(ord("A") + c_index - 1)
+                cells.append(f'<c r="{col}{r_index}" t="inlineStr"><is><t>{self._skillsbench_xml_escape(value)}</t></is></c>')
+            sheet_rows.append(f'<row r="{r_index}">' + "".join(cells) + "</row>")
+        return self._skillsbench_zip_from_entries({
+            "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+            "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+            "xl/workbook.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="AegisForge" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/worksheets/sheet1.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + "\n".join(sheet_rows) + '</sheetData></worksheet>',
+        })
+
+    def _skillsbench_minimal_pdf_bytes(self, *, task_id: str, family: str) -> bytes:
+        body_text = f"AegisForge SkillsBench output task_id={task_id or 'unknown'} family={family}"
+        safe = body_text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")[:180]
+        objects = [
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+            b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        ]
+        stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET\n".encode("latin-1", errors="replace")
+        objects.append(b"5 0 obj\n<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"endstream\nendobj\n")
+        out = bytearray(b"%PDF-1.4\n%\\xe2\\xe3\\xcf\\xd3\n")
+        offsets = [0]
+        for obj in objects:
+            offsets.append(len(out))
+            out.extend(obj)
+        xref_start = len(out)
+        out.extend(f"xref\n0 {len(objects)+1}\n".encode("ascii"))
+        out.extend(b"0000000000 65535 f \n")
+        for offset in offsets[1:]:
+            out.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+        out.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n".encode("ascii"))
+        return bytes(out)
+
 
     def _skillsbench_family_file(self, family: str, *, task_id: str, source_text: str) -> dict[str, Any] | None:
         clean_task = self._skillsbench_slug(task_id or "task")
@@ -2539,6 +2896,39 @@ class Executor(AgentExecutor):
                 "bytes": (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
             }
 
+
+        if family == "xlsx":
+            return {
+                "artifact_name": "skillsbench_spreadsheet",
+                "name": f"{clean_task}.xlsx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "bytes": self._skillsbench_minimal_xlsx_bytes(task_id=clean_task, family=family),
+            }
+
+        if family == "pptx":
+            return {
+                "artifact_name": "skillsbench_presentation",
+                "name": f"{clean_task}.pptx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "bytes": self._skillsbench_minimal_pptx_bytes(task_id=clean_task, family=family),
+            }
+
+        if family == "docx":
+            return {
+                "artifact_name": "skillsbench_document",
+                "name": f"{clean_task}.docx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "bytes": self._skillsbench_minimal_docx_bytes(task_id=clean_task, family=family),
+            }
+
+        if family == "pdf":
+            return {
+                "artifact_name": "skillsbench_pdf",
+                "name": f"{clean_task}.pdf",
+                "mime_type": "application/pdf",
+                "bytes": self._skillsbench_minimal_pdf_bytes(task_id=clean_task, family=family),
+            }
+
         return None
 
     def _skillsbench_expected_family(self, metadata: Mapping[str, Any], text: str = "") -> str:
@@ -2568,18 +2958,18 @@ class Executor(AgentExecutor):
                     blob_parts.append(str(value))
         blob = " ".join(blob_parts).lower().replace("_", "-")
 
-        if any(marker in blob for marker in ("fix-build", "patch", "diff", "dependency-audit", "software-dependency-audit")):
+        if any(marker in blob for marker in ("fix-build", "patch-0.diff", "patch_0.diff", "dependency-audit", "software-dependency-audit")):
             return "patch"
+        if any(marker in blob for marker in ("exceltable-in-ppt", "pptx-reference-formatting", "pptx", "powerpoint", "presentation", "slides", "slide deck")):
+            return "pptx"
+        if any(marker in blob for marker in ("offer-letter", "docx", "word document")):
+            return "docx"
+        if any(marker in blob for marker in ("court-form", "form-filling", "pdf", "anonymizer", "redact", "paper-anonymizer")):
+            return "pdf"
         if any(marker in blob for marker in ("xlsx", "excel", "spreadsheet", "pivot")):
             return "xlsx"
         if any(marker in blob for marker in ("csv", "table")):
             return "csv"
-        if any(marker in blob for marker in ("pptx", "presentation", "slides", "slide deck")):
-            return "pptx"
-        if any(marker in blob for marker in ("docx", "offer-letter", "court-form", "form-filling")):
-            return "docx"
-        if any(marker in blob for marker in ("pdf", "anonymizer", "redact", "paper-anonymizer")):
-            return "pdf"
         if any(marker in blob for marker in ("lean4", "lean", "proof")):
             return "lean"
         if any(marker in blob for marker in ("threejs", " obj", ".obj", "geometry", "3d")):
@@ -2612,11 +3002,11 @@ class Executor(AgentExecutor):
     def _skillsbench_default_filename(self, family: str) -> str:
         return {
             "patch": "skillsbench_patch.patch",
-            "xlsx": "skillsbench_spreadsheet.csv",
+            "xlsx": "skillsbench_spreadsheet.xlsx",
             "csv": "skillsbench_table.csv",
-            "pptx": "skillsbench_presentation.md",
-            "docx": "skillsbench_document.md",
-            "pdf": "skillsbench_pdf.md",
+            "pptx": "skillsbench_presentation.pptx",
+            "docx": "skillsbench_document.docx",
+            "pdf": "skillsbench_pdf.pdf",
             "lean": "skillsbench_proof.lean",
             "obj": "skillsbench_geometry.obj",
             "audio": "skillsbench_audio.md",
@@ -2630,11 +3020,11 @@ class Executor(AgentExecutor):
     def _skillsbench_extension_for_family(family: str) -> str:
         return {
             "patch": ".patch",
-            "xlsx": ".csv",
+            "xlsx": ".xlsx",
             "csv": ".csv",
-            "pptx": ".md",
-            "docx": ".md",
-            "pdf": ".md",
+            "pptx": ".pptx",
+            "docx": ".docx",
+            "pdf": ".pdf",
             "lean": ".lean",
             "obj": ".obj",
             "audio": ".md",
@@ -4951,3 +5341,26 @@ class Executor(AgentExecutor):
         if value is None:
             return ""
         return str(value).strip().lower()
+
+
+def validate_executor_skillsbench_selftest() -> dict[str, Any]:
+    """Static validation for the SkillsBench executor bridge."""
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    required = [
+        "SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION",
+        "skillsbench_filesystem_output_primary_contract_v0_8_2026_06_09",
+        "_submit_skillsbench_workspace_execution",
+        "filesystem_output_primary",
+        "artifact_refs_role",
+        "diagnostic_and_compatibility_signal",
+        "SkillsBenchTaskWorkspaceExecutor",
+        "workspace_executor_complete",
+    ]
+    errors = [item for item in required if item not in source]
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "version": SKILLSBENCH_FILESYSTEM_EXECUTOR_VERSION,
+        "contract_version": SKILLSBENCH_CONTRACT_VERSION,
+    }

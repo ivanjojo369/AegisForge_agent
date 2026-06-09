@@ -1,0 +1,32 @@
+{
+  "status": "completed",
+  "participants": {
+    "green": "skillsbench-green",
+    "agent": "aegisforge-agent"
+  },
+  "results": [
+    {
+      "shard_index": 0,
+      "status": "completed",
+      "results": [
+        {
+          "task_id": "dialogue-parser",
+          "task_digest": "sha256:dialogue",
+          "category": "office-white-collar",
+          "difficulty": "easy",
+          "condition": "with_skills",
+          "agent_transport": "a2a",
+          "participant_role": "agent",
+          "score_eligible": true,
+          "passed": false,
+          "reward": 0.0,
+          "max_reward": 1.0,
+          "time_used": 48.603,
+          "artifact_refs": [],
+          "infra_failure_type": null,
+          "error_type": null
+        }
+      ]
+    }
+  ]
+}

@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping
 
 SolverCallable = Callable[..., Any]
 
-SOLVER_REGISTRY_VERSION = "skillsbench_solver_registry_v0_2_multisolver_dispatch_2026_06_03"
+SOLVER_REGISTRY_VERSION = "skillsbench_solver_registry_v0_3_pptx_dispatch_2026_06_09"
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +117,20 @@ except Exception:  # pragma: no cover
 
 
 try:
+    from .office_pptx_solver import (
+        OFFICE_PPTX_SOLVER_VERSION,
+        office_pptx_solver,
+        validate_office_pptx_solver_selftest,
+    )
+except Exception:  # pragma: no cover
+    OFFICE_PPTX_SOLVER_VERSION = "unavailable"
+    office_pptx_solver = None  # type: ignore
+
+    def validate_office_pptx_solver_selftest() -> dict[str, Any]:  # type: ignore
+        return {"ok": False, "errors": ["office_pptx_solver unavailable"]}
+
+
+try:
     from .pdf_form_solver import (
         PDF_FORM_SOLVER_VERSION,
         pdf_form_solver,
@@ -197,6 +211,15 @@ OFFICE_DOCX_FAMILIES: tuple[str, ...] = (
     "docx_output",
 )
 
+OFFICE_PPTX_FAMILIES: tuple[str, ...] = (
+    "office_pptx",
+    "presentation",
+    "pptx_output",
+    "slides",
+    "slide_deck",
+    "presentation_output",
+)
+
 PDF_FORM_FAMILIES: tuple[str, ...] = (
     "pdf_document",
     "pdf_form",
@@ -260,6 +283,7 @@ def default_solver_registry() -> dict[str, SolverCallable]:
     _register_many(registry, CODE_SOLUTION_FAMILIES, code_solution_solver)
     _register_many(registry, OFFICE_XLSX_FAMILIES, office_xlsx_solver)
     _register_many(registry, OFFICE_DOCX_FAMILIES, office_docx_solver)
+    _register_many(registry, OFFICE_PPTX_FAMILIES, office_pptx_solver)
     _register_many(registry, PDF_FORM_FAMILIES, pdf_form_solver)
     _register_many(registry, LEAN_FAMILIES, lean_solver)
     _register_many(registry, SECURITY_FAMILIES, security_config_solver)
@@ -278,6 +302,7 @@ def solver_registry_versions() -> dict[str, str]:
         "code_solution_solver": CODE_SOLUTION_SOLVER_VERSION,
         "office_xlsx_solver": OFFICE_XLSX_SOLVER_VERSION,
         "office_docx_solver": OFFICE_DOCX_SOLVER_VERSION,
+        "office_pptx_solver": OFFICE_PPTX_SOLVER_VERSION,
         "pdf_form_solver": PDF_FORM_SOLVER_VERSION,
         "lean_solver": LEAN_SOLVER_VERSION,
         "security_config_solver": SECURITY_CONFIG_SOLVER_VERSION,
@@ -299,6 +324,8 @@ def validate_solver_registry_selftest() -> dict[str, Any]:
         "code_solution",
         "office_xlsx",
         "office_docx",
+        "office_pptx",
+        "presentation",
         "pdf_document",
         "lean_solution",
         "security_config",
@@ -335,6 +362,7 @@ def validate_all_solver_selftests() -> dict[str, Any]:
         "code_solution_solver": validate_code_solution_solver_selftest,
         "office_xlsx_solver": validate_office_xlsx_solver_selftest,
         "office_docx_solver": validate_office_docx_solver_selftest,
+        "office_pptx_solver": validate_office_pptx_solver_selftest,
         "pdf_form_solver": validate_pdf_form_solver_selftest,
         "lean_solver": validate_lean_solver_selftest,
         "security_config_solver": validate_security_config_solver_selftest,
@@ -368,6 +396,7 @@ __all__ = [
     "CODE_SOLUTION_SOLVER_VERSION",
     "OFFICE_XLSX_SOLVER_VERSION",
     "OFFICE_DOCX_SOLVER_VERSION",
+    "OFFICE_PPTX_SOLVER_VERSION",
     "PDF_FORM_SOLVER_VERSION",
     "LEAN_SOLVER_VERSION",
     "SECURITY_CONFIG_SOLVER_VERSION",
@@ -377,6 +406,7 @@ __all__ = [
     "code_solution_solver",
     "office_xlsx_solver",
     "office_docx_solver",
+    "office_pptx_solver",
     "pdf_form_solver",
     "lean_solver",
     "security_config_solver",
@@ -390,6 +420,7 @@ __all__ = [
     "validate_code_solution_solver_selftest",
     "validate_office_xlsx_solver_selftest",
     "validate_office_docx_solver_selftest",
+    "validate_office_pptx_solver_selftest",
     "validate_pdf_form_solver_selftest",
     "validate_lean_solver_selftest",
     "validate_security_config_solver_selftest",

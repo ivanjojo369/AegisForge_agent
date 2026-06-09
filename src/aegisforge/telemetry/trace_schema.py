@@ -31,6 +31,48 @@ from typing import Any, Mapping
 
 JsonDict = dict[str, Any]
 
+TRACE_SCHEMA_VERSION = "trace_schema_v0_7_skillsbench_filesystem_output_primary_2026_06_09"
+
+SKILLSBENCH_TRACE_TAGS = (
+    "skillsbench",
+    "benchflow",
+    "standard-v1",
+    "with_skills",
+    "filesystem-output-primary",
+    "artifact-refs-diagnostic",
+)
+
+SKILLSBENCH_SAFE_OUTPUT_ROOTS = (
+    "/root",
+    "/root/output",
+    "/app/workspace",
+    "/app/output",
+    "/output",
+    "/workspace",
+    "/home/github/build/failed",
+)
+
+SKILLSBENCH_FAMILY_ALIASES = {
+    "presentation": "office_pptx",
+    "pptx": "office_pptx",
+    "ppt": "office_pptx",
+    "slides": "office_pptx",
+    "slide_deck": "office_pptx",
+    "spreadsheet": "office_xlsx",
+    "xlsx": "office_xlsx",
+    "excel": "office_xlsx",
+    "document": "office_docx",
+    "docx": "office_docx",
+    "pdf": "pdf_document",
+    "pdf_output": "pdf_document",
+    "formal_reasoning": "lean_solution",
+    "lean": "lean_solution",
+    "software_patch": "code_solution",
+    "bugswarm_build_repair": "code_solution",
+    "security_audit": "security_config",
+    "data_json": "json_output",
+}
+
 
 def _now() -> float:
     """Unix timestamp in seconds, used consistently across telemetry."""
@@ -144,14 +186,70 @@ def _dedupe(items: list[str]) -> list[str]:
     return output
 
 
-def _nested(meta: Mapping[str, Any], *keys: str) -> JsonDict:
-    """Return the first mapping found in metadata under any of the provided keys."""
+def _normalize_track(value: Any) -> str:
+    raw = _text(value, default="openenv").lower()
+    raw_dash = raw.replace("_", "-").replace(" ", "-")
+    aliases = {
+        "skillsbench": "skillsbench",
+        "skillsbench-agentbeats": "skillsbench",
+        "skillsbench-leaderboard": "skillsbench",
+        "benchflow": "skillsbench",
+        "benchflow-ai": "skillsbench",
+        "standard-v1": "skillsbench",
+        "with-skills": "skillsbench",
+        "general-purpose-agent": "skillsbench",
+        "filesystem-first": "skillsbench",
+        "filesystem-output-primary": "skillsbench",
+        "artifact-first": "skillsbench",
+        "mcu-minecraft": "mcu",
+        "minecraft": "mcu",
+        "pi-bench": "pibench",
+        "agent-safety": "pibench",
+        "net-arena": "netarena",
+        "cybersecurity": "cybergym",
+    }
+    return aliases.get(raw_dash, raw_dash)
 
-    for key in keys:
-        nested = _to_dict(meta.get(key))
-        if nested:
-            return nested
-    return {}
+
+def _normalize_family(value: Any) -> str:
+    raw = _text(value).lower().replace("-", "_").replace(" ", "_")
+    return SKILLSBENCH_FAMILY_ALIASES.get(raw, raw)
+
+
+def _looks_like_skillsbench(meta: Mapping[str, Any]) -> bool:
+    blob_parts = []
+    for key in (
+        "track",
+        "track_hint",
+        "benchmark",
+        "task_set",
+        "condition",
+        "adapter",
+        "scenario_family",
+        "output_channel",
+        "scoring_channel",
+        "artifact_refs_role",
+        "task_id",
+        "canonical_task_id",
+        "category",
+    ):
+        value = meta.get(key)
+        if value is not None:
+            blob_parts.append(str(value))
+    blob_parts.append(str(_to_dict(meta.get("skillsbench_artifact_bridge"))))
+    blob_parts.append(str(_to_dict(meta.get("workspace_execution"))))
+    blob = " ".join(blob_parts).lower().replace("_", "-")
+    return any(tag.replace("_", "-") in blob for tag in SKILLSBENCH_TRACE_TAGS)
+
+
+def _skillsbench_scoring_channel(meta: Mapping[str, Any]) -> str:
+    return _first_text(
+        meta.get("scoring_channel"),
+        meta.get("output_channel"),
+        _to_dict(meta.get("skillsbench_artifact_bridge")).get("output_channel"),
+        _to_dict(meta.get("workspace_execution")).get("scoring_channel"),
+        default="filesystem_output_primary" if _looks_like_skillsbench(meta) else "",
+    )
 
 
 @dataclass(slots=True)
@@ -258,6 +356,63 @@ class TraceArtifact:
     size_bytes: int | None = None
     sha256: str | None = None
 
+    # v0.7 fields for evaluator/scoring-channel forensics.
+    output_channel: str = ""
+    artifact_refs_role: str = ""
+    filesystem_primary: bool = False
+    scoring_channel: str = ""
+
+    @classmethod
+    def from_record(
+        cls,
+        record: Mapping[str, Any],
+        *,
+        default_kind: str = "file",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> "TraceArtifact":
+        """Create artifact metadata from a writer/executor artifact record.
+
+        Supported records include task_workspace_executor WorkspaceWriteResult
+        dicts, artifact_writer manifests, and A2A artifact refs. This method
+        does not require the file to be readable; it preserves intended paths
+        for evaluator forensic traces.
+        """
+
+        data = dict(record or {})
+        merged_meta = dict(metadata or {})
+        for key in ("source", "phase", "solver", "selected_solver_key", "family", "task_id"):
+            if key in data and key not in merged_meta:
+                merged_meta[key] = data.get(key)
+
+        path = _first_text(data.get("path"), data.get("uri"), data.get("file_path"))
+        name = _first_text(
+            data.get("name"),
+            data.get("file_name"),
+            data.get("artifact_name"),
+            Path(path).name if path else "",
+            default="artifact",
+        )
+        kind = _first_text(data.get("kind"), data.get("artifact_kind"), default=default_kind)
+        content_type = _first_text(
+            data.get("content_type"),
+            data.get("mime_type"),
+            mimetypes.guess_type(name)[0],
+        ) or None
+
+        return cls(
+            name=name,
+            kind=kind,
+            path=path or None,
+            metadata=merged_meta,
+            content_type=content_type,
+            size_bytes=_as_int(data.get("size_bytes") if data.get("size_bytes") is not None else data.get("bytes_written")),
+            sha256=_text(data.get("sha256")) or None,
+            output_channel=_first_text(data.get("output_channel"), merged_meta.get("output_channel")),
+            artifact_refs_role=_first_text(data.get("artifact_refs_role"), merged_meta.get("artifact_refs_role")),
+            filesystem_primary=_as_bool(data.get("filesystem_primary", merged_meta.get("filesystem_primary")), default=False),
+            scoring_channel=_first_text(data.get("scoring_channel"), merged_meta.get("scoring_channel")),
+        )
+
     @classmethod
     def from_path(
         cls,
@@ -304,6 +459,10 @@ class TraceArtifact:
             content_type=guessed_content_type,
             size_bytes=size_bytes,
             sha256=digest,
+            output_channel=_text((metadata or {}).get("output_channel")) if metadata else "",
+            artifact_refs_role=_text((metadata or {}).get("artifact_refs_role")) if metadata else "",
+            filesystem_primary=_as_bool((metadata or {}).get("filesystem_primary"), default=False) if metadata else False,
+            scoring_channel=_text((metadata or {}).get("scoring_channel")) if metadata else "",
         )
 
     def as_dict(self) -> JsonDict:
@@ -315,6 +474,10 @@ class TraceArtifact:
             "content_type": self.content_type,
             "size_bytes": self.size_bytes,
             "sha256": self.sha256,
+            "output_channel": self.output_channel,
+            "artifact_refs_role": self.artifact_refs_role,
+            "filesystem_primary": self.filesystem_primary,
+            "scoring_channel": self.scoring_channel,
         }
 
 
@@ -341,6 +504,20 @@ class EpisodeTrace:
     selected_opponent: str = ""
     source_url: str = ""
     run_id: str = ""
+
+    # v0.7 SkillsBench / evaluator-forensics identity fields.
+    task_set: str = ""
+    condition: str = ""
+    output_family: str = ""
+    output_channel: str = ""
+    scoring_channel: str = ""
+    artifact_refs_role: str = ""
+    filesystem_primary: bool = False
+    workspace_visible: bool | None = None
+    wrote_any_file: bool | None = None
+    selected_solver_key: str = ""
+    score_eligible: bool | None = None
+
     trace_id: str = field(default_factory=_trace_id)
 
     # Timing.
@@ -371,21 +548,35 @@ class EpisodeTrace:
         """
 
         meta = dict(metadata or {})
-        identity = _nested(meta, "identity", "trace_identity")
-        scenario = _nested(meta, "scenario", "scenario_meta", "scenario_metadata")
-        route = _nested(meta, "route", "routing", "router")
-        adapter_meta = _nested(meta, "adapter", "adapter_meta")
-        source = _nested(meta, "source", "benchmark_source", "origin")
-        benchmark_meta = _nested(meta, "benchmark_config", "benchmark_meta")
-
-        resolved_track = _first_text(
-            meta.get("track"),
-            identity.get("track"),
-            meta.get("track_hint"),
-            route.get("track"),
-            track,
-            default="openenv",
+        identity = _to_dict(meta.get("identity")) or _to_dict(meta.get("trace_identity"))
+        scenario = (
+            _to_dict(meta.get("scenario"))
+            or _to_dict(meta.get("scenario_meta"))
+            or _to_dict(meta.get("scenario_metadata"))
         )
+        route = _to_dict(meta.get("route")) or _to_dict(meta.get("routing")) or _to_dict(meta.get("router"))
+        adapter_meta = _to_dict(meta.get("adapter")) or _to_dict(meta.get("adapter_meta"))
+        source = (
+            _to_dict(meta.get("source"))
+            or _to_dict(meta.get("benchmark_source"))
+            or _to_dict(meta.get("origin"))
+        )
+        benchmark_meta = _to_dict(meta.get("benchmark_config")) or _to_dict(meta.get("benchmark_meta"))
+
+        resolved_track = _normalize_track(
+            _first_text(
+                meta.get("track"),
+                identity.get("track"),
+                meta.get("track_hint"),
+                route.get("track"),
+                meta.get("benchmark"),
+                meta.get("task_set"),
+                track,
+                default="openenv",
+            )
+        )
+        if resolved_track != "skillsbench" and _looks_like_skillsbench(meta):
+            resolved_track = "skillsbench"
 
         domain = _first_text(
             meta.get("domain"),
@@ -504,6 +695,94 @@ class EpisodeTrace:
         ended_at = _as_float(_first_text(meta.get("ended_at"), identity.get("ended_at")))
         existing_duration = _as_float(meta.get("duration_ms"))
 
+
+        workspace_execution = _to_dict(meta.get("workspace_execution"))
+        workspace_diagnostics = _to_dict(workspace_execution.get("diagnostics"))
+        skillsbridge = _to_dict(meta.get("skillsbench_artifact_bridge"))
+        artifact_output = _to_dict(meta.get("skillsbench_artifact_output"))
+        filesystem_output = _to_dict(meta.get("skillsbench_filesystem_output"))
+
+        task_set = _first_text(
+            meta.get("task_set"),
+            identity.get("task_set"),
+            workspace_execution.get("task_set"),
+            artifact_output.get("task_set"),
+            filesystem_output.get("task_set"),
+            default="standard-v1" if resolved_track == "skillsbench" else "",
+        )
+
+        condition = _first_text(
+            meta.get("condition"),
+            identity.get("condition"),
+            workspace_execution.get("condition"),
+            artifact_output.get("condition"),
+            filesystem_output.get("condition"),
+            default="with_skills" if resolved_track == "skillsbench" else "",
+        )
+
+        output_family = _normalize_family(
+            _first_text(
+                meta.get("output_family"),
+                meta.get("family"),
+                meta.get("contract_family"),
+                workspace_execution.get("family"),
+                workspace_diagnostics.get("family"),
+                workspace_diagnostics.get("contract_family"),
+                default="",
+            )
+        )
+
+        output_channel = _first_text(
+            meta.get("output_channel"),
+            meta.get("scoring_channel"),
+            skillsbridge.get("output_channel"),
+            workspace_execution.get("scoring_channel"),
+            filesystem_output.get("scoring_channel"),
+            default="filesystem_output_primary" if resolved_track == "skillsbench" else "",
+        )
+
+        scoring_channel = _skillsbench_scoring_channel(
+            {
+                **meta,
+                "output_channel": output_channel,
+                "workspace_execution": workspace_execution,
+            }
+        )
+
+        artifact_refs_role = _first_text(
+            meta.get("artifact_refs_role"),
+            skillsbridge.get("a2a_artifacts"),
+            workspace_execution.get("artifact_refs_role"),
+            artifact_output.get("artifact_refs"),
+            filesystem_output.get("artifact_refs"),
+            default="diagnostic_and_compatibility_signal" if resolved_track == "skillsbench" else "",
+        )
+
+        filesystem_primary = _as_bool(
+            meta.get("filesystem_primary"),
+            default=(resolved_track == "skillsbench" and scoring_channel == "filesystem_output_primary"),
+        )
+
+        workspace_visible = workspace_execution.get("workspace_visible")
+        if workspace_visible is None:
+            workspace_visible = workspace_diagnostics.get("workspace_visible")
+
+        wrote_any_file = workspace_execution.get("wrote_any_file")
+        if wrote_any_file is None:
+            wrote_any_file = workspace_diagnostics.get("wrote_any_file")
+        if wrote_any_file is None and workspace_diagnostics.get("ok_writes") is not None:
+            wrote_any_file = (_as_int(workspace_diagnostics.get("ok_writes"), default=0) or 0) > 0
+
+        selected_solver_key = _first_text(
+            meta.get("selected_solver_key"),
+            workspace_execution.get("selected_solver_key"),
+            workspace_diagnostics.get("selected_solver_key"),
+        )
+
+        score_eligible_raw = meta.get("score_eligible")
+        if score_eligible_raw is None:
+            score_eligible_raw = workspace_execution.get("score_eligible")
+
         trace = cls(
             task_id=task_id,
             track=resolved_track,
@@ -520,12 +799,35 @@ class EpisodeTrace:
             selected_opponent=selected_opponent,
             source_url=source_url,
             run_id=run_id,
+            task_set=task_set,
+            condition=condition,
+            output_family=output_family,
+            output_channel=output_channel,
+            scoring_channel=scoring_channel,
+            artifact_refs_role=artifact_refs_role,
+            filesystem_primary=filesystem_primary,
+            workspace_visible=_as_bool(workspace_visible, default=False) if workspace_visible is not None else None,
+            wrote_any_file=_as_bool(wrote_any_file, default=False) if wrote_any_file is not None else None,
+            selected_solver_key=selected_solver_key,
+            score_eligible=_as_bool(score_eligible_raw, default=True) if score_eligible_raw is not None else None,
             trace_id=trace_id,
             started_at=started_at or _now(),
             ended_at=ended_at,
             metadata=meta,
             tags=_dedupe(list(tags or []) + _as_list(meta.get("tags"))),
         )
+
+        if trace.track == "skillsbench":
+            trace.add_tag("skillsbench")
+            trace.add_tag("standard-v1")
+            if trace.condition:
+                trace.add_tag(trace.condition)
+            if trace.scoring_channel == "filesystem_output_primary":
+                trace.add_tag("filesystem-output-primary")
+            if trace.artifact_refs_role:
+                trace.add_tag("artifact-refs-diagnostic")
+            if trace.output_family:
+                trace.add_tag(trace.output_family)
 
         # Preserve externally provided duration even when ended_at is unavailable.
         if existing_duration is not None and trace.ended_at is None:
@@ -562,6 +864,17 @@ class EpisodeTrace:
             "selected_opponent": self.selected_opponent,
             "source_url": self.source_url,
             "run_id": self.run_id,
+            "task_set": self.task_set,
+            "condition": self.condition,
+            "output_family": self.output_family,
+            "output_channel": self.output_channel,
+            "scoring_channel": self.scoring_channel,
+            "artifact_refs_role": self.artifact_refs_role,
+            "filesystem_primary": self.filesystem_primary,
+            "workspace_visible": self.workspace_visible,
+            "wrote_any_file": self.wrote_any_file,
+            "selected_solver_key": self.selected_solver_key,
+            "score_eligible": self.score_eligible,
             "trace_id": self.trace_id,
         }
 
@@ -591,9 +904,13 @@ class EpisodeTrace:
                 kind=_first_text(data.get("kind"), default="file"),
                 path=_text(data.get("path")) or None,
                 metadata=_to_dict(data.get("metadata")),
-                content_type=_text(data.get("content_type")) or None,
-                size_bytes=_as_int(data.get("size_bytes")),
+                content_type=_text(data.get("content_type") or data.get("mime_type")) or None,
+                size_bytes=_as_int(data.get("size_bytes") if data.get("size_bytes") is not None else data.get("bytes_written")),
                 sha256=_text(data.get("sha256")) or None,
+                output_channel=_text(data.get("output_channel")),
+                artifact_refs_role=_text(data.get("artifact_refs_role")),
+                filesystem_primary=_as_bool(data.get("filesystem_primary"), default=False),
+                scoring_channel=_text(data.get("scoring_channel")),
             )
 
         self.artifacts.append(normalized)
@@ -617,6 +934,92 @@ class EpisodeTrace:
         self.tags = _dedupe([*self.tags, text])
         return text
 
+
+    def add_workspace_execution(self, execution: Any, *, phase: str = "workspace_executor") -> TraceStep:
+        """Attach a SkillsBench task_workspace_executor result to this trace."""
+
+        data = _to_dict(execution)
+        diagnostics = _to_dict(data.get("diagnostics"))
+        writes = data.get("writes") or diagnostics.get("write_outcomes") or []
+
+        self.track = _normalize_track(self.track)
+        if self.track == "skillsbench":
+            self.scoring_channel = self.scoring_channel or "filesystem_output_primary"
+            self.output_channel = self.output_channel or "filesystem_output_primary"
+            self.artifact_refs_role = self.artifact_refs_role or "diagnostic_and_compatibility_signal"
+            self.filesystem_primary = True
+
+        self.workspace_visible = _as_bool(data.get("workspace_visible"), default=False)
+        self.wrote_any_file = _as_bool(data.get("wrote_any_file"), default=False)
+        self.output_family = self.output_family or _normalize_family(data.get("family"))
+        self.selected_solver_key = self.selected_solver_key or _first_text(diagnostics.get("selected_solver_key"))
+
+        for item in writes if isinstance(writes, list) else []:
+            item_dict = _to_dict(item)
+            if not item_dict:
+                continue
+            if not _as_bool(item_dict.get("ok"), default=False):
+                continue
+            artifact = TraceArtifact.from_record(
+                item_dict,
+                default_kind=_first_text(item_dict.get("kind"), default="file"),
+                metadata={
+                    "phase": phase,
+                    "source": "task_workspace_executor",
+                    "output_channel": self.output_channel,
+                    "scoring_channel": self.scoring_channel,
+                    "artifact_refs_role": self.artifact_refs_role,
+                    "filesystem_primary": self.filesystem_primary,
+                    "selected_solver_key": self.selected_solver_key,
+                    "family": self.output_family,
+                },
+            )
+            if not artifact.output_channel:
+                artifact.output_channel = self.output_channel
+            if not artifact.scoring_channel:
+                artifact.scoring_channel = self.scoring_channel
+            if not artifact.artifact_refs_role:
+                artifact.artifact_refs_role = self.artifact_refs_role
+            artifact.filesystem_primary = self.filesystem_primary
+            self.add_artifact(artifact)
+
+        self.metadata["workspace_execution"] = data
+        return self.add_event(
+            name="workspace_execution",
+            phase=phase,
+            message="SkillsBench workspace execution recorded",
+            ok=_as_bool(data.get("ok"), default=bool(self.wrote_any_file)),
+            payload={
+                "status": data.get("status"),
+                "workspace_visible": self.workspace_visible,
+                "wrote_any_file": self.wrote_any_file,
+                "family": self.output_family,
+                "selected_solver_key": self.selected_solver_key,
+                "write_count": len(writes) if isinstance(writes, list) else None,
+                "scoring_channel": self.scoring_channel,
+                "artifact_refs_role": self.artifact_refs_role,
+            },
+        )
+
+    def add_artifact_ref_diagnostic(self, refs: Any, *, phase: str = "artifact_refs_probe") -> TraceStep:
+        """Record artifact_refs as diagnostic evidence, not primary scoring."""
+
+        ref_list = refs if isinstance(refs, list) else []
+        self.metadata["artifact_refs_diagnostic"] = ref_list
+        self.artifact_refs_role = self.artifact_refs_role or "diagnostic_and_compatibility_signal"
+        return self.add_event(
+            name="artifact_refs_diagnostic",
+            phase=phase,
+            message="A2A artifact_refs captured as diagnostic compatibility evidence",
+            ok=True,
+            payload={
+                "ref_count": len(ref_list),
+                "artifact_refs_role": self.artifact_refs_role,
+                "scoring_channel": self.scoring_channel or "filesystem_output_primary",
+            },
+        )
+
+
     def finish(self, status: str | None = None, *, ended_at: float | None = None) -> "EpisodeTrace":
         """Mark the episode as finished and return self for optional chaining."""
 
@@ -629,6 +1032,7 @@ class EpisodeTrace:
         """Full trace representation for JSON serialization."""
 
         return {
+            "trace_schema_version": TRACE_SCHEMA_VERSION,
             **self.identity,
             "status": self.status,
             "started_at": self.started_at,
@@ -645,6 +1049,7 @@ class EpisodeTrace:
         """Compact summary suitable for logs, episode_summary, and scorecard."""
 
         return {
+            "trace_schema_version": TRACE_SCHEMA_VERSION,
             **self.identity,
             "status": self.status,
             "started_at": self.started_at,
@@ -655,3 +1060,79 @@ class EpisodeTrace:
             "warning_count": len(self.warnings),
             "tags": list(self.tags),
         }
+
+
+
+def validate_trace_schema_selftest() -> JsonDict:
+    """Validate legacy compatibility plus SkillsBench filesystem trace fields."""
+
+    errors: list[str] = []
+
+    legacy = EpisodeTrace(task_id="legacy", track="openenv", status="running")
+    if legacy.task_id != "legacy" or legacy.track != "openenv":
+        errors.append("legacy EpisodeTrace constructor compatibility failed")
+
+    trace = EpisodeTrace.from_metadata(
+        task_id="exceltable-in-ppt",
+        track="benchflow-ai",
+        status="running",
+        metadata={
+            "task_set": "standard-v1",
+            "condition": "with_skills",
+            "family": "office_pptx",
+            "workspace_execution": {
+                "version": "workspace-v",
+                "ok": True,
+                "status": "completed",
+                "task_id": "exceltable-in-ppt",
+                "family": "office_pptx",
+                "workspace_visible": True,
+                "wrote_any_file": True,
+                "writes": [
+                    {
+                        "path": "/root/output/final_deck.pptx",
+                        "ok": True,
+                        "kind": "presentation",
+                        "bytes_written": 128,
+                        "sha256": "0" * 64,
+                    }
+                ],
+                "diagnostics": {"selected_solver_key": "office_pptx"},
+            },
+        },
+    )
+    trace.add_workspace_execution(trace.metadata["workspace_execution"])
+    trace.add_artifact_ref_diagnostic([{"name": "final_deck.pptx"}])
+    trace.finish("completed")
+
+    if trace.track != "skillsbench":
+        errors.append(f"SkillsBench track did not normalize: {trace.track}")
+    if trace.scoring_channel != "filesystem_output_primary":
+        errors.append(f"unexpected scoring channel: {trace.scoring_channel}")
+    if trace.artifact_refs_role != "diagnostic_and_compatibility_signal":
+        errors.append(f"unexpected artifact refs role: {trace.artifact_refs_role}")
+    if not trace.filesystem_primary:
+        errors.append("filesystem_primary should be true for SkillsBench")
+    if trace.output_family != "office_pptx":
+        errors.append(f"unexpected output family: {trace.output_family}")
+    if not trace.artifacts:
+        errors.append("workspace artifacts were not recorded")
+    if "filesystem-output-primary" not in trace.tags:
+        errors.append("filesystem-output-primary tag missing")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "version": TRACE_SCHEMA_VERSION,
+        "legacy": legacy.compact_dict(),
+        "skillsbench": trace.compact_dict(),
+    }
+
+
+__all__ = [
+    "TRACE_SCHEMA_VERSION",
+    "TraceStep",
+    "TraceArtifact",
+    "EpisodeTrace",
+    "validate_trace_schema_selftest",
+]

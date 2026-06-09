@@ -1,0 +1,82 @@
+{
+  "status": "completed",
+  "track": "skillsbench",
+  "task_id": "dialogue-parser",
+  "canonical_task_id": "dialogue-parser",
+  "request_task_id": "019e276a-0075-77d3-8efc-aed44b9bba37",
+  "trial_id": "dialogue-parser__agentbeats__019e276a",
+  "task_digest": "sha256:dialogue",
+  "category": "office-white-collar",
+  "difficulty": "easy",
+  "condition": "with_skills",
+  "family": "json_output",
+  "identity_confidence": 0.91,
+  "identity_source": "trial_id",
+  "artifact_refs_candidate": [
+    "artifact://dialogue-parser/answer.json",
+    {
+      "name": "skillsbench_result.json",
+      "uri": "artifact://dialogue-parser/skillsbench_result.json",
+      "sha256": "b7f1f2e2c2a1"
+    }
+  ],
+  "artifact_outputs": [
+    {
+      "name": "answer.json",
+      "path": "/root/answer.json",
+      "mime_type": "application/json",
+      "sha256": "a1b2c3",
+      "size_bytes": 64
+    }
+  ],
+  "files": [
+    {
+      "name": "skillsbench_answer.md",
+      "path": "/root/output/skillsbench_answer.md",
+      "mime_type": "text/markdown",
+      "sha256": "d4e5f6",
+      "size_bytes": 128
+    }
+  ],
+  "deliverables": [
+    {
+      "name": "solution.json",
+      "path": "/root/output/solution.json",
+      "sha256": "abc123",
+      "size_bytes": 96
+    }
+  ],
+  "result_payload": {
+    "artifact_refs": [
+      "artifact://dialogue-parser/answer.json"
+    ],
+    "files": [
+      {
+        "path": "/root/answer.json",
+        "sha256": "a1b2c3"
+      }
+    ]
+  },
+  "workspace_execution": {
+    "ok": true,
+    "status": "completed",
+    "task_id": "dialogue-parser",
+    "family": "json_output",
+    "workspace_visible": true,
+    "wrote_any_file": true,
+    "primary_outputs": [
+      "/root/answer.json"
+    ],
+    "writes": [
+      {
+        "path": "/root/answer.json",
+        "ok": true,
+        "action": "write_json",
+        "kind": "json",
+        "bytes_written": 64,
+        "sha256": "a1b2c3",
+        "skipped": false
+      }
+    ]
+  }
+}

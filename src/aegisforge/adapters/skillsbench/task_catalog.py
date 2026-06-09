@@ -21,7 +21,7 @@ import json
 import re
 
 
-TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_2_solver_aligned_routing_2026_06_03"
+TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_3_pptx_output_routing_2026_06_09"
 TASK_SET_SCHEMA_VERSION = 'skillsbench.agentbeats.task_set.v1'
 TASK_SET_NAME = 'standard-v1'
 TASK_SET_CONDITION = 'with_skills'
@@ -51,6 +51,7 @@ SKILLSBENCH_FAMILIES = [
     "code_solution",
     "office_xlsx",
     "office_docx",
+    "office_pptx",
     "pdf_document",
     "lean_solution",
     "security_config",
@@ -93,6 +94,21 @@ FAMILY_PREFERRED_OUTPUTS = {
     "office_docx": [
         "answer.docx",
         "fields_or_edits.json",
+        "validation_notes.md"
+    ],
+    "office_pptx": [
+        "answer.pptx",
+        "presentation_result.json",
+        "validation_notes.md"
+    ],
+    "presentation": [
+        "answer.pptx",
+        "presentation_result.json",
+        "validation_notes.md"
+    ],
+    "pptx_output": [
+        "answer.pptx",
+        "presentation_result.json",
         "validation_notes.md"
     ],
     "pdf_document": [
@@ -148,6 +164,16 @@ FAMILY_PREFERRED_OUTPUTS = {
         "answer.xlsx",
         "answer.csv",
         "workbook_result.json"
+    ],
+    "pptx-reference-formatting": [
+        "answer.pptx",
+        "formatted_deck.pptx",
+        "presentation_result.json"
+    ],
+    "exceltable-in-ppt": [
+        "answer.pptx",
+        "updated_table_deck.pptx",
+        "presentation_result.json"
     ],
 
     # Legacy aliases mapped to solver-compatible output shapes.
@@ -224,6 +250,21 @@ FAMILY_MIME_HINTS = {
         "application/json",
         "text/markdown"
     ],
+    "office_pptx": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/json",
+        "text/markdown"
+    ],
+    "presentation": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/json",
+        "text/markdown"
+    ],
+    "pptx_output": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/json",
+        "text/markdown"
+    ],
     "pdf_document": [
         "application/pdf",
         "application/json",
@@ -274,6 +315,16 @@ FAMILY_MIME_HINTS = {
     "powerlifting-coef-calc": [
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "text/csv",
+        "application/json"
+    ],
+    "pptx-reference-formatting": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/json"
+    ],
+    "exceltable-in-ppt": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/json"
     ],
 
@@ -336,6 +387,16 @@ SOLVER_FAMILY_ALIASES = {
     "security_audit": "security_config",
     "software_patch": "code_solution",
     "spreadsheet_finance": "office_xlsx",
+    "pptx": "office_pptx",
+    "ppt": "office_pptx",
+    "powerpoint": "office_pptx",
+    "presentation": "office_pptx",
+    "presentations": "office_pptx",
+    "slides": "office_pptx",
+    "slide_deck": "office_pptx",
+    "deck": "office_pptx",
+    "pptx_output": "office_pptx",
+    "presentation_output": "office_pptx",
     "excel": "office_xlsx",
     "xlsx_output": "office_xlsx",
     "docx_output": "office_docx",
@@ -363,8 +424,8 @@ TASK_SOLVER_FAMILY_OVERRIDES = {
     "test-supply": "office_xlsx",
     "nasa-budget-recover": "office_xlsx",
     "nasa-budget-recovered": "office_xlsx",
-    "pptx-reference-formatting": "office_docx",
-    "exceltable-in-ppt": "office_xlsx",
+    "pptx-reference-formatting": "office_pptx",
+    "exceltable-in-ppt": "office_pptx",
     "lean4-proof": "lean_solution",
     "software-dependency-audit": "security_config",
     "dapt-intrusion-detection": "security_config",
@@ -377,6 +438,13 @@ TASK_SOLVER_FAMILY_OVERRIDES = {
     "debug-trl-grpo": "code_solution",
     "flink-query": "code_solution",
     "data-to-d3": "code_solution",
+    "react-performance-debugging": "code_solution",
+    "syzkaller-ppdev-syzlang": "code_solution",
+    "video-tutorial-indexer": "json_output",
+    "video-filler-word-remover": "json_output",
+    "pedestrian-traffic-counting": "csv_output",
+    "jpg-ocr-stat": "json_output",
+    "seismic-phase-picking": "csv_output",
 }
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
@@ -3798,6 +3866,13 @@ def infer_family_from_signals(metadata: Mapping[str, Any] | None = None, text: s
         return solver_family_for_task(task_id, fallback_family=legacy_family_for_task(task_id))
 
     blob = (_flatten_text(metadata or {}) + "\n" + str(text or "")).lower().replace("_", "-")
+
+    # Strong presentation signals should beat spreadsheet mentions when the
+    # spreadsheet is an input and the deliverable is a PowerPoint deck.
+    if any(token in blob for token in (".pptx", "pptx", "powerpoint", "slide deck", "presentation")):
+        if any(token in blob for token in ("save", "create", "generate", "write", "output", "deliverable", "deck")):
+            return "office_pptx"
+
     scores: dict[str, int] = defaultdict(int)
 
     # Direct family mentions and output names.
@@ -3824,6 +3899,7 @@ def infer_family_from_signals(metadata: Mapping[str, Any] | None = None, text: s
         "security_config": ("security", "vulnerability", "cve", "fuzz", "pcap", "suricata", "dependency", "intrusion", "bgp", "route-leak"),
         "pdf_document": ("pdf", "form", "court", "redaction", "edit-pdf", "anonymizer", "latex"),
         "office_docx": ("docx", "word", "offer letter", "mail-merge", "template"),
+        "office_pptx": ("pptx", "powerpoint", "presentation", "presentations", "slide deck", "slides", "deck", "table-update"),
         "office_xlsx": ("excel", "xlsx", "spreadsheet", "pivot", "finance", "formula", "workbook"),
         "lean_solution": ("lean", "lean4", "proof", "theorem", "formal method"),
         "csv_output": ("csv", "table", "rows", "columns"),
@@ -3938,6 +4014,8 @@ def validate_catalog() -> dict[str, Any]:
         "powerlifting-coef-calc": "powerlifting-coef-calc",
         "lean4-proof": "lean_solution",
         "edit-pdf": "pdf_document",
+        "pptx-reference-formatting": "office_pptx",
+        "exceltable-in-ppt": "office_pptx",
         "dapt-intrusion-detection": "security_config",
     }
     for task_id, expected_family in expected_routes.items():
@@ -3958,6 +4036,8 @@ def validate_task_catalog_selftest() -> dict[str, Any]:
         "powerlifting-coef-calc": "powerlifting-coef-calc",
         "lean4-proof": "lean_solution",
         "edit-pdf": "pdf_document",
+        "pptx-reference-formatting": "office_pptx",
+        "exceltable-in-ppt": "office_pptx",
         "software-dependency-audit": "security_config",
     }
     errors: list[str] = []
@@ -3979,6 +4059,9 @@ def validate_task_catalog_selftest() -> dict[str, Any]:
     signal_xlsx = classify_task({}, "Generate /root/answer.xlsx with formulas")
     if signal_xlsx.get("family") != "office_xlsx":
         errors.append(f"signal xlsx route failed: {signal_xlsx.get('family')}")
+    signal_pptx = classify_task({}, "Create a PowerPoint deck and save /root/output/answer.pptx using /root/data/table.xlsx as input")
+    if signal_pptx.get("family") != "office_pptx":
+        errors.append(f"signal pptx route failed: {signal_pptx.get('family')}")
     return {
         "ok": not errors,
         "errors": errors,
@@ -3986,6 +4069,7 @@ def validate_task_catalog_selftest() -> dict[str, Any]:
         "results": results,
         "signal_pdf": signal_pdf,
         "signal_xlsx": signal_xlsx,
+        "signal_pptx": signal_pptx,
     }
 
 

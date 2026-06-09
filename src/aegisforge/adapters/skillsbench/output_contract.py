@@ -33,7 +33,7 @@ import os
 import re
 
 
-OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_3_strict_output_filter_2026_06_03"
+OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_4_pptx_family_priority_2026_06_09"
 
 
 ABS_PATH_RE = re.compile(
@@ -904,25 +904,176 @@ def _roots(requirements: Iterable[OutputRequirement]) -> tuple[str, ...]:
     return _dedupe_preserve(roots)
 
 
-def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence[OutputRequirement]) -> str:
-    blob = " ".join(
-        [
-            _safe_text(metadata, limit=30000),
-            text[:50000],
-            " ".join(req.path for req in requirements),
-            " ".join(req.filename for req in requirements),
-            " ".join(req.kind for req in requirements),
-        ]
-    ).lower()
+TASK_ID_FAMILY_HINTS: dict[str, str] = {
+    # Office / document tasks.
+    "pptx-reference-formatting": "office_pptx",
+    "exceltable-in-ppt": "office_pptx",
+    "offer-letter-generator": "office_docx",
+    "court-form-filling": "pdf_document",
+    "sc100-form-filling": "pdf_document",
+    "edit-pdf": "pdf_document",
+    "pdf-excel-diff": "office_xlsx",
+    "xlsx-recover-data": "office_xlsx",
+    "nasa-budget-recover": "office_xlsx",
+    "nasa-budget-recovered": "office_xlsx",
+    "citation-check": "json_output",
+    "dialogue-parser": "json_output",
+    "paper-anonymizer": "office_docx",
+    # Software / formal reasoning.
+    "fix-build-agentops": "code_solution",
+    "fix-build-google-auto": "code_solution",
+    "fix-erlang-ssh-cve": "code_solution",
+    "react-performance-debugging": "code_solution",
+    "debug-trl-grpo": "code_solution",
+    "syzkaller-ppdev-syzlang": "code_solution",
+    "lean4-proof": "lean_solution",
+    # Security / infrastructure.
+    "software-dependency-audit": "security_config",
+    "dapt-intrusion-detection": "security_config",
+    "bgp-route-leak": "security_config",
+    "network-stats": "security_config",
+    # Media / OCR / science.
+    "threejs-to-obj": "media_output",
+    "video-silence-remover": "media_output",
+    "video-tutorial-indexer": "media_output",
+    "video-filler-word-remover": "media_output",
+    "stat-ocr": "json_output",
+    "jpg-ocr-stat": "json_output",
+    "pedestrian-traffic-counting": "csv_output",
+    "seismic-phase-picking": "csv_output",
+    "controller-tuning": "json_output",
+    "pareto-frontier": "csv_output",
+    "mass-report": "csv_output",
+    "powerlifting-coef-calc": "csv_output",
+    "latex-formula-extraction": "json_output",
+}
 
-    filenames = " ".join(req.filename.lower() for req in requirements)
+FAMILY_PRIORITY: tuple[str, ...] = (
+    "code_solution",
+    "security_config",
+    "lean_solution",
+    "office_pptx",
+    "office_xlsx",
+    "office_docx",
+    "pdf_document",
+    "csv_output",
+    "json_output",
+    "media_output",
+    "general_file_output",
+)
+
+
+def _clean_task_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("_", "-")
+    text = re.sub(r"[^a-z0-9-]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text
+
+
+def _metadata_family_hint(metadata: Mapping[str, Any], text: str) -> str:
+    explicit_keys = (
+        "family",
+        "contract_family",
+        "output_family",
+        "expected_family",
+        "task_family",
+        "environment_family_hint",
+        "canonical_family",
+    )
+    for key in explicit_keys:
+        raw = str(metadata.get(key) or "").strip().lower().replace("-", "_")
+        if raw and raw not in {"general", "general_file", "general_file_output", "unknown", "none"}:
+            return _normalize_family(raw)
+
+    task_keys = (
+        "canonical_task_id",
+        "environment_canonical_task_id",
+        "contract_task_id",
+        "task_id",
+        "id",
+        "name",
+        "task_name",
+        "trial_id",
+    )
+    for key in task_keys:
+        raw = str(metadata.get(key) or "")
+        cleaned = _clean_task_id(raw)
+        if cleaned in TASK_ID_FAMILY_HINTS:
+            return TASK_ID_FAMILY_HINTS[cleaned]
+        # trial ids often look like "dialogue-parser__agentbeats__019e..."
+        if "__" in raw:
+            prefix = _clean_task_id(raw.split("__", 1)[0])
+            if prefix in TASK_ID_FAMILY_HINTS:
+                return TASK_ID_FAMILY_HINTS[prefix]
+
+    lowered = text.lower()
+    for task_id, family in TASK_ID_FAMILY_HINTS.items():
+        if task_id in lowered:
+            return family
+
+    return ""
+
+
+def _normalize_family(value: str) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "presentation": "office_pptx",
+        "pptx": "office_pptx",
+        "pptx_output": "office_pptx",
+        "slide_deck": "office_pptx",
+        "slides": "office_pptx",
+        "excel": "office_xlsx",
+        "xlsx": "office_xlsx",
+        "spreadsheet": "office_xlsx",
+        "spreadsheet_output": "office_xlsx",
+        "docx": "office_docx",
+        "document": "office_docx",
+        "document_output": "office_docx",
+        "pdf": "pdf_document",
+        "pdf_output": "pdf_document",
+        "pdf_form": "pdf_document",
+        "formal_reasoning": "lean_solution",
+        "lean": "lean_solution",
+        "patch": "code_solution",
+        "software_patch": "code_solution",
+        "bugswarm_build_repair": "code_solution",
+        "python": "code_solution",
+        "python_solution": "code_solution",
+        "security": "security_config",
+        "security_output": "security_config",
+        "json": "json_output",
+        "csv": "csv_output",
+    }
+    return aliases.get(text, text)
+
+
+def _family_from_requirements(requirements: Sequence[OutputRequirement], blob: str) -> str:
     kinds = {req.kind for req in requirements}
+    filenames = " ".join(req.filename.lower() for req in requirements)
+    paths = " ".join(req.path.lower() for req in requirements)
+
+    # Exact output-file families first. Presentation must beat spreadsheet/json
+    # for mixed tasks such as exceltable-in-ppt.
+    if "presentation" in kinds or ".pptx" in paths:
+        return "office_pptx"
+
+    if "lean" in kinds or "lean4" in blob or ".lean" in paths:
+        return "lean_solution"
+
+    if "patch" in kinds or any(name in filenames for name in ("patch_0.diff", "fix.patch", "changes.diff")):
+        return "code_solution"
+
+    if "python" in kinds or "shell" in kinds or any(
+        name in filenames for name in ("solution.py", "main.py", "answer.py", "run.sh")
+    ):
+        return "code_solution"
 
     security_tokens = (
         "security", "vulnerability", "cve", "pcap", "firewall", "iptables",
-        "allowlist", "denylist", "rule", "rules", "policy", "policies", "rbac",
-        "iam", "permissions", "auth", "config", "configuration", "semgrep", "yara",
-        "suricata", "snort", "detection", "audit", "sandbox", "secret", "secrets",
+        "allowlist", "denylist", "rbac", "iam", "permissions", "auth",
+        "configuration", "semgrep", "yara", "suricata", "snort", "detection",
+        "audit", "sandbox", "secret", "secrets",
     )
     security_filenames = (
         "config", "policy", "policies", "rules", "rule", "allowlist", "denylist",
@@ -934,23 +1085,74 @@ def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence
     ):
         return "security_config"
 
-    if "lean" in kinds or "lean4" in blob:
-        return "lean_solution"
-    if "excel" in kinds:
+    if "excel" in kinds or ".xlsx" in paths or ".xls" in paths:
         return "office_xlsx"
-    if "document" in kinds:
+    if "document" in kinds or ".docx" in paths:
         return "office_docx"
-    if kinds & {"python", "patch", "shell"} or any(name in filenames for name in ("solution.py", "main.py", "answer.py", "patch_0.diff")):
-        return "code_solution"
+    if "pdf" in kinds or ".pdf" in paths:
+        return "pdf_document"
     if "csv" in kinds:
         return "csv_output"
     if "json" in kinds:
         return "json_output"
-    if "presentation" in kinds:
-        return "office_pptx"
-    if "pdf" in kinds:
-        return "pdf_output"
+    if kinds & {"archive", "cad"} or any(token in paths for token in (".obj", ".mp4", ".wav", ".png", ".jpg", ".jpeg")):
+        return "media_output"
     return "general_file_output"
+
+def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence[OutputRequirement]) -> str:
+    blob = " ".join(
+        [
+            _safe_text(metadata, limit=30000),
+            text[:50000],
+            " ".join(req.path for req in requirements),
+            " ".join(req.filename for req in requirements),
+            " ".join(req.kind for req in requirements),
+            " ".join(req.source for req in requirements),
+        ]
+    ).lower()
+
+    hinted = _metadata_family_hint(metadata, text)
+    requirement_family = _family_from_requirements(requirements, blob)
+
+    # A concrete file family from detected requirements should beat a generic or
+    # stale metadata hint.  Otherwise prefer explicit task/catalog hints.
+    if requirement_family != "general_file_output":
+        if hinted and FAMILY_PRIORITY.index(requirement_family) <= FAMILY_PRIORITY.index(_normalize_family(hinted)):
+            return requirement_family
+        if hinted in {"office_pptx", "office_xlsx", "office_docx", "pdf_document"}:
+            # Keep task-id hints for office/document benchmark tasks.  This
+            # handles mixed-input tasks such as exceltable-in-ppt where the
+            # prompt may mention xlsx input but the required deliverable is pptx.
+            if hinted == "office_pptx" and ("ppt" in blob or ".pptx" in blob or "slide" in blob):
+                return "office_pptx"
+            if hinted == "office_xlsx" and (".xlsx" in blob or ".xls" in blob or "spreadsheet" in blob):
+                return "office_xlsx"
+            if hinted == "office_docx" and (".docx" in blob or "document" in blob):
+                return "office_docx"
+            if hinted == "pdf_document" and ".pdf" in blob:
+                return "pdf_document"
+        return requirement_family
+
+    if hinted:
+        return _normalize_family(hinted)
+
+    # Prompt-level fallback when no concrete requirement survived strict
+    # filtering yet the task clearly points to one family.
+    if ".pptx" in blob or "powerpoint" in blob or "slide deck" in blob or "presentation" in blob:
+        return "office_pptx"
+    if ".xlsx" in blob or ".xls" in blob or "spreadsheet" in blob or "excel" in blob:
+        return "office_xlsx"
+    if ".docx" in blob or "word document" in blob:
+        return "office_docx"
+    if ".pdf" in blob or "pdf form" in blob:
+        return "pdf_document"
+    if ".lean" in blob or "lean4" in blob:
+        return "lean_solution"
+    if "patch_0.diff" in blob or "git apply" in blob or "fix build" in blob:
+        return "code_solution"
+
+    return "general_file_output"
+
 
 def _infer_verifier_style(text: str, requirements: Sequence[OutputRequirement]) -> str:
     blob = " ".join([text[:50000], " ".join(req.evidence for req in requirements)]).lower()
@@ -1049,7 +1251,7 @@ def build_output_contract(
     family = _infer_family(metadata, prompt, merged)
     verifier_style = _infer_verifier_style(prompt, merged)
     workspace_mode = _infer_workspace_mode(merged)
-    needs_repo_patch = family in {"bugswarm_build_repair", "software_patch"} or any(req.kind == "patch" for req in merged)
+    needs_repo_patch = family == "code_solution" and any(req.kind == "patch" for req in merged)
     needs_code_execution = any(req.kind in {"python", "lean", "shell"} for req in merged) or needs_repo_patch
     needs_filesystem_write = bool(merged)
 
@@ -1211,6 +1413,28 @@ def validate_output_contract_selftest() -> dict[str, Any]:
     )
     if security_contract.family != "security_config":
         errors.append(f"security config family not detected: {security_contract.family}")
+
+
+    pptx_contract = build_output_contract(
+        {"task_id": "exceltable-in-ppt", "category": "office-white-collar"},
+        "Create the final PowerPoint deck at `/root/output/final_deck.pptx`. Use /root/data/table.xlsx as input only.",
+    )
+    if pptx_contract.family != "office_pptx":
+        errors.append(f"pptx family not detected: {pptx_contract.family}")
+
+    pptx_paths = {req.path for req in pptx_contract.requirements}
+    if "/root/output/final_deck.pptx" not in pptx_paths:
+        errors.append("pptx output path not detected")
+    if any(path.startswith("/root/data/") for path in pptx_paths):
+        errors.append(f"input data path should not be requirement: {sorted(pptx_paths)}")
+
+    pdf_contract = build_output_contract(
+        {"task_id": "court-form-filling", "category": "office-white-collar"},
+        "Fill and save the court form to `/root/output/filled_form.pdf`.",
+    )
+    if pdf_contract.family != "pdf_document":
+        errors.append(f"pdf_document family not detected: {pdf_contract.family}")
+
 
     if contract.family != "code_solution":
         errors.append(f"unexpected family: {contract.family}")

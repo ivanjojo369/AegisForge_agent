@@ -13,13 +13,19 @@ Important naming rule:
   software_testing, defi, and legal_domain may map to prompt fallbacks when a
   dedicated prompt file does not exist yet;
 - scenario identity must be preserved in prompt context, traces, summaries, and
-  scorecards.
+  scorecards;
+- SkillsBench/BenchFlow standard-v1 must resolve to its own prompt profile when
+  metadata exposes task_set=standard-v1, condition=with_skills, benchflow,
+  artifact-first, filesystem-first, or general-purpose-agent markers.
 """
 
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..prompts.prompt_manager import PromptBundle, PromptManager
+
+
+PROMPT_LOADER_VERSION = "prompt_loader_v0_3_skillsbench_fallbacks_2026_06_09"
 
 
 SPRINT4_CONTEXT_KEYS: tuple[str, ...] = (
@@ -34,6 +40,16 @@ SPRINT4_CONTEXT_KEYS: tuple[str, ...] = (
     "benchmark",
     "selected_opponent",
     "source_url",
+    # SkillsBench / BenchFlow identity fields.
+    "task_id",
+    "canonical_task_id",
+    "request_task_id",
+    "trial_id",
+    "task_digest",
+    "task_set",
+    "condition",
+    "family",
+    "output_contract",
 )
 
 
@@ -66,6 +82,38 @@ TRACK_ALIASES: dict[str, str] = {
     "software_testing": "logomesh",
     "defi": "ethernaut",
     "legal_domain": "agentify_bench",
+
+    # SkillsBench / BenchFlow / General-Purpose Agent aliases.
+    "skillsbench": "skillsbench",
+    "skillsbench_agentbeats": "skillsbench",
+    "skillsbench-agentbeats": "skillsbench",
+    "skillsbench_leaderboard": "skillsbench",
+    "skillsbench-leaderboard": "skillsbench",
+    "benchflow": "skillsbench",
+    "benchflow_ai": "skillsbench",
+    "benchflow-ai": "skillsbench",
+    "benchflowai": "skillsbench",
+    "standard_v1": "skillsbench",
+    "standard-v1": "skillsbench",
+    "standard v1": "skillsbench",
+    "with_skills": "skillsbench",
+    "with-skills": "skillsbench",
+    "with skills": "skillsbench",
+    "general_purpose": "skillsbench",
+    "general-purpose": "skillsbench",
+    "general purpose": "skillsbench",
+    "general_purpose_agent": "skillsbench",
+    "general-purpose-agent": "skillsbench",
+    "multi_utility": "skillsbench",
+    "multi-utility": "skillsbench",
+    "artifact_first": "skillsbench",
+    "artifact-first": "skillsbench",
+    "filesystem_first": "skillsbench",
+    "filesystem-first": "skillsbench",
+    "filesystem_output": "skillsbench",
+    "filesystem-output": "skillsbench",
+    "sandbox_file_output": "skillsbench",
+    "sandbox-file-output": "skillsbench",
 }
 
 
@@ -112,12 +160,54 @@ PROMPT_FALLBACKS: dict[str, tuple[str, ...]] = {
     "logomesh": ("logomesh", "openenv"),
     "ethernaut": ("ethernaut", "openenv"),
     "agentify_bench": ("agentify_bench", "openenv"),
+    # SkillsBench gets its own prompt profile first, then a broad OpenEnv fallback
+    # if the repository has not added prompts/skillsbench.md yet.
+    "skillsbench": ("skillsbench", "openenv"),
     # Broad fallbacks.
     "security": ("security", "openenv"),
     "tau2": ("tau2", "openenv"),
     "mcu": ("mcu", "openenv"),
     "openenv": ("openenv",),
 }
+
+
+SKILLSBENCH_METADATA_KEYS: tuple[str, ...] = (
+    "task_set",
+    "condition",
+    "benchmark",
+    "adapter",
+    "track",
+    "track_hint",
+    "upstream_track",
+    "benchmark_track",
+    "scenario_family",
+    "selected_opponent",
+    "source_url",
+    "task_id",
+    "canonical_task_id",
+    "request_task_id",
+    "trial_id",
+)
+
+SKILLSBENCH_MARKERS: tuple[str, ...] = (
+    "skillsbench",
+    "skillsbench_agentbeats",
+    "skillsbench-leaderboard",
+    "skillsbench_leaderboard",
+    "benchflow",
+    "benchflow_ai",
+    "benchflow-ai",
+    "standard_v1",
+    "standard-v1",
+    "with_skills",
+    "with-skills",
+    "general_purpose_agent",
+    "general-purpose-agent",
+    "artifact_first",
+    "artifact-first",
+    "filesystem_first",
+    "filesystem-first",
+)
 
 
 def _clean_key(value: Any) -> str:
@@ -141,6 +231,62 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(text)
         output.append(text)
     return output
+
+
+def _metadata_values(metadata: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for child in value.values():
+                add(child)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for child in value:
+                add(child)
+            return
+        text = str(value or "").strip()
+        if text:
+            values.append(text)
+
+    for key in SKILLSBENCH_METADATA_KEYS:
+        add(metadata.get(key))
+
+    scenario = metadata.get("scenario")
+    if isinstance(scenario, Mapping):
+        for key in SKILLSBENCH_METADATA_KEYS:
+            add(scenario.get(key))
+        add(scenario.get("id"))
+        add(scenario.get("name"))
+
+    task = metadata.get("task")
+    if isinstance(task, Mapping):
+        for key in SKILLSBENCH_METADATA_KEYS:
+            add(task.get(key))
+        add(task.get("id"))
+        add(task.get("name"))
+
+    return values
+
+
+def _is_skillsbench_metadata(metadata: Mapping[str, Any]) -> bool:
+    haystack = " ".join(_metadata_values(metadata)).lower()
+    if not haystack:
+        return False
+
+    normalized = _clean_key(haystack)
+    spaced = haystack.replace("-", " ").replace("_", " ")
+
+    for marker in SKILLSBENCH_MARKERS:
+        marker_clean = _clean_key(marker)
+        if marker.lower() in haystack or marker_clean in normalized:
+            return True
+
+    if "standard v1" in spaced and "with skills" in spaced:
+        return True
+    if "general purpose agent" in spaced and ("benchflow" in spaced or "skillsbench" in spaced):
+        return True
+    return False
 
 
 class PromptLoader:
@@ -320,16 +466,19 @@ class PromptLoader:
         5. "openenv"
         """
 
-        track = (
-            str(metadata.get("track") or "").strip()
-            or str(metadata.get("track_hint") or "").strip()
-            or str(metadata.get("upstream_track") or "").strip()
-            or str(metadata.get("benchmark_track") or "").strip()
-            or str(metadata.get("domain") or "").strip()
-            or str(metadata.get("scenario_id") or "").strip()
-            or str(metadata.get("scenario_name") or "").strip()
-            or "openenv"
-        )
+        if _is_skillsbench_metadata(metadata):
+            track = "skillsbench"
+        else:
+            track = (
+                str(metadata.get("track") or "").strip()
+                or str(metadata.get("track_hint") or "").strip()
+                or str(metadata.get("upstream_track") or "").strip()
+                or str(metadata.get("benchmark_track") or "").strip()
+                or str(metadata.get("domain") or "").strip()
+                or str(metadata.get("scenario_id") or "").strip()
+                or str(metadata.get("scenario_name") or "").strip()
+                or "openenv"
+            )
 
         return self.load_runtime_prompt(
             track=track,
@@ -363,6 +512,8 @@ class PromptLoader:
 
         if metadata:
             payload = dict(payload)
+            payload["prompt_loader_version"] = PROMPT_LOADER_VERSION
+            payload["skillsbench_metadata_detected"] = _is_skillsbench_metadata(metadata)
             payload["sprint4_context"] = self.sprint4_context_dict(metadata)
             payload["sprint4_context_block"] = self.sprint4_context_block(metadata)
             payload["prompt_candidates"] = self._candidate_tracks(
@@ -401,10 +552,21 @@ class PromptLoader:
         if not context:
             return ""
 
+        if _is_skillsbench_metadata(metadata):
+            title = "## AegisForge SkillsBench / BenchFlow Context"
+            guidance = (
+                "Treat SkillsBench as filesystem-output-primary. Preserve task identity, "
+                "task_set, condition, output contracts, filesystem writes, and artifact "
+                "diagnostics in traces, summaries, and scorecards."
+            )
+        else:
+            title = "## AegisForge Sprint 4 Benchmark Context"
+            guidance = "Preserve all upstream and local identity fields in traces, summaries, and scorecards."
+
         lines = [
-            "## AegisForge Sprint 4 Benchmark Context",
+            title,
             "",
-            "Preserve all upstream and local identity fields in traces, summaries, and scorecards.",
+            guidance,
         ]
         for key in SPRINT4_CONTEXT_KEYS:
             if key in context:
@@ -426,12 +588,21 @@ class PromptLoader:
             if text:
                 raw_candidates.append(text)
 
+        track_key = _clean_key(track)
+        if _is_skillsbench_metadata(metadata) or TRACK_ALIASES.get(track_key) == "skillsbench":
+            add("skillsbench")
+
         add(track)
         add(metadata.get("track"))
         add(metadata.get("track_hint"))
         add(metadata.get("upstream_track"))
         add(metadata.get("benchmark_track"))
+        add(metadata.get("benchmark"))
+        add(metadata.get("adapter"))
         add(metadata.get("domain"))
+        add(metadata.get("scenario_family"))
+        add(metadata.get("task_set"))
+        add(metadata.get("condition"))
         add(metadata.get("scenario_id"))
         add(metadata.get("scenario_name"))
 
@@ -439,10 +610,24 @@ class PromptLoader:
         if isinstance(scenario, Mapping):
             add(scenario.get("track"))
             add(scenario.get("upstream_track"))
+            add(scenario.get("benchmark_track"))
             add(scenario.get("domain"))
+            add(scenario.get("scenario_family"))
+            add(scenario.get("task_set"))
+            add(scenario.get("condition"))
             add(scenario.get("scenario_id"))
             add(scenario.get("id"))
             add(scenario.get("name"))
+
+        task = metadata.get("task")
+        if isinstance(task, Mapping):
+            add(task.get("track"))
+            add(task.get("benchmark"))
+            add(task.get("task_set"))
+            add(task.get("condition"))
+            add(task.get("task_id"))
+            add(task.get("id"))
+            add(task.get("name"))
 
         resolved: list[str] = []
         for candidate in raw_candidates:

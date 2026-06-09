@@ -66,7 +66,7 @@ BROWSECOMP_PLUS_AGENT_VERSION = "browsecomp_plus_answer_quality_route_on_probe_v
 BUILD_IT_BUILDER_VERSION = "semantic_builder_v3_4_bwim_extra_height_trim_2026_05_21"
 OFFICEQA_AGENT_VERSION = "officeqa_answer_engine_v1_6_1_timeout_guarded_evidence_packer_2026_05_23"
 CRMARENA_AGENT_VERSION = "crmarena_answer_engine_v0_8_strict_company_and_month_guard_2026_05_24"
-SKILLSBENCH_AGENT_VERSION = "skillsbench_filesystem_harness_bridge_v0_8_call_signature_fix_2026_06_03"
+SKILLSBENCH_AGENT_VERSION = "skillsbench_filesystem_harness_bridge_v0_9_surface_preservation_2026_06_09"
 _OFFICEQA_GLOBAL_CORPUS_CACHE: list[dict[str, Any]] | None = None
 _OFFICEQA_GLOBAL_CORPUS_ERROR: str = ""
 _OFFICEQA_GLOBAL_CORPUS_LOAD_SECONDS: float = 0.0
@@ -16897,6 +16897,123 @@ class AegisForgeAgent:
         ]
 
 
+
+    def _skillsbench_refs_from_harness_surfaces(
+        self,
+        *,
+        artifacts: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        artifact_outputs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        files: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        deliverables: list[Any] | tuple[Any, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Normalize SkillsBench harness output surfaces into artifact-ref candidates.
+
+        SkillsBench scoring is treated as filesystem-first, but the executor and
+        post-mortem tooling still need a stable diagnostic surface describing what
+        AegisForge emitted.  This helper deliberately merges all harness-visible
+        surfaces instead of privileging one A2A channel:
+
+        - ``artifacts`` from the adapter/result emitter;
+        - ``artifact_outputs`` from filesystem/workspace execution;
+        - ``files`` persisted by the result emitter;
+        - ``deliverables`` returned as strings or lightweight records.
+
+        The returned records are not assumed to be official scorer inputs.  They
+        are forensic candidates used to detect whether refs/files were dropped by
+        the gateway or by later result aggregation.
+        """
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
+
+        def _text(value: Any) -> str:
+            return self._coerce_text(value).strip()
+
+        def _path_name(value: Any) -> str:
+            text = _text(value)
+            if not text:
+                return ""
+            try:
+                return Path(text).name
+            except Exception:
+                return text.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        def _add(item: Any, source: str) -> None:
+            if item is None:
+                return
+
+            if isinstance(item, Mapping):
+                raw = dict(item)
+            else:
+                raw_text = _text(item)
+                if not raw_text:
+                    return
+                raw = {"artifact_ref": raw_text}
+                if raw_text.startswith("/"):
+                    raw["path"] = raw_text
+                elif "://" in raw_text:
+                    raw["uri"] = raw_text
+                raw["name"] = _path_name(raw_text) or "artifact_ref"
+
+            ref: dict[str, Any] = {}
+            ref.update(raw)
+            ref.setdefault("source", source)
+
+            name = _text(
+                ref.get("name")
+                or ref.get("file_name")
+                or ref.get("filename")
+                or ref.get("artifact_name")
+                or _path_name(ref.get("path") or ref.get("relative_path") or ref.get("uri") or ref.get("artifact_ref"))
+            )
+            path = _text(ref.get("path") or ref.get("absolute_path"))
+            relative_path = _text(ref.get("relative_path"))
+            uri = _text(ref.get("artifact_uri") or ref.get("uri") or ref.get("url") or ref.get("href"))
+            artifact_ref = _text(ref.get("artifact_ref") or uri or path or relative_path)
+            sha256 = _text(ref.get("sha256") or ref.get("digest"))
+            mime_type = _text(ref.get("mime_type") or ref.get("content_type") or ref.get("type"))
+
+            if name:
+                ref["name"] = name
+            if artifact_ref:
+                ref["artifact_ref"] = artifact_ref
+            if uri:
+                ref["uri"] = uri
+            if path:
+                ref["path"] = path
+            if relative_path:
+                ref["relative_path"] = relative_path
+            if sha256:
+                ref["sha256"] = sha256
+            if mime_type:
+                ref["mime_type"] = mime_type
+
+            if not (artifact_ref or uri or path or relative_path or name or sha256):
+                return
+
+            key = (
+                _text(ref.get("artifact_ref")),
+                _text(ref.get("uri")),
+                _text(ref.get("path") or ref.get("relative_path")),
+                _text(ref.get("name")),
+                _text(ref.get("sha256")),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(self._normalize_for_json(ref))
+
+        for source, items in (
+            ("harness.artifacts", artifacts or []),
+            ("harness.artifact_outputs", artifact_outputs or []),
+            ("harness.files", files or []),
+            ("harness.deliverables", deliverables or []),
+        ):
+            for item in items:
+                _add(item, source)
+
+        return candidates
+
     def _skillsbench_adapter_reasoner(self, context: Mapping[str, Any]) -> str:
         """Reasoning callback used by the formal SkillsBench adapter.
 
@@ -16952,7 +17069,8 @@ class AegisForgeAgent:
         by executor.py while storing all adapter outputs on the legacy surfaces
         that executor.py already scans.
         """
-        bridge_marker = "skillsbench_agent_bridge_v0_3_harness_call_signature_fix_real_filesystem_2026_06_03"
+        bridge_marker = "skillsbench_agent_bridge_v0_4_surface_preservation_real_filesystem_2026_06_09"
+        artifact_refs_candidate: list[dict[str, Any]] = []
         # SkillsBench standard-v1 / with_skills is scored from files written in the
         # task sandbox.  Therefore this route must call the real-filesystem harness
         # before any legacy A2A artifact-ref/gateway path.  The legacy path remains
@@ -17013,6 +17131,14 @@ class AegisForgeAgent:
             files = [dict(item) for item in harness_result.get("files", []) if isinstance(item, Mapping)]
             deliverables = [self._coerce_text(item) for item in harness_result.get("deliverables", [])]
 
+            artifact_refs_candidate = self._skillsbench_refs_from_harness_surfaces(
+                artifacts=artifacts,
+                artifact_outputs=artifact_outputs,
+                files=files,
+                deliverables=deliverables,
+            )
+            payload["artifact_refs_candidate"] = self._normalize_for_json(artifact_refs_candidate)
+
             diagnostics_source = harness_result.get("diagnostics")
             if not isinstance(diagnostics_source, Mapping):
                 diagnostics_source = harness_result.get("diagnostic")
@@ -17038,6 +17164,7 @@ class AegisForgeAgent:
                 "artifact_outputs_count": len(artifact_outputs),
                 "files_count": len(files),
                 "deliverables": deliverables,
+                "artifact_refs_candidate": self._normalize_for_json(artifact_refs_candidate),
                 "diagnostics": self._normalize_for_json(diagnostics),
                 "llm_calls_used": self._current_llm_calls,
                 "last_llm_error": self._last_llm_error,
@@ -17060,6 +17187,10 @@ class AegisForgeAgent:
                         "version": SKILLSBENCH_AGENT_VERSION,
                         "agent_bridge_marker": bridge_marker,
                         "payload": self._normalize_for_json(payload),
+                        "artifact_refs_candidate": self._normalize_for_json(artifact_refs_candidate),
+                        "artifact_outputs": self._normalize_for_json(artifact_outputs),
+                        "files": self._normalize_for_json(files),
+                        "deliverables": deliverables,
                         "diagnostics": self._normalize_for_json(diagnostics),
                     },
                     ensure_ascii=False,
@@ -17074,12 +17205,13 @@ class AegisForgeAgent:
                 "harness_entrypoint": "handle_skillsbench_request",
                 "legacy_artifactrefs_bypassed": True,
                 "payload": self._normalize_for_json(payload),
+                "artifact_refs_candidate": self._normalize_for_json(artifact_refs_candidate),
                 "artifact_outputs": self._normalize_for_json(artifact_outputs),
                 "files": self._normalize_for_json(files),
                 "deliverables": deliverables,
                 "diagnostics": self._normalize_for_json(diagnostics),
             }
-            self._skillsbench_last_artifact_refs = []
+            self._skillsbench_last_artifact_refs = artifact_refs_candidate
             self._last_artifacts = artifacts
             self.last_artifacts = artifacts
             self._last_result = {
@@ -17093,7 +17225,7 @@ class AegisForgeAgent:
                 "artifact_outputs": artifact_outputs,
                 "files": files,
                 "deliverables": deliverables,
-                "artifact_refs_candidate": [],
+                "artifact_refs_candidate": artifact_refs_candidate,
                 "adapter_status": status,
                 "diagnostics": diagnostics,
             }
@@ -17106,7 +17238,7 @@ class AegisForgeAgent:
                 "artifact_outputs": artifact_outputs,
                 "files": files,
                 "deliverables": deliverables,
-                "artifact_refs_candidate": [],
+                "artifact_refs_candidate": artifact_refs_candidate,
                 "adapter_status": status,
                 "diagnostics": diagnostics,
             }
@@ -17131,6 +17263,7 @@ class AegisForgeAgent:
                     "harness_failed_before_legacy": True,
                     "legacy_artifactrefs_bypassed": True,
                     "harness_error": harness_error,
+                    "artifact_refs_candidate": self._normalize_for_json(artifact_refs_candidate),
                     "metadata": dict(metadata or {}),
                 }
                 final_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -17152,9 +17285,10 @@ class AegisForgeAgent:
                     "agent_bridge_marker": bridge_marker,
                     "harness_failed_before_legacy": True,
                     "legacy_artifactrefs_bypassed": True,
+                    "artifact_refs_candidate": self._normalize_for_json(artifact_refs_candidate),
                     "harness_error": harness_error,
                 }
-                self._skillsbench_last_artifact_refs = []
+                self._skillsbench_last_artifact_refs = artifact_refs_candidate
                 self._last_artifacts = []
                 self.last_artifacts = []
                 self._last_result = {
@@ -17165,7 +17299,7 @@ class AegisForgeAgent:
                     "agent_bridge_marker": bridge_marker,
                     "payload": dict(payload),
                     "artifacts": [],
-                    "artifact_refs_candidate": [],
+                    "artifact_refs_candidate": artifact_refs_candidate,
                     "adapter_status": status,
                     "harness_error": harness_error,
                 }
@@ -17177,7 +17311,7 @@ class AegisForgeAgent:
                     "artifact_outputs": [],
                     "files": [],
                     "deliverables": [],
-                    "artifact_refs_candidate": [],
+                    "artifact_refs_candidate": artifact_refs_candidate,
                     "adapter_status": status,
                     "harness_error": harness_error,
                 }

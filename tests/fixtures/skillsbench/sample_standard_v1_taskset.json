@@ -1,0 +1,38 @@
+{
+  "schema_version": "skillsbench.agentbeats.task_set.v1",
+  "task_set": "standard-v1",
+  "condition": "with_skills",
+  "task_count": 3,
+  "tasks": [
+    {
+      "task_id": "dialogue-parser",
+      "task_digest": "sha256:dialogue",
+      "category": "office-white-collar",
+      "difficulty": "easy",
+      "tags": [
+        "json_output",
+        "deploy-smoke"
+      ]
+    },
+    {
+      "task_id": "court-form-filling",
+      "task_digest": "sha256:court",
+      "category": "office-white-collar",
+      "difficulty": "medium",
+      "tags": [
+        "pdf_document",
+        "deploy-smoke"
+      ]
+    },
+    {
+      "task_id": "fix-build-agentops",
+      "task_digest": "sha256:agentops",
+      "category": "software-engineering",
+      "difficulty": "hard",
+      "tags": [
+        "code_solution",
+        "bugswarm"
+      ]
+    }
+  ]
+}

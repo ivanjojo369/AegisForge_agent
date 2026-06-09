@@ -33,12 +33,189 @@ from .task_environment import (
 )
 
 
-TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_4_exception_safe_permission_fallback_writer_2026_06_03"
+TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_5_solver_registry_pptx_routing_2026_06_09"
 
 SolverFn = Callable[
     [SkillsBenchOutputContract, SkillsBenchTaskEnvironment, Mapping[str, Any], str],
     "TaskWorkspaceExecution",
 ]
+
+
+def _normalize_solver_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("\\", "/")
+    text = text.split("/")[-1]
+    text = re.sub(r"[^a-z0-9_.-]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text
+
+
+def _solver_key_variants(value: Any) -> tuple[str, ...]:
+    raw = str(value or "").strip()
+    normalized = _normalize_solver_key(raw)
+    variants: list[str] = []
+    for item in (raw, normalized, normalized.replace("-", "_"), normalized.replace("_", "-")):
+        item = str(item or "").strip()
+        if item and item not in variants:
+            variants.append(item)
+    if "__" in raw:
+        prefix = raw.split("__", 1)[0]
+        for item in _solver_key_variants(prefix):
+            if item not in variants:
+                variants.append(item)
+    return tuple(variants)
+
+
+def _family_aliases(family: str) -> tuple[str, ...]:
+    family = str(family or "").strip().lower().replace("-", "_")
+    aliases = {
+        "office_pptx": ("office_pptx", "presentation", "pptx_output", "presentation_output", "slides", "slide_deck"),
+        "office_xlsx": ("office_xlsx", "spreadsheet", "xlsx_output", "excel", "spreadsheet_output"),
+        "office_docx": ("office_docx", "document", "docx_output", "document_output"),
+        "pdf_document": ("pdf_document", "pdf_output", "pdf_form"),
+        "code_solution": ("code_solution", "software_patch", "bugswarm_build_repair", "python_solution"),
+        "lean_solution": ("lean_solution", "formal_reasoning", "lean", "formal"),
+        "security_config": ("security_config", "security_audit", "security_output", "cybersecurity"),
+        "json_output": ("json_output", "data_json", "json"),
+        "csv_output": ("csv_output", "data_csv", "csv"),
+        "media_output": ("media_output", "media_processing"),
+        "general_file_output": ("general_file_output", "general"),
+    }
+    values = aliases.get(family, (family,))
+    out: list[str] = []
+    for value in values:
+        for variant in _solver_key_variants(value):
+            if variant not in out:
+                out.append(variant)
+    return tuple(out)
+
+
+def _load_default_solver_registry() -> tuple[dict[str, SolverFn], str]:
+    """Load the SkillsBench solver registry lazily.
+
+    The executor should keep working in minimal builds where optional solvers are
+    not importable.  Failures are reported in diagnostics instead of raising at
+    module import time.
+    """
+
+    try:
+        from .solvers import default_solver_registry  # type: ignore
+
+        registry = default_solver_registry()
+        return {str(key): value for key, value in dict(registry).items() if callable(value)}, ""
+    except Exception as exc:  # pragma: no cover - optional registry compatibility
+        return {}, f"{type(exc).__name__}: {str(exc)[:500]}"
+
+
+def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    keys: list[str] = []
+    metadata_keys = (
+        "canonical_task_id",
+        "environment_canonical_task_id",
+        "contract_task_id",
+        "task_id",
+        "id",
+        "name",
+        "task_name",
+        "trial_id",
+        "family",
+        "contract_family",
+        "output_family",
+        "environment_family_hint",
+    )
+
+    for key in metadata_keys:
+        for variant in _solver_key_variants(metadata.get(key)):
+            if variant not in keys:
+                keys.append(variant)
+
+    for variant in _solver_key_variants(contract.task_id):
+        if variant not in keys:
+            keys.append(variant)
+
+    for variant in _family_aliases(contract.family):
+        if variant not in keys:
+            keys.append(variant)
+
+    # Requirement kinds can disambiguate a generic family, especially when the
+    # task id arrives as a UUID and output_contract inferred the family from the
+    # concrete deliverable extension.
+    kinds = {req.kind for req in contract.requirements}
+    if "presentation" in kinds:
+        for variant in _family_aliases("office_pptx"):
+            if variant not in keys:
+                keys.append(variant)
+    if "excel" in kinds:
+        for variant in _family_aliases("office_xlsx"):
+            if variant not in keys:
+                keys.append(variant)
+    if "document" in kinds:
+        for variant in _family_aliases("office_docx"):
+            if variant not in keys:
+                keys.append(variant)
+    if "pdf" in kinds:
+        for variant in _family_aliases("pdf_document"):
+            if variant not in keys:
+                keys.append(variant)
+    if "patch" in kinds or "python" in kinds or "shell" in kinds:
+        for variant in _family_aliases("code_solution"):
+            if variant not in keys:
+                keys.append(variant)
+
+    return tuple(keys)
+
+
+def _task_execution_from_mapping(
+    payload: Mapping[str, Any],
+    contract: SkillsBenchOutputContract,
+    env: SkillsBenchTaskEnvironment,
+    *,
+    solver_key: str,
+) -> "TaskWorkspaceExecution":
+    """Compatibility adapter for solvers returning dict payloads."""
+
+    writes_payload = payload.get("writes") or payload.get("write_results") or []
+    writes: list[WorkspaceWriteResult] = []
+    if isinstance(writes_payload, Sequence) and not isinstance(writes_payload, (str, bytes, bytearray)):
+        for item in writes_payload:
+            if isinstance(item, WorkspaceWriteResult):
+                writes.append(item)
+            elif isinstance(item, Mapping):
+                writes.append(
+                    WorkspaceWriteResult(
+                        path=str(item.get("path") or ""),
+                        ok=bool(item.get("ok")),
+                        action=str(item.get("action") or "write"),
+                        kind=str(item.get("kind") or "unknown"),
+                        bytes_written=int(item.get("bytes_written") or item.get("size_bytes") or 0),
+                        sha256=str(item.get("sha256") or ""),
+                        skipped=bool(item.get("skipped")),
+                        reason=str(item.get("reason") or ""),
+                        error=str(item.get("error") or ""),
+                        parent_created=bool(item.get("parent_created")),
+                        existed_before=bool(item.get("existed_before")),
+                    )
+                )
+
+    diagnostics = dict(payload.get("diagnostics") or {})
+    diagnostics.setdefault("selected_solver_key", solver_key)
+    diagnostics.setdefault("solver_result_adapter", "mapping")
+
+    return TaskWorkspaceExecution(
+        version=str(payload.get("version") or TASK_WORKSPACE_EXECUTOR_VERSION),
+        ok=bool(payload.get("ok", any(item.ok for item in writes))),
+        status=str(payload.get("status") or ("completed" if any(item.ok for item in writes) else "solver_no_files_written")),
+        task_id=str(payload.get("task_id") or contract.task_id),
+        family=str(payload.get("family") or contract.family),
+        workspace_visible=bool(payload.get("workspace_visible", env.can_access_task_filesystem)),
+        wrote_any_file=bool(payload.get("wrote_any_file", any(item.ok for item in writes))),
+        writes=tuple(writes),
+        contract=dict(payload.get("contract") or contract.as_context()),
+        environment=dict(payload.get("environment") or env.as_context()),
+        diagnostics=diagnostics,
+        warnings=tuple(str(item) for item in payload.get("warnings", ()) or ()),
+        errors=tuple(str(item) for item in payload.get("errors", ()) or ()),
+    )
 
 
 @dataclass(frozen=True)
@@ -709,7 +886,7 @@ def _candidate_fallback_paths(
     roots: list[str] = []
     roots.extend(str(root) for root in getattr(env, "best_output_roots", ()) or ())
 
-    if contract.needs_repo_patch or contract.family in {"software_patch", "bugswarm_build_repair"} or req.kind == "patch":
+    if contract.needs_repo_patch or contract.family == "code_solution" or req.kind == "patch":
         roots.extend(
             [
                 "/home/github/build/failed",
@@ -805,21 +982,21 @@ def _write_with_permission_fallbacks(
 
 def _default_filename_for_directory(req: OutputRequirement, contract: SkillsBenchOutputContract) -> tuple[str, str]:
     blob = " ".join([req.path, req.filename, contract.family, contract.task_id]).lower()
-    if "patch" in blob or contract.needs_repo_patch or contract.family in {"software_patch", "bugswarm_build_repair"}:
+    if "patch" in blob or contract.needs_repo_patch or contract.family == "code_solution":
         return "solution.patch", "patch"
-    if "csv" in blob or contract.family in {"data_csv", "spreadsheet_office"}:
+    if "csv" in blob or contract.family == "csv_output":
         return "results.csv", "csv"
-    if "ppt" in blob or "presentation" in blob:
+    if "ppt" in blob or "presentation" in blob or contract.family == "office_pptx":
         return "results.pptx", "presentation"
-    if "xlsx" in blob or "excel" in blob or "spreadsheet" in blob:
+    if "xlsx" in blob or "excel" in blob or "spreadsheet" in blob or contract.family == "office_xlsx":
         return "results.xlsx", "excel"
-    if "pdf" in blob:
+    if "pdf" in blob or contract.family == "pdf_document":
         return "report.pdf", "pdf"
-    if "doc" in blob:
+    if "doc" in blob or contract.family == "office_docx":
         return "document.docx", "document"
-    if "lean" in blob:
+    if "lean" in blob or contract.family == "lean_solution":
         return "solution.lean", "lean"
-    if "py" in blob or contract.family == "code_workspace":
+    if "py" in blob or contract.family == "code_solution":
         return "solution.py", "python"
     if "md" in blob or "report" in blob:
         return "report.md", "markdown"
@@ -921,13 +1098,42 @@ class SkillsBenchTaskWorkspaceExecutor:
         max_writes: int = 48,
         write_probe: bool = False,
         solver_registry: Mapping[str, SolverFn] | None = None,
+        use_default_solver_registry: bool = True,
     ) -> None:
         self.allow_writes = bool(allow_writes)
         self.allow_placeholder_paths = bool(allow_placeholder_paths)
         self.max_writes = max(1, int(max_writes))
         self.write_probe = bool(write_probe)
-        self.solver_registry = dict(solver_registry or {})
+
+        default_registry: dict[str, SolverFn] = {}
+        default_registry_error = ""
+        if use_default_solver_registry:
+            default_registry, default_registry_error = _load_default_solver_registry()
+
+        merged_registry: dict[str, SolverFn] = {}
+        merged_registry.update(default_registry)
+        merged_registry.update({str(key): value for key, value in dict(solver_registry or {}).items() if callable(value)})
+        self.solver_registry = merged_registry
+        self.default_solver_registry_error = default_registry_error
+        self.last_solver_lookup_keys: tuple[str, ...] = tuple()
+        self.last_selected_solver_key: str = ""
         self.last_execution: TaskWorkspaceExecution | None = None
+
+
+    def _select_solver(
+        self,
+        contract: SkillsBenchOutputContract,
+        metadata: Mapping[str, Any],
+    ) -> tuple[SolverFn | None, str, tuple[str, ...]]:
+        keys = _solver_lookup_keys(contract, metadata)
+        self.last_solver_lookup_keys = keys
+        for key in keys:
+            solver = self.solver_registry.get(key)
+            if solver is not None:
+                self.last_selected_solver_key = key
+                return solver, key, keys
+        self.last_selected_solver_key = ""
+        return None, "", keys
 
     def execute(
         self,
@@ -942,23 +1148,15 @@ class SkillsBenchTaskWorkspaceExecutor:
         contract = contract or build_output_contract(metadata, prompt)
         environment = environment or discover_task_environment(metadata, prompt, task_id=contract.task_id, write_probe=self.write_probe)
 
-        solver = self.solver_registry.get(contract.family) or self.solver_registry.get(contract.task_id)
-        if solver is not None:
-            try:
-                result = solver(contract, environment, metadata, prompt)
-                self.last_execution = result
-                return result
-            except Exception as exc:
-                solver_error = str(exc)[:800]
-        else:
-            solver_error = ""
-
         writes: list[WorkspaceWriteResult] = []
         warnings: list[str] = []
         errors: list[str] = []
 
-        if solver_error:
-            warnings.append(f"registered solver failed and generic writer was used: {solver_error}")
+        solver_error = ""
+        solver, solver_key, solver_lookup_keys = self._select_solver(contract, metadata)
+
+        if self.default_solver_registry_error:
+            warnings.append(f"default solver registry unavailable: {self.default_solver_registry_error}")
 
         if not contract.requirements:
             warnings.append("No output requirements detected; attempting best-effort answer.json fallback.")
@@ -984,7 +1182,50 @@ class SkillsBenchTaskWorkspaceExecutor:
 
         if not self.allow_writes:
             warnings.append("allow_writes=False; produced dry-run diagnostics only.")
-            return self._finish(contract, environment, writes, warnings, errors, status="dry_run")
+            result = self._finish(contract, environment, writes, warnings, errors, status="dry_run")
+            self.last_execution = result
+            return result
+
+        if solver is not None:
+            try:
+                raw_result = solver(contract, environment, metadata, prompt)
+                if isinstance(raw_result, TaskWorkspaceExecution):
+                    result = raw_result
+                elif isinstance(raw_result, Mapping):
+                    result = _task_execution_from_mapping(raw_result, contract, environment, solver_key=solver_key)
+                else:
+                    raise TypeError(f"solver returned unsupported type: {type(raw_result).__name__}")
+
+                result_dict = result.as_dict()
+                diagnostics = dict(result_dict.get("diagnostics") or {})
+                diagnostics.setdefault("selected_solver_key", solver_key)
+                diagnostics.setdefault("solver_lookup_keys", list(solver_lookup_keys))
+                diagnostics.setdefault("solver_registry_key_count", len(self.solver_registry))
+                result = TaskWorkspaceExecution(
+                    version=result.version,
+                    ok=result.ok,
+                    status=result.status,
+                    task_id=result.task_id,
+                    family=result.family,
+                    workspace_visible=result.workspace_visible,
+                    wrote_any_file=result.wrote_any_file,
+                    writes=result.writes,
+                    contract=result.contract,
+                    environment=result.environment,
+                    diagnostics=diagnostics,
+                    warnings=tuple([*result.warnings, f"selected_solver_key={solver_key}"]),
+                    errors=result.errors,
+                )
+                self.last_execution = result
+                return result
+            except Exception as exc:
+                solver_error = f"{solver_key}: {type(exc).__name__}: {str(exc)[:800]}"
+                warnings.append(f"registered solver failed and generic writer was used: {solver_error}")
+        else:
+            warnings.append(
+                "no registered solver matched contract; generic filesystem writer used "
+                f"(family={contract.family}, task_id={contract.task_id})"
+            )
 
         for req in contract.requirements[: self.max_writes]:
             result = self._write_requirement(req, contract, environment, metadata)
@@ -1141,6 +1382,10 @@ class SkillsBenchTaskWorkspaceExecutor:
             "skipped_writes": sum(1 for w in writes if w.skipped),
             "permission_denied_writes": sum(1 for w in writes if _write_error_is_permissionish(w)),
             "fallback_writes": sum(1 for w in writes if "fallback" in (w.action or "") or "fallback_from=" in (w.reason or "")),
+            "selected_solver_key": self.last_selected_solver_key,
+            "solver_lookup_keys": list(self.last_solver_lookup_keys),
+            "solver_registry_key_count": len(self.solver_registry),
+            "default_solver_registry_error": self.default_solver_registry_error,
             "exception_safe_writer": True,
             "metadata_permission_errors": sum(1 for w in writes if "exists(" in (w.error or "") or "is_dir(" in (w.error or "") or "is_file(" in (w.error or "")),
             "kind_counts": dict(Counter(w.kind for w in writes)),
@@ -1182,8 +1427,15 @@ def execute_task_workspace(
     write_probe: bool = False,
     contract: SkillsBenchOutputContract | None = None,
     environment: SkillsBenchTaskEnvironment | None = None,
+    solver_registry: Mapping[str, SolverFn] | None = None,
+    use_default_solver_registry: bool = True,
 ) -> dict[str, Any]:
-    executor = SkillsBenchTaskWorkspaceExecutor(allow_writes=allow_writes, write_probe=write_probe)
+    executor = SkillsBenchTaskWorkspaceExecutor(
+        allow_writes=allow_writes,
+        write_probe=write_probe,
+        solver_registry=solver_registry,
+        use_default_solver_registry=use_default_solver_registry,
+    )
     return executor.execute(metadata, text, contract=contract, environment=environment).as_dict()
 
 
@@ -1205,6 +1457,77 @@ def validate_task_workspace_executor_selftest() -> dict[str, Any]:
         errors.append("contract primary outputs missing")
     if "data" not in contract.family and "json" not in contract.family and "csv" not in contract.family:
         errors.append(f"unexpected family: {contract.family}")
+
+    pptx_contract = build_output_contract(
+        {"task_id": "exceltable-in-ppt", "category": "office-white-collar"},
+        "Create the final deck at `/root/output/final_deck.pptx`. Use /root/data/input.xlsx as input only.",
+    )
+    if pptx_contract.family != "office_pptx":
+        errors.append(f"pptx contract family not routed: {pptx_contract.family}")
+
+    pptx_executor = SkillsBenchTaskWorkspaceExecutor(allow_writes=False)
+    pptx_execution = pptx_executor.execute(
+        {"task_id": "exceltable-in-ppt", "canonical_task_id": "exceltable-in-ppt"},
+        "Create the final deck at `/root/output/final_deck.pptx`.",
+        contract=pptx_contract,
+    )
+    if "office_pptx" not in pptx_execution.diagnostics.get("solver_lookup_keys", []):
+        errors.append("office_pptx was not included in solver lookup keys")
+
+    fake_solver_called: list[str] = []
+
+    def _fake_pptx_solver(
+        solver_contract: SkillsBenchOutputContract,
+        solver_env: SkillsBenchTaskEnvironment,
+        solver_metadata: Mapping[str, Any],
+        solver_prompt: str,
+    ) -> TaskWorkspaceExecution:
+        fake_solver_called.append(solver_contract.family)
+        write = WorkspaceWriteResult(
+            path="/tmp/aegisforge-fake/answer.pptx",
+            ok=True,
+            action="fake_solver",
+            kind="presentation",
+            bytes_written=4,
+            sha256="0" * 64,
+        )
+        return TaskWorkspaceExecution(
+            version=TASK_WORKSPACE_EXECUTOR_VERSION,
+            ok=True,
+            status="completed",
+            task_id=solver_contract.task_id,
+            family=solver_contract.family,
+            workspace_visible=True,
+            wrote_any_file=True,
+            writes=(write,),
+            contract=solver_contract.as_context(),
+            environment=solver_env.as_context(),
+            diagnostics={"fake_solver": True},
+        )
+
+    class _FakeEnv:
+        can_access_task_filesystem = True
+        best_output_roots = ("/tmp",)
+        env_signals = {}
+        def as_context(self) -> dict[str, Any]:
+            return {"fake": True, "can_access_task_filesystem": True}
+        def can_write_path(self, path: str) -> bool:
+            return True
+
+    fake_executor = SkillsBenchTaskWorkspaceExecutor(
+        allow_writes=True,
+        solver_registry={"office_pptx": _fake_pptx_solver},
+        use_default_solver_registry=False,
+    )
+    fake_result = fake_executor.execute(
+        {"task_id": "exceltable-in-ppt"},
+        "Create `/root/output/final_deck.pptx`.",
+        contract=pptx_contract,
+        environment=_FakeEnv(),  # type: ignore[arg-type]
+    )
+    if not fake_solver_called or fake_result.diagnostics.get("selected_solver_key") != "office_pptx":
+        errors.append(f"office_pptx solver was not selected: {fake_result.diagnostics}")
+
 
     return {
         "ok": not errors,

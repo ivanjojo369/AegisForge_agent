@@ -33,7 +33,7 @@ import tempfile
 import time
 
 
-TASK_ENVIRONMENT_VERSION = "skillsbench_task_environment_v0_2_canonical_identity_2026_06_03"
+TASK_ENVIRONMENT_VERSION = "skillsbench_task_environment_v0_3_identity_fingerprint_output_paths_2026_06_09"
 
 
 KNOWN_TASK_ROOTS: tuple[str, ...] = (
@@ -106,10 +106,37 @@ ENV_SIGNAL_KEYS: tuple[str, ...] = (
 
 OUTPUT_PATH_RE = re.compile(
     r"(?P<quote>[`\"']?)"
-    r"(?P<path>/(?:root|app|data|output|workspace|home/github/build|logs)"
-    r"[A-Za-z0-9_./{}<>:+@%=\- ]{0,240}?"
-    r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|/))"
+    r"(?P<path>/(?:root|app|data|output|workspace|home/github/build|home/github|logs)"
+    r"(?:/[A-Za-z0-9_.{}<>:+@%=\-]+){0,64}"
+    r"\.(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh))"
     r"(?P=quote)"
+)
+
+REL_OUTPUT_PATH_RE = re.compile(
+    r"(?P<quote>[`\"']?)"
+    r"(?P<path>(?:(?:output|outputs|result|results|workspace|artifacts|patches|logs)/)?"
+    r"(?:[A-Za-z0-9_.{}<>:+@%=\-]+/){0,8}"
+    r"[A-Za-z0-9][A-Za-z0-9_.{}<>:+@%=\-]{0,180}"
+    r"\.(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh))"
+    r"(?P=quote)",
+    re.IGNORECASE,
+)
+
+OUTPUT_CONTEXT_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:write|save|create|generate|produce|output|submit|fill)(?![A-Za-z0-9_./-])"
+    r"[^\n.;]{0,260}?"
+    r"(?P<file>(?:(?:output|outputs|result|results|workspace|artifacts|patches|logs)/)?"
+    r"(?:[A-Za-z0-9_.{}<>:+@%=\-]+/){0,8}"
+    r"[A-Za-z0-9][A-Za-z0-9_.{}<>:+@%=\-]{0,180}"
+    r"\.(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh))",
+    re.IGNORECASE,
+)
+
+OUTPUT_SECTION_HEADER_RE = re.compile(
+    r"^(?:[#*\-\d.) ]{0,12})"
+    r"(?:required\s+)?(?:output\s+files?|outputs?|deliverables?|submission\s+files?|files\s+to\s+(?:create|submit|write)|expected\s+files?|final\s+files?|artifacts?)"
+    r"\s*:?(?P<tail>.*)$",
+    re.IGNORECASE,
 )
 
 PLACEHOLDER_RE = re.compile(r"<[^>/\s]+>|\{[^}/\s]+\}")
@@ -191,7 +218,17 @@ KNOWN_SKILLSBENCH_TASK_IDS: frozenset[str] = frozenset(
         "pareto-frontier",
         "rar-recover-data",
         "sc100-form-filling",
-        "court-form-filling",
+        "exceltable-in-ppt",
+        "stat-ocr",
+        "jpg-ocr-stat",
+        "video-tutorial-indexer",
+        "video-filler-word-remover",
+        "syzkaller-ppdev-syzlang",
+        "pedestrian-traffic-counting",
+        "fix-build-google-auto",
+        "fix-erlang-ssh-cve",
+        "react-performance-debugging",
+        "seismic-phase-picking",
     }
 )
 
@@ -214,6 +251,17 @@ TASK_ID_CATEGORY_MAP: dict[str, str] = {
     "dapt-intrusion-detection": "cybersecurity",
     "bgp-route-leak": "cybersecurity",
     "controller-tuning": "industrial-physical-systems",
+    "exceltable-in-ppt": "office-white-collar",
+    "stat-ocr": "office-white-collar",
+    "jpg-ocr-stat": "office-white-collar",
+    "video-tutorial-indexer": "media-content-production",
+    "video-filler-word-remover": "media-content-production",
+    "syzkaller-ppdev-syzlang": "software-engineering",
+    "pedestrian-traffic-counting": "media-content-production",
+    "fix-build-google-auto": "software-engineering",
+    "fix-erlang-ssh-cve": "software-engineering",
+    "react-performance-debugging": "software-engineering",
+    "seismic-phase-picking": "natural-science",
 }
 
 TASK_ID_TAG_MAP: dict[str, tuple[str, ...]] = {
@@ -235,6 +283,17 @@ TASK_ID_TAG_MAP: dict[str, tuple[str, ...]] = {
     "dapt-intrusion-detection": ("security", "network", "intrusion-detection"),
     "bgp-route-leak": ("security", "routing", "bgp"),
     "controller-tuning": ("control", "csv", "json"),
+    "exceltable-in-ppt": ("pptx", "excel", "presentation"),
+    "stat-ocr": ("ocr", "xlsx", "spreadsheet"),
+    "jpg-ocr-stat": ("ocr", "image", "spreadsheet"),
+    "video-tutorial-indexer": ("video", "indexing"),
+    "video-filler-word-remover": ("video", "audio"),
+    "syzkaller-ppdev-syzlang": ("linux", "syzkaller", "code"),
+    "pedestrian-traffic-counting": ("video", "counting"),
+    "fix-build-google-auto": ("software", "build", "patch"),
+    "fix-erlang-ssh-cve": ("software", "security", "patch"),
+    "react-performance-debugging": ("react", "performance", "debug"),
+    "seismic-phase-picking": ("science", "signal", "csv"),
 }
 
 
@@ -766,57 +825,172 @@ def canonicalize_task_metadata(
     return out
 
 
-def extract_output_path_candidates(text: Any, metadata: Mapping[str, Any] | None = None) -> list[OutputPathCandidate]:
-    """Extract filesystem output paths from task text and metadata.
+def _output_kind_for_path(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    return {
+        ".json": "json",
+        ".csv": "csv",
+        ".txt": "text",
+        ".md": "markdown",
+        ".py": "python",
+        ".xlsx": "xlsx",
+        ".xls": "xls",
+        ".pptx": "pptx",
+        ".docx": "docx",
+        ".pdf": "pdf",
+        ".dxf": "dxf",
+        ".zip": "zip",
+        ".diff": "patch",
+        ".lean": "lean",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".sh": "shell",
+    }.get(suffix, "directory" if str(path).endswith("/") else "path")
 
-    This is intentionally lightweight. output_contract.py owns full route/schema
-    extraction. task_environment.py only needs enough path detection to know
-    which roots matter.
+
+def _looks_like_input_path(path: str, source: str, context: str = "") -> bool:
+    text = f"{source}\n{context}".lower()
+    normalized = path.replace("\\", "/").lower().strip()
+    if normalized.startswith(("/root/data/", "/data/", "/app/data/", "data/")):
+        if not any(token in text for token in ("write", "save", "create", "generate", "produce", "output", "submit", "fill", "deliver")):
+            return True
+    input_names = ("input", "inputs", "source", "dataset", "example", "sample")
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in input_names for part in parts[:3]):
+        if not any(token in text for token in ("output", "write", "save", "submit", "deliverable")):
+            return True
+    return False
+
+
+def _candidate_parent_for_path(path: str, *, absolute: bool, has_placeholder: bool) -> str:
+    if has_placeholder:
+        safe_parts: list[str] = []
+        for part in Path(path).parts:
+            if PLACEHOLDER_RE.search(part):
+                break
+            safe_parts.append(part)
+        if safe_parts:
+            return str(Path(*safe_parts))
+        return "/" if absolute else "."
+
+    parent = str(Path(path).parent)
+    if not parent or parent == ".":
+        return "." if not absolute else "/"
+    return parent
+
+
+def extract_output_path_candidates(text: Any, metadata: Mapping[str, Any] | None = None) -> list[OutputPathCandidate]:
+    """Extract evaluator-facing output paths from task text and metadata.
+
+    The extractor is intentionally conservative for input paths and permissive
+    for explicit deliverable/output sections.  output_contract.py remains the
+    full contract owner; this environment layer only needs enough evidence to
+    decide which filesystem roots matter and which solver family is plausible.
     """
 
     metadata = _safe_mapping(metadata)
-    blobs: list[tuple[str, str]] = [("prompt", _safe_text(text))]
-    for key in ("instruction", "description", "prompt", "task", "task_text"):
+    blobs: list[tuple[str, str]] = [("prompt", _safe_text(text, limit=160000))]
+
+    # Prefer explicit fields first, then add a bounded recursive metadata scan.
+    for key in (
+        "instruction",
+        "instructions",
+        "description",
+        "prompt",
+        "task",
+        "task_text",
+        "output",
+        "outputs",
+        "output_paths",
+        "expected_outputs",
+        "required_outputs",
+        "deliverables",
+        "files_to_create",
+    ):
         value = metadata.get(key)
         if value:
-            blobs.append((f"metadata.{key}", _safe_text(value)))
+            blobs.append((f"metadata.{key}", _safe_text(value, limit=60000)))
+
+    for source, value in _flatten_metadata_strings(metadata, prefix="metadata", limit=160):
+        if source not in {item[0] for item in blobs}:
+            blobs.append((source, value))
 
     candidates: list[OutputPathCandidate] = []
     seen: set[str] = set()
-    for source, blob in blobs:
-        for match in OUTPUT_PATH_RE.finditer(blob):
-            raw = match.group("path").strip().rstrip(".,);]")
-            if not raw.startswith("/"):
-                continue
-            has_placeholder = bool(PLACEHOLDER_RE.search(raw))
-            path = raw
-            parent = str(Path(path).parent)
-            if has_placeholder:
-                safe_parts: list[str] = []
-                for part in Path(path).parts:
-                    if PLACEHOLDER_RE.search(part):
-                        break
-                    safe_parts.append(part)
-                parent = str(Path(*safe_parts)) if safe_parts else "/"
-            suffix = Path(path).suffix.lower()
-            if suffix in {".json", ".csv", ".txt", ".md", ".py", ".xlsx", ".xls", ".pptx", ".docx", ".pdf", ".dxf", ".zip", ".diff", ".lean", ".yaml", ".yml"}:
-                kind = suffix.lstrip(".")
-            else:
-                kind = "directory" if raw.endswith("/") else "path"
-            key = f"{path}|{source}"
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                OutputPathCandidate(
-                    path=path,
-                    source=source,
-                    kind=kind,
-                    parent=parent,
-                    has_placeholder=has_placeholder,
-                )
+
+    def add_candidate(raw_path: str, source: str, context: str, *, absolute: bool) -> None:
+        raw = str(raw_path or "").strip().strip("`\"'").rstrip(".,);]")
+        if not raw:
+            return
+        if not absolute and raw.startswith("/"):
+            absolute = True
+        if absolute and not raw.startswith("/"):
+            return
+        if raw in {"/root", "/app", "/workspace", "/output", "/data"}:
+            return
+        if _looks_like_input_path(raw, source, context):
+            return
+
+        has_placeholder = bool(PLACEHOLDER_RE.search(raw))
+        parent = _candidate_parent_for_path(raw, absolute=absolute, has_placeholder=has_placeholder)
+        kind = _output_kind_for_path(raw)
+        key = raw
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(
+            OutputPathCandidate(
+                path=raw,
+                source=source,
+                kind=kind,
+                parent=parent,
+                has_placeholder=has_placeholder,
+                absolute=absolute,
             )
-    return candidates[:120]
+        )
+
+    for source, blob in blobs:
+        if not blob:
+            continue
+
+        # Absolute paths are strong signals even outside explicit output prose.
+        for match in OUTPUT_PATH_RE.finditer(blob):
+            add_candidate(match.group("path"), source, blob[max(0, match.start() - 240): match.end() + 240], absolute=True)
+
+        # Files mentioned near output verbs are also useful, including relative paths.
+        for match in OUTPUT_CONTEXT_RE.finditer(blob):
+            add_candidate(match.group("file"), source + ".output_context", match.group(0), absolute=match.group("file").startswith("/"))
+
+        # Lines under output/deliverable headers often list bare filenames.
+        lines = blob.splitlines()
+        in_output_section = False
+        remaining_section_lines = 0
+        for line in lines[:1200]:
+            header = OUTPUT_SECTION_HEADER_RE.match(line.strip())
+            if header:
+                in_output_section = True
+                remaining_section_lines = 16
+                tail = header.groupdict().get("tail") or ""
+                for rel_match in REL_OUTPUT_PATH_RE.finditer(tail):
+                    found = rel_match.group("path")
+                    add_candidate(found, source + ".output_header", line, absolute=found.startswith("/"))
+                continue
+
+            if in_output_section:
+                if not line.strip():
+                    remaining_section_lines -= 1
+                    if remaining_section_lines <= 0:
+                        in_output_section = False
+                    continue
+                if re.match(r"^\s*#{1,6}\s+", line) or remaining_section_lines <= 0:
+                    in_output_section = False
+                    continue
+                for rel_match in REL_OUTPUT_PATH_RE.finditer(line):
+                    found = rel_match.group("path")
+                    add_candidate(found, source + ".output_section", line, absolute=found.startswith("/"))
+                remaining_section_lines -= 1
+
+    return candidates[:160]
 
 
 def _candidate_roots_from_env_and_outputs(
@@ -976,8 +1150,14 @@ def _family_hint_from_task_identity(identity: TaskIdentity) -> str:
         return "lean_solution"
     if task in {"software-dependency-audit", "dapt-intrusion-detection", "bgp-route-leak"}:
         return "security_config"
-    if task in {"fix-build-agentops", "debug-trl-grpo"}:
+    if task in {"fix-build-agentops", "fix-build-google-auto", "fix-erlang-ssh-cve", "debug-trl-grpo", "syzkaller-ppdev-syzlang", "react-performance-debugging"}:
         return "code_solution"
+    if task in {"exceltable-in-ppt", "pptx-reference-formatting"}:
+        return "office_pptx"
+    if task in {"stat-ocr", "jpg-ocr-stat"}:
+        return "office_xlsx"
+    if task in {"video-tutorial-indexer", "video-filler-word-remover", "pedestrian-traffic-counting"}:
+        return "media_processing"
     return ""
 
 
@@ -1004,8 +1184,8 @@ def _infer_family_hint(
         return "bugswarm_build_repair"
     if ".lean" in blob or "lean4" in blob:
         return "lean_solution"
-    if ".pptx" in blob or "slides" in blob:
-        return "presentation"
+    if ".pptx" in blob or "slides" in blob or "presentation" in blob:
+        return "office_pptx"
     if ".xlsx" in blob or ".xls" in blob or "excel" in blob:
         return "office_xlsx"
     if ".docx" in blob or "offer letter" in blob:

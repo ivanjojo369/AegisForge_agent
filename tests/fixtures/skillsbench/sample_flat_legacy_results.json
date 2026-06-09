@@ -1,0 +1,32 @@
+{
+  "status": "completed",
+  "participants": {
+    "agent": "agent-under-test"
+  },
+  "results": [
+    {
+      "task_id": "dialogue-parser",
+      "task_digest": "sha256:dialogue",
+      "category": "office-white-collar",
+      "difficulty": "easy",
+      "condition": "with_skills",
+      "score_eligible": true,
+      "passed": false,
+      "reward": 0.0,
+      "max_reward": 1.0,
+      "artifact_refs": []
+    },
+    {
+      "task_id": "court-form-filling",
+      "task_digest": "sha256:court",
+      "category": "office-white-collar",
+      "difficulty": "medium",
+      "condition": "with_skills",
+      "score_eligible": true,
+      "passed": false,
+      "reward": 0.0,
+      "max_reward": 1.0,
+      "artifact_refs": []
+    }
+  ]
+}
