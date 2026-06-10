@@ -121,3 +121,12 @@ phaseB/
 !data/unified_purple_agent/
 !data/unified_purple_agent/**
 !data/unified_purple_agent/manifest.json
+
+# Local SkillsBench forensic outputs / downloaded Quick Submit logs
+forensics/
+skillsbench_forensic_summary.json
+skillsbench_forensic_table_full.csv
+skillsbench_forensic_table_full.jsonl
+skillsbench_forensic_table*.csv
+skillsbench_forensic_table*.jsonl
+skillsbench_forensic_summary*.json
