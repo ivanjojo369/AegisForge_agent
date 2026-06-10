@@ -71,7 +71,7 @@ from .task_workspace_executor import (
 from .solvers import default_solver_registry
 
 
-HARNESS_VERSION = "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03"
+HARNESS_VERSION = "skillsbench_harness_v0_3_6_executor_owned_dispatch_2026_06_10"
 
 ReasonerCallback = Callable[[dict[str, Any]], str]
 
@@ -832,18 +832,73 @@ class SkillsBenchHarness:
                 sample=True,
             )
             base_solver_registry = default_solver_registry()
-            dispatch = _select_solver_dispatch(
-                registry=base_solver_registry,
+
+            # v0.3.6: the task workspace executor owns solver dispatch.
+            #
+            # Older harness code selected a solver here, then rewrote temporary
+            # registry aliases such as contract.family -> selected_solver.  That
+            # made stale environment hints like `bugswarm_build_repair` appear in
+            # AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR even after
+            # task_workspace_executor.py v0.7 correctly suppressed them.  Keep the
+            # registry unmodified and report the executor's final diagnostics
+            # instead.
+            executor = SkillsBenchTaskWorkspaceExecutor(
+                allow_writes=self._workspace_executor_allow_writes(),
+                write_probe=self._workspace_executor_write_probe(),
+                solver_registry=base_solver_registry,
+            )
+            execution = executor.execute(
+                canonical_metadata,
+                request.prompt,
                 contract=contract,
                 environment=environment,
-                canonical_task_id=canonical_task_id,
-                plan_family=plan.family,
             )
+
+            execution_diagnostics = dict(getattr(execution, "diagnostics", {}) or {})
+            real_selected_solver_key = str(execution_diagnostics.get("selected_solver_key") or "")
+            real_solver_lookup_keys = list(execution_diagnostics.get("solver_lookup_keys") or [])
+            real_solver_name = _callable_name(base_solver_registry.get(real_selected_solver_key))
+
+            dispatch = {
+                "registry": base_solver_registry,
+                "registry_size": len(base_solver_registry),
+                "contract_family": getattr(contract, "family", ""),
+                "contract_task_id": getattr(contract, "task_id", ""),
+                "environment_family_hint": getattr(environment, "family_hint", ""),
+                "environment_canonical_task_id": getattr(environment, "canonical_task_id", ""),
+                "canonical_task_id": canonical_task_id,
+                "plan_family": plan.family,
+                "lookup_keys": real_solver_lookup_keys,
+                "expanded_lookup_keys": {
+                    "executor_solver_lookup_keys": real_solver_lookup_keys,
+                },
+                "selected_solver_key": real_selected_solver_key,
+                "selected_solver_name": real_solver_name,
+                "selected_solver_present": bool(real_selected_solver_key),
+                "selected_source": "task_workspace_executor.diagnostics",
+                "alias_added": "",
+                "alias_source": "",
+                "registry_overrides": [],
+                "generic_sources_skipped": [],
+                "generic_family_guard_applied": bool(
+                    execution_diagnostics.get("stale_security_family_hint_suppression")
+                    or execution_diagnostics.get("stale_build_repair_family_hint_suppression")
+                ),
+                "solver_versions": _solver_versions_safe(),
+                "executor_dispatch_diagnostics": {
+                    "solver_route_guard_version": execution_diagnostics.get("solver_route_guard_version"),
+                    "suppressed_solver_keys": execution_diagnostics.get("suppressed_solver_keys"),
+                    "build_repair_dispatch_allowed": execution_diagnostics.get("build_repair_dispatch_allowed"),
+                    "build_repair_signal_reasons": execution_diagnostics.get("build_repair_signal_reasons"),
+                    "stale_build_repair_family_hint_suppression": execution_diagnostics.get("stale_build_repair_family_hint_suppression"),
+                    "routing_priority_policy": execution_diagnostics.get("routing_priority_policy"),
+                },
+            }
 
             _print_json_marker(
                 "AEGISFORGE_SKILLSBENCH_SOLVER_DISPATCH",
                 {
-                    "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
+                    "marker": "skillsbench_harness_v0_3_6_executor_owned_dispatch_2026_06_10",
                     "harness_version": HARNESS_VERSION,
                     "request_task_id": request.task_id,
                     "canonical_task_id": canonical_task_id,
@@ -871,19 +926,8 @@ class SkillsBenchHarness:
                     "alias_added": dispatch.get("alias_added"),
                     "alias_source": dispatch.get("alias_source"),
                     "solver_versions": dispatch.get("solver_versions"),
+                    "executor_dispatch_diagnostics": dispatch.get("executor_dispatch_diagnostics"),
                 },
-            )
-
-            executor = SkillsBenchTaskWorkspaceExecutor(
-                allow_writes=self._workspace_executor_allow_writes(),
-                write_probe=self._workspace_executor_write_probe(),
-                solver_registry=dispatch["registry"],
-            )
-            execution = executor.execute(
-                canonical_metadata,
-                request.prompt,
-                contract=contract,
-                environment=environment,
             )
 
             # Visible stdout probe for Quick Submit / GitHub logs.
@@ -897,7 +941,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_6_executor_owned_dispatch_2026_06_10",
                             "harness_version": HARNESS_VERSION,
                             "status": execution.status,
                             "ok": execution.ok,
@@ -951,7 +995,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_LOG_ERROR "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_6_executor_owned_dispatch_2026_06_10",
                             "harness_version": HARNESS_VERSION,
                             "error_type": log_exc.__class__.__name__,
                             "error": str(log_exc)[:500],
@@ -1055,7 +1099,7 @@ class SkillsBenchHarness:
                     "AEGISFORGE_SKILLSBENCH_WORKSPACE_EXECUTOR_EXCEPTION "
                     + json.dumps(
                         {
-                            "marker": "skillsbench_harness_v0_3_5_skip_generic_environment_hint_2026_06_03",
+                            "marker": "skillsbench_harness_v0_3_6_executor_owned_dispatch_2026_06_10",
                             "harness_version": HARNESS_VERSION,
                             "task_workspace_executor_version": TASK_WORKSPACE_EXECUTOR_VERSION,
                             "error_type": exc.__class__.__name__,
