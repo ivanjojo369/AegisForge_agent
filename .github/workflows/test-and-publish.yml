@@ -15,6 +15,7 @@ env:
   PYTHON_VERSION: "3.11"
   # Default image: ghcr.io/<owner>/<repo>
   IMAGE_NAME: ghcr.io/${{ github.repository }}
+  DOCKER_BASE_IMAGE: python:3.11-slim
   # Typical A2A server host/port.
   AGENT_HOST: "127.0.0.1"
   AGENT_PORT: "9009"
@@ -185,13 +186,46 @@ jobs:
             type=ref,event=tag
 
       - name: Build & push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_args=(
+            --file ./Dockerfile
+            --platform linux/amd64
+            --push
+            --cache-from type=gha
+            --cache-to type=gha,mode=max
+          )
+
+          while IFS= read -r tag; do
+            if [ -n "${tag}" ]; then
+              build_args+=(--tag "${tag}")
+            fi
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          while IFS= read -r label; do
+            if [ -n "${label}" ]; then
+              build_args+=(--label "${label}")
+            fi
+          done <<< "${{ steps.meta.outputs.labels }}"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Docker base image pull attempt ${attempt}/5: ${DOCKER_BASE_IMAGE}"
+            if docker pull "${DOCKER_BASE_IMAGE}"; then
+              echo "Base image is available locally."
+            else
+              echo "Base image pull failed on attempt ${attempt}; buildx will still be retried."
+            fi
+
+            echo "Docker buildx push attempt ${attempt}/5"
+            if docker buildx build "${build_args[@]}" .; then
+              echo "Docker buildx push succeeded."
+              exit 0
+            fi
+
+            sleep $((attempt * 20))
+          done
+
+          echo "Docker buildx push failed after retries." >&2
+          exit 1

@@ -25,14 +25,15 @@ jobs:
     env:
       CONTEXT_DIR: integrations/openenv/envs/omnibench_aegis_env
       IMAGE_NAME: omnibench-aegis-env-smoke:test
+      DOCKER_BASE_IMAGE: python:3.11-slim
       HOST: 0.0.0.0
-      PORT: "8000"
+      PORT: "8001"
       OPENENV_HOST: 0.0.0.0
-      OPENENV_PORT: "8000"
-      HEALTH_URL: http://127.0.0.1:8000/health
-      CONTRACT_URL: http://127.0.0.1:8000/contract
-      ROOT_URL: http://127.0.0.1:8000/
-      DOCS_URL: http://127.0.0.1:8000/docs
+      OPENENV_PORT: "8001"
+      HEALTH_URL: http://127.0.0.1:8001/health
+      CONTRACT_URL: http://127.0.0.1:8001/contract
+      ROOT_URL: http://127.0.0.1:8001/
+      DOCS_URL: http://127.0.0.1:8001/docs
 
     steps:
       - name: Checkout
@@ -42,7 +43,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker build -t "$IMAGE_NAME" "$CONTEXT_DIR"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Docker base image pull attempt ${attempt}/5: ${DOCKER_BASE_IMAGE}"
+            if docker pull "${DOCKER_BASE_IMAGE}"; then
+              echo "Base image is available locally."
+            else
+              echo "Base image pull failed on attempt ${attempt}; docker build will still be retried."
+            fi
+
+            echo "Docker build attempt ${attempt}/5: ${IMAGE_NAME}"
+            if docker build --pull=false -t "${IMAGE_NAME}" "${CONTEXT_DIR}"; then
+              echo "Docker build succeeded."
+              exit 0
+            fi
+
+            sleep $((attempt * 20))
+          done
+
+          echo "Docker build failed after retries." >&2
+          exit 1
 
       - name: Start OmniBench Space container
         shell: bash
@@ -51,7 +71,7 @@ jobs:
 
           docker run -d \
             --name omnibench-aegis-env-smoke \
-            -p 8000:8000 \
+            -p 8001:8001 \
             -e HOST="${HOST}" \
             -e PORT="${PORT}" \
             -e OPENENV_HOST="${OPENENV_HOST}" \
@@ -166,4 +186,3 @@ jobs:
         shell: bash
         run: |
           docker rm -f omnibench-aegis-env-smoke || true
-
