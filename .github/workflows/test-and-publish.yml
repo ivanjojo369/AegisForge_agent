@@ -191,11 +191,11 @@ jobs:
           set -euo pipefail
 
           build_args=(
-            --file ./Dockerfile
-            --platform linux/amd64
-            --push
-            --cache-from type=gha
-            --cache-to type=gha,mode=max
+            "--file" "./Dockerfile"
+            "--platform" "linux/amd64"
+            "--push"
+            "--cache-from" "type=gha"
+            "--cache-to" "type=gha,mode=max"
           )
 
           while IFS= read -r tag; do
