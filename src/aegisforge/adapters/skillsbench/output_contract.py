@@ -34,7 +34,7 @@ import posixpath
 import re
 
 
-OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_6_posix_sandbox_paths_2026_06_10"
+OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_6_2_posix_sandbox_paths_py311_2026_06_10"
 
 
 ABS_PATH_RE = re.compile(
@@ -376,6 +376,15 @@ def normalize_path(path: str) -> str:
 
     had_trailing_slash = raw.endswith(("/", "\\"))
     normalized = raw.replace("\\", "/")
+
+    # A copied Windows-style sandbox path may arrive as either ``\root\x``
+    # or ``\\root\x`` depending on escaping/log serialization.  POSIX keeps
+    # a leading double slash implementation-defined, so collapse it for known
+    # SkillsBench roots before normpath.  This must not affect URLs because they
+    # are not valid output paths here.
+    if normalized.startswith("//") and re.match(r"^/+(?:root|app|data|output|workspace|home|logs)(?:/|$)", normalized):
+        normalized = "/" + normalized.lstrip("/")
+
     try:
         normalized = posixpath.normpath(normalized)
     except Exception:
@@ -1607,10 +1616,14 @@ def validate_output_contract_selftest() -> dict[str, Any]:
 
     if normalize_path("/root/answer.json") != "/root/answer.json":
         errors.append(f"posix absolute path was not preserved: {normalize_path('/root/answer.json')}")
-    if normalize_path("\\root\\answer.json") != "/root/answer.json":
-        errors.append(f"windows-style sandbox path was not converted to POSIX: {normalize_path('\\\\root\\\\answer.json')}")
-    if _materialize_output_path("output/results.csv", "/root") != "/root/output/results.csv":
-        errors.append(f"relative output path materialization failed: {_materialize_output_path('output/results.csv', '/root')}")
+    windows_style_sample = "\\root\\answer.json"
+    windows_style_normalized = normalize_path(windows_style_sample)
+    if windows_style_normalized != "/root/answer.json":
+        errors.append(f"windows-style sandbox path was not converted to POSIX: {windows_style_normalized}")
+
+    relative_output_normalized = _materialize_output_path("output/results.csv", "/root")
+    if relative_output_normalized != "/root/output/results.csv":
+        errors.append(f"relative output path materialization failed: {relative_output_normalized}")
     for expected in (
         "/root/answer.json",
         "/root/output/report.md",
