@@ -33,7 +33,7 @@ from .task_environment import (
 )
 
 
-TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_6_route_hardening_2026_06_10"
+TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_7_dispatch_guard_2026_06_10"
 
 SolverFn = Callable[
     [SkillsBenchOutputContract, SkillsBenchTaskEnvironment, Mapping[str, Any], str],
@@ -73,7 +73,7 @@ def _family_aliases(family: str) -> tuple[str, ...]:
         "office_xlsx": ("office_xlsx", "spreadsheet", "xlsx_output", "excel", "spreadsheet_output"),
         "office_docx": ("office_docx", "document", "docx_output", "document_output"),
         "pdf_document": ("pdf_document", "pdf_output", "pdf_form"),
-        "code_solution": ("code_solution", "software_patch", "bugswarm_build_repair", "python_solution"),
+        "code_solution": ("code_solution", "python_solution"),
         "lean_solution": ("lean_solution", "formal_reasoning", "lean", "formal"),
         "security_config": ("security_config", "security_audit", "security_output", "cybersecurity"),
         "json_output": ("json_output", "data_json", "json"),
@@ -121,6 +121,250 @@ def _append_family_aliases(keys: list[str], family: Any) -> None:
     for variant in _family_aliases(str(family or "")):
         if variant not in keys:
             keys.append(variant)
+
+
+BUILD_REPAIR_SOLVER_KEYS = {
+    "bugswarm_build_repair",
+    "bugswarm-build-repair",
+    "fix_build",
+    "fix-build",
+    "software_patch",
+    "software-patch",
+}
+
+CONCRETE_SOLVER_FAMILY_KEYS: dict[str, str] = {
+    "office_pptx": "office_pptx",
+    "presentation": "office_pptx",
+    "pptx_output": "office_pptx",
+    "presentation_output": "office_pptx",
+    "slides": "office_pptx",
+    "slide_deck": "office_pptx",
+    "office_xlsx": "office_xlsx",
+    "spreadsheet": "office_xlsx",
+    "xlsx_output": "office_xlsx",
+    "excel": "office_xlsx",
+    "spreadsheet_output": "office_xlsx",
+    "office_docx": "office_docx",
+    "document": "office_docx",
+    "docx_output": "office_docx",
+    "document_output": "office_docx",
+    "pdf_document": "pdf_document",
+    "pdf_output": "pdf_document",
+    "pdf_form": "pdf_document",
+    "lean_solution": "lean_solution",
+    "formal_reasoning": "lean_solution",
+    "lean": "lean_solution",
+    "formal": "lean_solution",
+    "security_config": "security_config",
+    "security_audit": "security_config",
+    "security_output": "security_config",
+    "cybersecurity": "security_config",
+    "json_output": "json_output",
+    "data_json": "json_output",
+    "json": "json_output",
+    "csv_output": "csv_output",
+    "data_csv": "csv_output",
+    "csv": "csv_output",
+    "media_output": "media_output",
+    "media_processing": "media_output",
+    "video": "media_output",
+    "audio": "media_output",
+    "vision": "media_output",
+    "image_processing": "media_output",
+    "code_solution": "code_solution",
+    "python_solution": "code_solution",
+    "code_workspace": "code_solution",
+}
+
+BUILD_REPAIR_SIGNAL_RE = re.compile(
+    r"("
+    r"bugswarm|"
+    r"fix[-_ ]?build|"
+    r"build[-_ ]?repair|"
+    r"/home/github/build/failed|"
+    r"patch_0\.diff|"
+    r"failed_reasons\.txt|"
+    r"git apply|"
+    r"failing tests?|"
+    r"test failure|"
+    r"build failed|"
+    r"failed repository|"
+    r"repair manifest"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _canonical_solver_family(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return CONCRETE_SOLVER_FAMILY_KEYS.get(normalized, normalized)
+
+
+def _is_build_repair_key(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    normalized_us = normalized.replace("-", "_")
+    if normalized in BUILD_REPAIR_SOLVER_KEYS or normalized_us in BUILD_REPAIR_SOLVER_KEYS:
+        return True
+    return normalized.startswith("fix-build-") or normalized_us.startswith("fix_build_")
+
+
+def _build_repair_signal_reasons(contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if getattr(contract, "needs_repo_patch", False):
+        reasons.append("contract.needs_repo_patch")
+
+    for req in contract.requirements:
+        path = str(getattr(req, "path", "") or "")
+        filename = str(getattr(req, "filename", "") or "")
+        kind = str(getattr(req, "kind", "") or "")
+        if kind == "patch":
+            reasons.append(f"requirement.kind.patch:{path}")
+        if "/home/github/build/failed" in path:
+            reasons.append(f"requirement.path.failed_repo:{path}")
+        if filename in {"patch_0.diff", "failed_reasons.txt"}:
+            reasons.append(f"requirement.filename.{filename}")
+
+    identity_keys = (
+        "canonical_task_id",
+        "environment_canonical_task_id",
+        "contract_task_id",
+        "task_id",
+        "id",
+        "name",
+        "task_name",
+        "trial_id",
+    )
+    for key in identity_keys:
+        value = str(metadata.get(key) or "").strip().lower()
+        if value.startswith("fix-build-") or "bugswarm" in value:
+            reasons.append(f"identity.{key}:{value}")
+
+    metadata_signal_parts: list[str] = []
+    for key in (
+        "canonical_task_id",
+        "environment_canonical_task_id",
+        "contract_task_id",
+        "task_id",
+        "id",
+        "name",
+        "task_name",
+        "trial_id",
+        "instruction",
+        "description",
+        "prompt",
+        "task_text",
+        "task",
+        "user_prompt",
+        "system_prompt",
+    ):
+        value = metadata.get(key)
+        if value:
+            metadata_signal_parts.append(_safe_text(value, limit=12000))
+
+    blob = " ".join(
+        [
+            *metadata_signal_parts,
+            str(contract.task_id or ""),
+            # Do not include environment_family_hint / solver_family here:
+            # stale family hints were the actual dispatch-contamination source.
+            " ".join(str(req.path) for req in contract.requirements),
+            " ".join(str(req.filename) for req in contract.requirements),
+            " ".join(str(req.kind) for req in contract.requirements),
+            " ".join(str(req.evidence) for req in contract.requirements),
+        ]
+    )
+    if BUILD_REPAIR_SIGNAL_RE.search(blob):
+        reasons.append("build_repair_token")
+
+    return tuple(dict.fromkeys(reasons))
+
+
+def _has_strong_build_repair_signal(contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> bool:
+    return bool(_build_repair_signal_reasons(contract, metadata))
+
+
+def _broad_family_hint_allowed(value: Any, contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> tuple[bool, str]:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if not normalized or normalized in {"general", "general_file", "general_file_output", "unknown", "none"}:
+        return False, "empty_or_generic_hint"
+
+    contract_family = _canonical_solver_family(contract.family)
+
+    if _is_build_repair_key(normalized):
+        if contract_family != "code_solution":
+            return False, "build_repair_hint_requires_code_solution_contract"
+        if not _has_strong_build_repair_signal(contract, metadata):
+            return False, "build_repair_hint_without_strong_build_signal"
+        return True, "allowed_build_repair_hint"
+
+    hinted_family = _canonical_solver_family(normalized)
+    concrete = {
+        "office_pptx",
+        "office_xlsx",
+        "office_docx",
+        "pdf_document",
+        "lean_solution",
+        "security_config",
+        "json_output",
+        "csv_output",
+        "media_output",
+        "code_solution",
+    }
+    if hinted_family in concrete and contract_family in concrete and hinted_family != contract_family:
+        return False, f"hint_family_{hinted_family}_conflicts_with_contract_{contract_family}"
+
+    if hinted_family == "security_config" and contract_family != "security_config":
+        return False, "stale_security_family_hint"
+
+    return True, "allowed"
+
+
+def _solver_key_allowed_for_contract(
+    key: str,
+    contract: SkillsBenchOutputContract,
+    metadata: Mapping[str, Any],
+) -> tuple[bool, str]:
+    """Prevent stale broad solver keys from overriding concrete contract routes.
+
+    Quick Submit forensic logs showed `environment_family_hint=bugswarm_build_repair`
+    being present on many non-build-repair tasks.  The registry may contain a
+    callable for that key, so selection must explicitly reject it unless the
+    contract itself is code/build-repair and the prompt/requirements contain a
+    strong build-repair signal.
+    """
+
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    contract_family = _canonical_solver_family(contract.family)
+
+    if _is_build_repair_key(normalized):
+        if contract_family != "code_solution":
+            return False, "blocked_build_repair_key_for_non_code_contract"
+        if not _has_strong_build_repair_signal(contract, metadata):
+            return False, "blocked_build_repair_key_without_strong_signal"
+        return True, "allowed_build_repair_key"
+
+    key_family = _canonical_solver_family(normalized)
+    family_like = normalized in CONCRETE_SOLVER_FAMILY_KEYS or key_family in set(CONCRETE_SOLVER_FAMILY_KEYS.values())
+
+    if family_like:
+        if key_family == "security_config" and contract_family != "security_config":
+            return False, "blocked_stale_security_key"
+        if key_family == "code_solution" and contract_family != "code_solution":
+            return False, "blocked_code_key_for_non_code_contract"
+        concrete = {
+            "office_pptx",
+            "office_xlsx",
+            "office_docx",
+            "pdf_document",
+            "lean_solution",
+            "json_output",
+            "csv_output",
+            "media_output",
+        }
+        if key_family in concrete and contract_family in concrete and key_family != contract_family:
+            return False, f"blocked_family_key_{key_family}_for_contract_{contract_family}"
+
+    return True, "allowed"
 
 
 def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> tuple[str, ...]:
@@ -172,7 +416,9 @@ def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[s
     if kinds & {"archive", "cad"}:
         _append_family_aliases(keys, "media_output")
 
-    # Broad family hints are useful, but only after concrete evidence.
+    # Broad family hints are useful, but only after concrete evidence.  They are
+    # now guarded so stale `environment_family_hint=bugswarm_build_repair` cannot
+    # hijack office/json/csv/media tasks.
     broad_family_keys = (
         "environment_family_hint",
         "output_family",
@@ -183,13 +429,16 @@ def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[s
     )
     for key in broad_family_keys:
         value = metadata.get(key)
-        normalized = str(value or "").strip().lower().replace("-", "_")
-        if not normalized or normalized in {"general", "general_file", "general_file_output", "unknown", "none"}:
+        allowed, _reason = _broad_family_hint_allowed(value, contract, metadata)
+        if not allowed:
             continue
-        # Avoid selecting stale security_config before contract/json/csv evidence.
-        if normalized == "security_config" and contract.family != "security_config":
-            continue
-        _append_family_aliases(keys, normalized)
+        _append_family_aliases(keys, value)
+
+    # Build-repair aliases are intentionally appended only when the contract and
+    # prompt/requirements prove this is a real build-repair/patch task.
+    if contract.family == "code_solution" and _has_strong_build_repair_signal(contract, metadata):
+        for key in ("bugswarm_build_repair", "software_patch", "fix_build"):
+            _append_solver_variants(keys, key)
 
     return tuple(keys)
 
@@ -1146,6 +1395,9 @@ class SkillsBenchTaskWorkspaceExecutor:
         self.default_solver_registry_error = default_registry_error
         self.last_solver_lookup_keys: tuple[str, ...] = tuple()
         self.last_selected_solver_key: str = ""
+        self.last_suppressed_solver_keys: tuple[str, ...] = tuple()
+        self.last_build_repair_dispatch_allowed: bool = False
+        self.last_build_repair_signal_reasons: tuple[str, ...] = tuple()
         self.last_execution: TaskWorkspaceExecution | None = None
 
 
@@ -1156,12 +1408,26 @@ class SkillsBenchTaskWorkspaceExecutor:
     ) -> tuple[SolverFn | None, str, tuple[str, ...]]:
         keys = _solver_lookup_keys(contract, metadata)
         self.last_solver_lookup_keys = keys
+        self.last_build_repair_signal_reasons = _build_repair_signal_reasons(contract, metadata)
+        self.last_build_repair_dispatch_allowed = (
+            contract.family == "code_solution" and bool(self.last_build_repair_signal_reasons)
+        )
+        suppressed: list[str] = []
+
         for key in keys:
+            allowed, reason = _solver_key_allowed_for_contract(key, contract, metadata)
+            if not allowed:
+                suppressed.append(f"{key}:{reason}")
+                continue
+
             solver = self.solver_registry.get(key)
             if solver is not None:
                 self.last_selected_solver_key = key
+                self.last_suppressed_solver_keys = tuple(suppressed)
                 return solver, key, keys
+
         self.last_selected_solver_key = ""
+        self.last_suppressed_solver_keys = tuple(suppressed)
         return None, "", keys
 
     def execute(
@@ -1230,6 +1496,10 @@ class SkillsBenchTaskWorkspaceExecutor:
                 diagnostics.setdefault("selected_solver_key", solver_key)
                 diagnostics.setdefault("solver_lookup_keys", list(solver_lookup_keys))
                 diagnostics.setdefault("solver_registry_key_count", len(self.solver_registry))
+                diagnostics.setdefault("solver_route_guard_version", "dispatch_guard_v0_7")
+                diagnostics.setdefault("suppressed_solver_keys", list(self.last_suppressed_solver_keys))
+                diagnostics.setdefault("build_repair_dispatch_allowed", self.last_build_repair_dispatch_allowed)
+                diagnostics.setdefault("build_repair_signal_reasons", list(self.last_build_repair_signal_reasons))
                 result = TaskWorkspaceExecution(
                     version=result.version,
                     ok=result.ok,
@@ -1415,8 +1685,13 @@ class SkillsBenchTaskWorkspaceExecutor:
             "solver_lookup_keys": list(self.last_solver_lookup_keys),
             "solver_registry_key_count": len(self.solver_registry),
             "default_solver_registry_error": self.default_solver_registry_error,
-            "routing_priority_policy": "exact_task_id_then_contract_family_then_requirement_kind_then_broad_family_hints",
+            "solver_route_guard_version": "dispatch_guard_v0_7",
+            "suppressed_solver_keys": list(self.last_suppressed_solver_keys),
+            "build_repair_dispatch_allowed": self.last_build_repair_dispatch_allowed,
+            "build_repair_signal_reasons": list(self.last_build_repair_signal_reasons),
+            "routing_priority_policy": "exact_task_id_then_contract_family_then_requirement_kind_then_guarded_broad_family_hints",
             "stale_security_family_hint_suppression": True,
+            "stale_build_repair_family_hint_suppression": True,
             "exception_safe_writer": True,
             "metadata_permission_errors": sum(1 for w in writes if "exists(" in (w.error or "") or "is_dir(" in (w.error or "") or "is_file(" in (w.error or "")),
             "kind_counts": dict(Counter(w.kind for w in writes)),
@@ -1561,6 +1836,82 @@ def validate_task_workspace_executor_selftest() -> dict[str, Any]:
     )
     if not fake_solver_called or fake_result.diagnostics.get("selected_solver_key") != "office_pptx":
         errors.append(f"office_pptx solver was not selected: {fake_result.diagnostics}")
+
+    def _fake_build_repair_solver(
+        solver_contract: SkillsBenchOutputContract,
+        solver_env: SkillsBenchTaskEnvironment,
+        solver_metadata: Mapping[str, Any],
+        solver_prompt: str,
+    ) -> TaskWorkspaceExecution:
+        write = WorkspaceWriteResult(
+            path="/tmp/aegisforge-fake/patch_0.diff",
+            ok=True,
+            action="fake_build_solver",
+            kind="patch",
+            bytes_written=4,
+            sha256="1" * 64,
+        )
+        return TaskWorkspaceExecution(
+            version=TASK_WORKSPACE_EXECUTOR_VERSION,
+            ok=True,
+            status="completed",
+            task_id=solver_contract.task_id,
+            family=solver_contract.family,
+            workspace_visible=True,
+            wrote_any_file=True,
+            writes=(write,),
+            contract=solver_contract.as_context(),
+            environment=solver_env.as_context(),
+            diagnostics={"fake_build_solver": True},
+        )
+
+    stale_hint_executor = SkillsBenchTaskWorkspaceExecutor(
+        allow_writes=False,
+        solver_registry={"bugswarm_build_repair": _fake_build_repair_solver},
+        use_default_solver_registry=False,
+    )
+    stale_hint_result = stale_hint_executor.execute(
+        {
+            "task_id": "xlsx-recover-data",
+            "canonical_task_id": "xlsx-recover-data",
+            "environment_family_hint": "bugswarm_build_repair",
+        },
+        "Recover the spreadsheet and create `/root/output/answer.xlsx`.",
+        contract=build_output_contract(
+            {"task_id": "xlsx-recover-data"},
+            "Recover the spreadsheet and create `/root/output/answer.xlsx`.",
+        ),
+        environment=_FakeEnv(),  # type: ignore[arg-type]
+    )
+    stale_diag = stale_hint_result.diagnostics
+    if stale_diag.get("selected_solver_key"):
+        errors.append(f"stale bugswarm solver should have been suppressed: {stale_diag}")
+    stale_lookup_keys = stale_diag.get("solver_lookup_keys", [])
+    stale_suppressed = stale_diag.get("suppressed_solver_keys", [])
+    if any("bugswarm_build_repair" in item for item in stale_lookup_keys) and not any("bugswarm_build_repair" in item for item in stale_suppressed):
+        errors.append(f"stale bugswarm suppression was not recorded: {stale_diag}")
+
+    real_build_contract = build_output_contract(
+        {"task_id": "fix-build-agentops", "canonical_task_id": "fix-build-agentops"},
+        "Repair the failing build and write `/home/github/build/failed/<repo>/<id>/patch_0.diff` plus `/home/github/build/failed/failed_reasons.txt`.",
+    )
+    build_executor = SkillsBenchTaskWorkspaceExecutor(
+        allow_writes=False,
+        solver_registry={"bugswarm_build_repair": _fake_build_repair_solver},
+        use_default_solver_registry=False,
+    )
+    build_result = build_executor.execute(
+        {
+            "task_id": "fix-build-agentops",
+            "canonical_task_id": "fix-build-agentops",
+            "environment_family_hint": "bugswarm_build_repair",
+        },
+        "Repair the failing build and write `/home/github/build/failed/<repo>/<id>/patch_0.diff` plus `/home/github/build/failed/failed_reasons.txt`.",
+        contract=real_build_contract,
+        environment=_FakeEnv(),  # type: ignore[arg-type]
+    )
+    if build_result.diagnostics.get("selected_solver_key") != "bugswarm_build_repair":
+        errors.append(f"real build-repair route should allow bugswarm solver: {build_result.diagnostics}")
 
 
     return {
