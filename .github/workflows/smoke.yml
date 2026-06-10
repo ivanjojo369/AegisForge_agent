@@ -71,7 +71,7 @@ jobs:
 
           docker run -d \
             --name omnibench-aegis-env-smoke \
-            -p 8001:8001 \
+            -p 8001:8000 \
             -e HOST="${HOST}" \
             -e PORT="${PORT}" \
             -e OPENENV_HOST="${OPENENV_HOST}" \
@@ -186,3 +186,4 @@ jobs:
         shell: bash
         run: |
           docker rm -f omnibench-aegis-env-smoke || true
+
