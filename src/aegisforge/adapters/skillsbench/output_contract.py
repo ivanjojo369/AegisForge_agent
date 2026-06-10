@@ -24,23 +24,24 @@ Design constraints:
 
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 import csv
 import io
 import json
 import os
+import posixpath
 import re
 
 
-OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_4_pptx_family_priority_2026_06_09"
+OUTPUT_CONTRACT_VERSION = "skillsbench_output_contract_v0_6_posix_sandbox_paths_2026_06_10"
 
 
 ABS_PATH_RE = re.compile(
     r"(?P<quote>[`\"']?)"
     r"(?P<path>/(?:root|app|data|output|workspace|home/github/build|home/github|logs)"
     r"(?:/[A-Za-z0-9_.{}<>:+@%=\-]+){0,48}"
-    r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh|/))"
+    r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh|\.obj|\.gltf|\.glb|\.mp4|\.mov|\.webm|\.wav|\.mp3|\.m4a|\.srt|\.vtt|\.png|\.jpg|\.jpeg|\.webp|/))"
     r"(?P=quote)"
 )
 
@@ -48,11 +49,11 @@ REL_PATH_RE = re.compile(
     r"(?P<quote>[`\"']?)"
     r"(?P<path>(?:output|workspace|results|patches|logs|data|artifacts)"
     r"(?:/[A-Za-z0-9_.{}<>:+@%=\-]+){0,48}"
-    r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh))"
+    r"(?:\.json|\.csv|\.txt|\.md|\.py|\.xlsx|\.xls|\.pptx|\.docx|\.pdf|\.dxf|\.zip|\.diff|\.lean|\.yaml|\.yml|\.sh|\.obj|\.gltf|\.glb|\.mp4|\.mov|\.webm|\.wav|\.mp3|\.m4a|\.srt|\.vtt|\.png|\.jpg|\.jpeg|\.webp))"
     r"(?P=quote)"
 )
 
-OUTPUT_SUFFIX_RE = r"(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh)"
+OUTPUT_SUFFIX_RE = r"(?:json|csv|txt|md|py|xlsx|xls|pptx|docx|pdf|dxf|zip|diff|lean|yaml|yml|sh|obj|gltf|glb|mp4|mov|webm|wav|mp3|m4a|srt|vtt|png|jpg|jpeg|webp)"
 BARE_OUTPUT_FILE_RE = re.compile(
     r"(?P<quote>[`\"']?)"
     r"(?P<path>(?:[A-Za-z0-9_.+@%=\-]+/){0,5}[A-Za-z0-9][A-Za-z0-9_.+@%=\-]{0,140}\." + OUTPUT_SUFFIX_RE + r")"
@@ -166,6 +167,21 @@ PATH_KIND_BY_SUFFIX = {
     ".yaml": "yaml",
     ".yml": "yaml",
     ".sh": "shell",
+    ".obj": "cad",
+    ".gltf": "model",
+    ".glb": "model",
+    ".mp4": "video",
+    ".mov": "video",
+    ".webm": "video",
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".m4a": "audio",
+    ".srt": "subtitle",
+    ".vtt": "subtitle",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
 }
 
 MIME_BY_KIND = {
@@ -184,6 +200,11 @@ MIME_BY_KIND = {
     "lean": "text/plain",
     "yaml": "application/x-yaml",
     "shell": "text/x-shellscript",
+    "model": "model/gltf+json",
+    "video": "video/mp4",
+    "audio": "audio/wav",
+    "subtitle": "text/vtt",
+    "image": "image/png",
     "directory": "inode/directory",
     "unknown": "application/octet-stream",
 }
@@ -328,22 +349,83 @@ def _safe_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
 def normalize_path(path: str) -> str:
-    path = str(path or "").strip().strip("`\"'")
-    path = path.rstrip(".,);]")
-    path = re.sub(r"\s+", " ", path)
-    # Preserve placeholders; Path() may normalize angle-bracket text safely.
+    """Normalize SkillsBench sandbox paths without Windows Path coercion.
+
+    The official SkillsBench/Amber runtime exposes POSIX paths such as
+    `/root/answer.json` and `/app/workspace/solution.py`.  Local selftests often
+    run on Windows, where `Path("/root/answer.json")` renders as
+    `\\root\\answer.json`; that breaks root guards and falsely rejects valid
+    sandbox outputs.  This helper therefore treats non-drive paths as POSIX
+    strings regardless of the host OS.
+    """
+
+    raw = str(path or "").strip().strip("`\"'")
+    raw = raw.rstrip(".,);]")
+    raw = re.sub(r"\s+", " ", raw)
+    if not raw:
+        return ""
+
+    # Do not reinterpret a real Windows drive path as a SkillsBench output.
+    # It will remain non-POSIX and fail the absolute sandbox-path checks.
+    if WINDOWS_DRIVE_RE.match(raw):
+        return raw
+
+    had_trailing_slash = raw.endswith(("/", "\\"))
+    normalized = raw.replace("\\", "/")
     try:
-        return str(Path(path))
+        normalized = posixpath.normpath(normalized)
     except Exception:
-        return path
+        normalized = raw.replace("\\", "/")
+
+    if normalized == ".":
+        normalized = ""
+    if had_trailing_slash and normalized and normalized != "/" and not normalized.endswith("/"):
+        normalized += "/"
+    return normalized
+
+
+def _posix_suffix(path: str) -> str:
+    normalized = normalize_path(path).rstrip("/")
+    return PurePosixPath(normalized).suffix.lower()
+
+
+def _posix_name(path: str) -> str:
+    normalized = normalize_path(path).rstrip("/")
+    return posixpath.basename(normalized)
+
+
+def _posix_parent(path: str) -> str:
+    normalized = normalize_path(path).rstrip("/")
+    parent = posixpath.dirname(normalized)
+    if normalized.startswith("/") and not parent:
+        return "/"
+    return parent or "."
+
+
+def _posix_join(base: str, child: str) -> str:
+    base_normalized = normalize_path(base).rstrip("/") or "/"
+    child_normalized = str(child or "").strip().replace("\\", "/").lstrip("/")
+    if base_normalized == "/":
+        return normalize_path("/" + child_normalized)
+    return normalize_path(posixpath.join(base_normalized, child_normalized))
+
+
+def _posix_parts(path: str) -> tuple[str, ...]:
+    normalized = normalize_path(path)
+    if not normalized:
+        return tuple()
+    return PurePosixPath(normalized).parts
 
 
 def path_kind(path: str) -> tuple[str, str, str]:
     path = normalize_path(path)
     if path.endswith("/"):
         return "directory", "", MIME_BY_KIND["directory"]
-    suffix = Path(path).suffix.lower()
+    suffix = _posix_suffix(path)
     kind = PATH_KIND_BY_SUFFIX.get(suffix, "unknown")
     return kind, suffix, MIME_BY_KIND.get(kind, MIME_BY_KIND["unknown"])
 
@@ -483,10 +565,10 @@ def _is_probably_output_filename(token: str) -> bool:
         return False
     if "://" in token or "@" in token and "/" not in token:
         return False
-    name = Path(token).name
+    name = _posix_name(token)
     if not name or name in {".", ".."}:
         return False
-    suffix = Path(name).suffix.lower()
+    suffix = _posix_suffix(name)
     return suffix in PATH_KIND_BY_SUFFIX
 
 
@@ -500,13 +582,13 @@ def _materialize_output_path(raw_path: str, base_for_relative: str) -> str:
     base = normalize_path(base_for_relative or "/root").rstrip("/") or "/"
     if any(lowered.startswith(prefix) for prefix in RELATIVE_OUTPUT_PREFIXES):
         if base in {"/root", "/app", "/workspace", "/output"}:
-            return normalize_path(str(Path(base) / raw))
+            return normalize_path(_posix_join(base, raw))
         # If the configured base is already an output-like subdir, avoid nesting
         # `/root/output/output/foo.csv`.
-        if Path(base).name.lower() in {"output", "outputs", "results", "workspace", "data", "logs", "patches"}:
+        if _posix_name(base).lower() in {"output", "outputs", "results", "workspace", "data", "logs", "patches"}:
             first, _, rest = raw.partition("/")
-            return normalize_path(str(Path(base) / (rest or first)))
-    return normalize_path(str(Path(base) / raw))
+            return normalize_path(_posix_join(base, (rest or first)))
+    return normalize_path(_posix_join(base, raw))
 
 
 
@@ -531,7 +613,7 @@ def _has_strict_output_signal(evidence: str, source: str) -> bool:
 def _is_source_like_without_output_signal(path: str, evidence: str, source: str) -> bool:
     if _has_strict_output_signal(evidence, source):
         return False
-    suffix = Path(path).suffix.lower()
+    suffix = _posix_suffix(path)
     if suffix in {".py", ".sh", ".yaml", ".yml", ".json", ".csv", ".txt", ".md", ".lean"}:
         return True
     return False
@@ -580,8 +662,8 @@ def _make_output_requirement(
     if kind_override:
         kind = str(kind_override)
         mime = mime_override or MIME_BY_KIND.get(kind, mime)
-    parent = str(Path(path).parent)
-    filename = Path(path).name
+    parent = _posix_parent(path)
+    filename = _posix_name(path)
     placeholders = tuple(PLACEHOLDER_RE.findall(path))
     around = evidence or _sentence_window(full_text, 0, min(len(full_text), 200))
     if schema_fields is None:
@@ -715,7 +797,7 @@ def _requirements_from_paths(text: str, source: str, *, base_for_relative: str =
             # absolute path such as `/root/output/foo.csv`.
             if match.start() > 0 and text[match.start() - 1] == "/":
                 continue
-            raw_path = str(Path(base_for_relative) / raw_path)
+            raw_path = _posix_join(base_for_relative, raw_path)
         path = normalize_path(raw_path)
         if not path.startswith("/"):
             continue
@@ -728,8 +810,8 @@ def _requirements_from_paths(text: str, source: str, *, base_for_relative: str =
         accepted, _reject_reason = _should_accept_output_path(path, evidence, source, kind=kind)
         if not accepted:
             continue
-        parent = str(Path(path).parent)
-        filename = Path(path).name
+        parent = _posix_parent(path)
+        filename = _posix_name(path)
         placeholders = tuple(PLACEHOLDER_RE.findall(path))
         has_placeholder = bool(placeholders)
         schema_fields = _json_fields_from_text(text, evidence) if kind == "json" else tuple()
@@ -896,7 +978,7 @@ def _roots(requirements: Iterable[OutputRequirement]) -> tuple[str, ...]:
             if path.startswith(root):
                 roots.append(root)
                 break
-        parts = Path(path).parts
+        parts = _posix_parts(path)
         if len(parts) >= 2:
             roots.append("/".join(parts[:2]) or "/")
         if len(parts) >= 3:
@@ -971,22 +1053,52 @@ def _clean_task_id(value: Any) -> str:
     return text
 
 
-def _metadata_family_hint(metadata: Mapping[str, Any], text: str) -> str:
-    explicit_keys = (
-        "family",
-        "contract_family",
-        "output_family",
-        "expected_family",
-        "task_family",
-        "environment_family_hint",
-        "canonical_family",
-    )
-    for key in explicit_keys:
-        raw = str(metadata.get(key) or "").strip().lower().replace("-", "_")
-        if raw and raw not in {"general", "general_file", "general_file_output", "unknown", "none"}:
-            return _normalize_family(raw)
+TASK_SPECIFIC_OUTPUT_FAMILY_BASE: dict[str, str] = {
+    # Deploy-smoke solver keys should still have concrete output families in
+    # output_contract.  task_workspace_executor can select a task-specific solver
+    # from metadata, while the contract stays filesystem-output-family oriented.
+    "citation-check": "json_output",
+    "dialogue-parser": "json_output",
+    "court-form-filling": "pdf_document",
+    "offer-letter-generator": "office_docx",
+    "powerlifting-coef-calc": "office_xlsx",
+}
 
-    task_keys = (
+SECURITY_EXACT_TASK_HINTS: set[str] = {
+    "dapt-intrusion-detection",
+    "software-dependency-audit",
+    "suricata-custom-exfil",
+    "setup-fuzzing-py",
+    # CVE repair tasks usually produce patches, so code_solution should be able
+    # to win when patch/python outputs are visible.  These names are retained as
+    # strong security signals only, not unconditional security_config routes.
+    "fix-druid-loophole-cve",
+    "fix-erlang-ssh-cve",
+    "azure-bgp-oscillation-route-leak",
+    "bgp-route-leak",
+}
+
+STRONG_SECURITY_TOKEN_RE = re.compile(
+    r"\b("
+    r"cve|vulnerability|vulnerabilities|exploit|exploitable|"
+    r"firewall|iptables|nftables|rbac|iam|seccomp|apparmor|selinux|"
+    r"semgrep|yara|suricata|snort|pcap|intrusion|exfil|exfiltration|"
+    r"secret[- ]?scanning|credential leak|malware|fuzzing|fuzzer|"
+    r"dependency audit|supply[- ]chain|sandbox escape|route[- ]leak|bgp route"
+    r")\b",
+    re.IGNORECASE,
+)
+
+SECURITY_FILENAME_TOKEN_RE = re.compile(
+    r"(security[_-]?(?:report|config|policy)|suricata|snort|yara|semgrep|"
+    r"firewall|iptables|rbac|iam|cve|vuln|intrusion|exfil|secrets?)",
+    re.IGNORECASE,
+)
+
+
+def _task_id_candidates_from_metadata(metadata: Mapping[str, Any], text: str) -> list[str]:
+    candidates: list[str] = []
+    keys = (
         "canonical_task_id",
         "environment_canonical_task_id",
         "contract_task_id",
@@ -996,21 +1108,130 @@ def _metadata_family_hint(metadata: Mapping[str, Any], text: str) -> str:
         "task_name",
         "trial_id",
     )
-    for key in task_keys:
+    for key in keys:
         raw = str(metadata.get(key) or "")
+        if not raw:
+            continue
         cleaned = _clean_task_id(raw)
-        if cleaned in TASK_ID_FAMILY_HINTS:
-            return TASK_ID_FAMILY_HINTS[cleaned]
-        # trial ids often look like "dialogue-parser__agentbeats__019e..."
+        if cleaned:
+            candidates.append(cleaned)
         if "__" in raw:
             prefix = _clean_task_id(raw.split("__", 1)[0])
-            if prefix in TASK_ID_FAMILY_HINTS:
-                return TASK_ID_FAMILY_HINTS[prefix]
+            if prefix:
+                candidates.append(prefix)
 
-    lowered = text.lower()
-    for task_id, family in TASK_ID_FAMILY_HINTS.items():
+    lowered = text.lower().replace("_", "-")
+    for task_id in TASK_ID_FAMILY_HINTS:
         if task_id in lowered:
-            return family
+            candidates.append(task_id)
+
+    try:
+        from .task_catalog import extract_task_id  # type: ignore
+
+        catalog_task_id = extract_task_id(metadata, text)
+        if catalog_task_id:
+            candidates.append(_clean_task_id(catalog_task_id))
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
+
+def _catalog_family_hint(metadata: Mapping[str, Any], text: str) -> str:
+    try:
+        from .task_catalog import classify_task  # type: ignore
+
+        routed = classify_task(metadata, text)
+    except Exception:
+        return ""
+
+    raw_family = str(
+        routed.get("solver_family")
+        or routed.get("family")
+        or routed.get("legacy_family")
+        or ""
+    ).strip()
+    if not raw_family:
+        return ""
+
+    raw_family = TASK_SPECIFIC_OUTPUT_FAMILY_BASE.get(raw_family, raw_family)
+    return _normalize_family(raw_family)
+
+
+def _has_strong_security_signal(blob: str, metadata: Mapping[str, Any] | None = None) -> bool:
+    metadata = metadata or {}
+    normalized_blob = str(blob or "").lower().replace("_", "-")
+    for task_id in _task_id_candidates_from_metadata(metadata, normalized_blob):
+        if task_id in SECURITY_EXACT_TASK_HINTS or TASK_ID_FAMILY_HINTS.get(task_id) == "security_config":
+            return True
+
+    category = str(metadata.get("category") or metadata.get("task_category") or "").lower()
+    if "cyber" in category or "security" in category:
+        return True
+
+    if STRONG_SECURITY_TOKEN_RE.search(normalized_blob):
+        return True
+
+    # Treat filenames such as security_config.yaml as strong, but do not treat
+    # generic words like "configuration", "policy", "audit", or "detection" as
+    # security by themselves.  Those words caused scientific/media/office tasks
+    # to be routed to security_config in the forensic table.
+    return bool(SECURITY_FILENAME_TOKEN_RE.search(normalized_blob))
+
+
+def _family_priority_index(family: str) -> int:
+    normalized = _normalize_family(family)
+    try:
+        return FAMILY_PRIORITY.index(normalized)
+    except ValueError:
+        return len(FAMILY_PRIORITY)
+
+
+def _metadata_family_hint(metadata: Mapping[str, Any], text: str) -> str:
+    """Resolve a concrete family hint without trusting stale generic routing.
+
+    Priority is intentionally exact-task first.  The forensic table showed that
+    broad metadata fields such as family/security_config and
+    contract_family/general_file_output can be stale outputs from an earlier
+    router pass; canonical task ids are stronger evidence.
+    """
+
+    for candidate in _task_id_candidates_from_metadata(metadata, text):
+        if candidate in TASK_SPECIFIC_OUTPUT_FAMILY_BASE:
+            return TASK_SPECIFIC_OUTPUT_FAMILY_BASE[candidate]
+        if candidate in TASK_ID_FAMILY_HINTS:
+            return _normalize_family(TASK_ID_FAMILY_HINTS[candidate])
+
+    catalog_hint = _catalog_family_hint(metadata, text)
+    if catalog_hint and catalog_hint != "general_file_output":
+        return catalog_hint
+
+    explicit_keys = (
+        "environment_family_hint",
+        "output_family",
+        "expected_family",
+        "task_family",
+        "canonical_family",
+        "family",
+        "plan_family",
+        "contract_family",
+    )
+    blob = " ".join([_safe_text(metadata, limit=30000), text[:50000]])
+    for key in explicit_keys:
+        raw = str(metadata.get(key) or "").strip().lower().replace("-", "_")
+        if not raw or raw in {"general", "general_file", "general_file_output", "unknown", "none"}:
+            continue
+        normalized = _normalize_family(raw)
+        if normalized == "security_config" and not _has_strong_security_signal(blob, metadata):
+            continue
+        if normalized in FAMILY_PRIORITY:
+            return normalized
 
     return ""
 
@@ -1042,6 +1263,16 @@ def _normalize_family(value: str) -> str:
         "python_solution": "code_solution",
         "security": "security_config",
         "security_output": "security_config",
+        "security_audit": "security_config",
+        "data_json": "json_output",
+        "data_csv": "csv_output",
+        "scientific_compute": "json_output",
+        "industrial_control": "json_output",
+        "media_processing": "media_output",
+        "media": "media_output",
+        "video": "media_output",
+        "audio": "media_output",
+        "vision": "media_output",
         "json": "json_output",
         "csv": "csv_output",
     }
@@ -1069,34 +1300,29 @@ def _family_from_requirements(requirements: Sequence[OutputRequirement], blob: s
     ):
         return "code_solution"
 
-    security_tokens = (
-        "security", "vulnerability", "cve", "pcap", "firewall", "iptables",
-        "allowlist", "denylist", "rbac", "iam", "permissions", "auth",
-        "configuration", "semgrep", "yara", "suricata", "snort", "detection",
-        "audit", "sandbox", "secret", "secrets",
-    )
-    security_filenames = (
-        "config", "policy", "policies", "rules", "rule", "allowlist", "denylist",
-        "firewall", "permissions", "rbac", "iam", "detection", "audit", "secrets",
-    )
-    if any(token in blob for token in security_tokens) and (
-        kinds & {"json", "yaml", "text", "csv", "shell"}
-        or any(token in filenames for token in security_filenames)
-    ):
-        return "security_config"
-
     if "excel" in kinds or ".xlsx" in paths or ".xls" in paths:
         return "office_xlsx"
     if "document" in kinds or ".docx" in paths:
         return "office_docx"
     if "pdf" in kinds or ".pdf" in paths:
         return "pdf_document"
+    if kinds & {"archive", "cad"} or any(token in paths for token in (".obj", ".mp4", ".wav", ".png", ".jpg", ".jpeg", ".webp", ".mp3", ".m4a")):
+        return "media_output"
+
+    security_filename_hit = bool(SECURITY_FILENAME_TOKEN_RE.search(" ".join([filenames, paths])))
+    if _has_strong_security_signal(blob) and (
+        security_filename_hit
+        or "yaml" in kinds
+        or "shell" in kinds
+        or "security" in blob
+        or "cybersecurity" in blob
+    ):
+        return "security_config"
+
     if "csv" in kinds:
         return "csv_output"
     if "json" in kinds:
         return "json_output"
-    if kinds & {"archive", "cad"} or any(token in paths for token in (".obj", ".mp4", ".wav", ".png", ".jpg", ".jpeg")):
-        return "media_output"
     return "general_file_output"
 
 def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence[OutputRequirement]) -> str:
@@ -1111,30 +1337,38 @@ def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence
         ]
     ).lower()
 
-    hinted = _metadata_family_hint(metadata, text)
-    requirement_family = _family_from_requirements(requirements, blob)
+    hinted = _normalize_family(_metadata_family_hint(metadata, text))
+    if hinted not in FAMILY_PRIORITY:
+        hinted = ""
 
-    # A concrete file family from detected requirements should beat a generic or
-    # stale metadata hint.  Otherwise prefer explicit task/catalog hints.
-    if requirement_family != "general_file_output":
-        if hinted and FAMILY_PRIORITY.index(requirement_family) <= FAMILY_PRIORITY.index(_normalize_family(hinted)):
+    requirement_family = _family_from_requirements(requirements, blob)
+    strong_security = _has_strong_security_signal(blob, metadata)
+
+    # Stale security_config hints were the dominant bad route in the forensic
+    # table.  Only keep security_config when there is a strong security signal;
+    # otherwise let concrete output types, task-catalog hints, or JSON/CSV win.
+    if hinted == "security_config" and not strong_security:
+        hinted = ""
+    if requirement_family == "security_config" and not strong_security:
+        requirement_family = "general_file_output"
+
+    if hinted and hinted != "security_config":
+        if requirement_family == "general_file_output":
+            return hinted
+        if hinted in {"office_pptx", "office_xlsx", "office_docx", "pdf_document", "media_output"}:
+            # Catalog/task-id office/media/document hints should beat generic
+            # JSON/CSV sidecars, e.g. xlsx-recover-data or video tasks.
+            if requirement_family in {"json_output", "csv_output", "general_file_output"}:
+                return hinted
+        if requirement_family != "general_file_output" and _family_priority_index(requirement_family) <= _family_priority_index(hinted):
             return requirement_family
-        if hinted in {"office_pptx", "office_xlsx", "office_docx", "pdf_document"}:
-            # Keep task-id hints for office/document benchmark tasks.  This
-            # handles mixed-input tasks such as exceltable-in-ppt where the
-            # prompt may mention xlsx input but the required deliverable is pptx.
-            if hinted == "office_pptx" and ("ppt" in blob or ".pptx" in blob or "slide" in blob):
-                return "office_pptx"
-            if hinted == "office_xlsx" and (".xlsx" in blob or ".xls" in blob or "spreadsheet" in blob):
-                return "office_xlsx"
-            if hinted == "office_docx" and (".docx" in blob or "document" in blob):
-                return "office_docx"
-            if hinted == "pdf_document" and ".pdf" in blob:
-                return "pdf_document"
+        return hinted
+
+    if requirement_family != "general_file_output":
         return requirement_family
 
-    if hinted:
-        return _normalize_family(hinted)
+    if hinted == "security_config" and strong_security:
+        return "security_config"
 
     # Prompt-level fallback when no concrete requirement survived strict
     # filtering yet the task clearly points to one family.
@@ -1146,10 +1380,14 @@ def _infer_family(metadata: Mapping[str, Any], text: str, requirements: Sequence
         return "office_docx"
     if ".pdf" in blob or "pdf form" in blob:
         return "pdf_document"
+    if any(token in blob for token in (".mp4", ".wav", ".mp3", ".jpg", ".jpeg", ".png", ".obj", "video", "audio", "image")):
+        return "media_output"
     if ".lean" in blob or "lean4" in blob:
         return "lean_solution"
     if "patch_0.diff" in blob or "git apply" in blob or "fix build" in blob:
         return "code_solution"
+    if strong_security:
+        return "security_config"
 
     return "general_file_output"
 
@@ -1366,6 +1604,13 @@ def validate_output_contract_selftest() -> dict[str, Any]:
     )
     paths = set(contract.primary_outputs) | {req.path for req in contract.requirements}
     errors: list[str] = []
+
+    if normalize_path("/root/answer.json") != "/root/answer.json":
+        errors.append(f"posix absolute path was not preserved: {normalize_path('/root/answer.json')}")
+    if normalize_path("\\root\\answer.json") != "/root/answer.json":
+        errors.append(f"windows-style sandbox path was not converted to POSIX: {normalize_path('\\\\root\\\\answer.json')}")
+    if _materialize_output_path("output/results.csv", "/root") != "/root/output/results.csv":
+        errors.append(f"relative output path materialization failed: {_materialize_output_path('output/results.csv', '/root')}")
     for expected in (
         "/root/answer.json",
         "/root/output/report.md",
@@ -1438,6 +1683,25 @@ def validate_output_contract_selftest() -> dict[str, Any]:
 
     if contract.family != "code_solution":
         errors.append(f"unexpected family: {contract.family}")
+
+    false_security_cases = {
+        "exoplanet-detection-period": "Run period detection and write `/root/answer.json`.",
+        "gravitational-wave-detection": "Detect events and write `/root/answer.json`.",
+        "invoice-fraud-detection": "Detect invoice fraud and generate `/root/answer.xlsx`.",
+        "drone-planning-control": "Generate a drone planning/control result in `answer.json`.",
+        "video-silence-remover": "Produce a media processing manifest at `answer.json`.",
+    }
+    for task_id, prompt in false_security_cases.items():
+        routed = build_output_contract({"task_id": task_id}, prompt)
+        if routed.family == "security_config":
+            errors.append(f"{task_id} incorrectly routed to security_config")
+
+    security_true = build_output_contract(
+        {"task_id": "dapt-intrusion-detection", "category": "cybersecurity"},
+        "Analyze the pcap intrusion evidence and write `/root/security_report.json`.",
+    )
+    if security_true.family != "security_config":
+        errors.append(f"strong security task did not route to security_config: {security_true.family}")
 
     return {
         "ok": not errors,

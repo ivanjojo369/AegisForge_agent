@@ -33,7 +33,7 @@ from .task_environment import (
 )
 
 
-TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_5_solver_registry_pptx_routing_2026_06_09"
+TASK_WORKSPACE_EXECUTOR_VERSION = "skillsbench_task_workspace_executor_v0_6_route_hardening_2026_06_10"
 
 SolverFn = Callable[
     [SkillsBenchOutputContract, SkillsBenchTaskEnvironment, Mapping[str, Any], str],
@@ -78,7 +78,11 @@ def _family_aliases(family: str) -> tuple[str, ...]:
         "security_config": ("security_config", "security_audit", "security_output", "cybersecurity"),
         "json_output": ("json_output", "data_json", "json"),
         "csv_output": ("csv_output", "data_csv", "csv"),
-        "media_output": ("media_output", "media_processing"),
+        "media_output": ("media_output", "media_processing", "video", "audio", "vision", "image_processing"),
+        "scientific_compute": ("json_output", "scientific_compute", "science", "optimization"),
+        "industrial_control": ("json_output", "industrial_control", "control", "planning_control"),
+        "office_document": ("json_output", "office_document"),
+        "spreadsheet_finance": ("office_xlsx", "spreadsheet_finance"),
         "general_file_output": ("general_file_output", "general"),
     }
     values = aliases.get(family, (family,))
@@ -107,9 +111,31 @@ def _load_default_solver_registry() -> tuple[dict[str, SolverFn], str]:
         return {}, f"{type(exc).__name__}: {str(exc)[:500]}"
 
 
+def _append_solver_variants(keys: list[str], value: Any) -> None:
+    for variant in _solver_key_variants(value):
+        if variant not in keys:
+            keys.append(variant)
+
+
+def _append_family_aliases(keys: list[str], family: Any) -> None:
+    for variant in _family_aliases(str(family or "")):
+        if variant not in keys:
+            keys.append(variant)
+
+
 def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return solver lookup keys in forensic-safe routing priority.
+
+    Exact task identity must beat stale family labels.  The June 2026 forensic
+    table showed that broad metadata fields could carry previous bad routes
+    such as security_config/general_file_output.  Those broad hints are now
+    appended only after canonical task ids, contract.task_id, contract.family,
+    and requirement-kind evidence.
+    """
+
     keys: list[str] = []
-    metadata_keys = (
+
+    exact_identity_keys = (
         "canonical_task_id",
         "environment_canonical_task_id",
         "contract_task_id",
@@ -118,49 +144,52 @@ def _solver_lookup_keys(contract: SkillsBenchOutputContract, metadata: Mapping[s
         "name",
         "task_name",
         "trial_id",
-        "family",
-        "contract_family",
-        "output_family",
-        "environment_family_hint",
     )
+    for key in exact_identity_keys:
+        _append_solver_variants(keys, metadata.get(key))
 
-    for key in metadata_keys:
-        for variant in _solver_key_variants(metadata.get(key)):
-            if variant not in keys:
-                keys.append(variant)
+    _append_solver_variants(keys, contract.task_id)
+    _append_family_aliases(keys, contract.family)
 
-    for variant in _solver_key_variants(contract.task_id):
-        if variant not in keys:
-            keys.append(variant)
-
-    for variant in _family_aliases(contract.family):
-        if variant not in keys:
-            keys.append(variant)
-
-    # Requirement kinds can disambiguate a generic family, especially when the
-    # task id arrives as a UUID and output_contract inferred the family from the
-    # concrete deliverable extension.
+    # Requirement kinds can disambiguate a generic or UUID-only task.
     kinds = {req.kind for req in contract.requirements}
     if "presentation" in kinds:
-        for variant in _family_aliases("office_pptx"):
-            if variant not in keys:
-                keys.append(variant)
+        _append_family_aliases(keys, "office_pptx")
     if "excel" in kinds:
-        for variant in _family_aliases("office_xlsx"):
-            if variant not in keys:
-                keys.append(variant)
+        _append_family_aliases(keys, "office_xlsx")
     if "document" in kinds:
-        for variant in _family_aliases("office_docx"):
-            if variant not in keys:
-                keys.append(variant)
+        _append_family_aliases(keys, "office_docx")
     if "pdf" in kinds:
-        for variant in _family_aliases("pdf_document"):
-            if variant not in keys:
-                keys.append(variant)
+        _append_family_aliases(keys, "pdf_document")
     if "patch" in kinds or "python" in kinds or "shell" in kinds:
-        for variant in _family_aliases("code_solution"):
-            if variant not in keys:
-                keys.append(variant)
+        _append_family_aliases(keys, "code_solution")
+    if "lean" in kinds:
+        _append_family_aliases(keys, "lean_solution")
+    if "csv" in kinds:
+        _append_family_aliases(keys, "csv_output")
+    if "json" in kinds:
+        _append_family_aliases(keys, "json_output")
+    if kinds & {"archive", "cad"}:
+        _append_family_aliases(keys, "media_output")
+
+    # Broad family hints are useful, but only after concrete evidence.
+    broad_family_keys = (
+        "environment_family_hint",
+        "output_family",
+        "solver_family",
+        "family",
+        "plan_family",
+        "contract_family",
+    )
+    for key in broad_family_keys:
+        value = metadata.get(key)
+        normalized = str(value or "").strip().lower().replace("-", "_")
+        if not normalized or normalized in {"general", "general_file", "general_file_output", "unknown", "none"}:
+            continue
+        # Avoid selecting stale security_config before contract/json/csv evidence.
+        if normalized == "security_config" and contract.family != "security_config":
+            continue
+        _append_family_aliases(keys, normalized)
 
     return tuple(keys)
 
@@ -1386,6 +1415,8 @@ class SkillsBenchTaskWorkspaceExecutor:
             "solver_lookup_keys": list(self.last_solver_lookup_keys),
             "solver_registry_key_count": len(self.solver_registry),
             "default_solver_registry_error": self.default_solver_registry_error,
+            "routing_priority_policy": "exact_task_id_then_contract_family_then_requirement_kind_then_broad_family_hints",
+            "stale_security_family_hint_suppression": True,
             "exception_safe_writer": True,
             "metadata_permission_errors": sum(1 for w in writes if "exists(" in (w.error or "") or "is_dir(" in (w.error or "") or "is_file(" in (w.error or "")),
             "kind_counts": dict(Counter(w.kind for w in writes)),
@@ -1471,8 +1502,11 @@ def validate_task_workspace_executor_selftest() -> dict[str, Any]:
         "Create the final deck at `/root/output/final_deck.pptx`.",
         contract=pptx_contract,
     )
-    if "office_pptx" not in pptx_execution.diagnostics.get("solver_lookup_keys", []):
+    pptx_keys = pptx_execution.diagnostics.get("solver_lookup_keys", [])
+    if "office_pptx" not in pptx_keys:
         errors.append("office_pptx was not included in solver lookup keys")
+    if "security_config" in pptx_keys[:5]:
+        errors.append("stale security_config appeared too early in pptx solver lookup keys")
 
     fake_solver_called: list[str] = []
 

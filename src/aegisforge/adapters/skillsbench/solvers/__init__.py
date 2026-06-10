@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping
 
 SolverCallable = Callable[..., Any]
 
-SOLVER_REGISTRY_VERSION = "skillsbench_solver_registry_v0_3_pptx_dispatch_2026_06_09"
+SOLVER_REGISTRY_VERSION = "skillsbench_solver_registry_v0_4_media_dispatch_2026_06_10"
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +72,31 @@ except Exception:  # pragma: no cover
 
     def validate_json_csv_solver_selftest() -> dict[str, Any]:  # type: ignore
         return {"ok": False, "errors": ["json_csv_solver unavailable"]}
+
+
+try:
+    from .media_solver import (
+        MEDIA_SOLVER_VERSION,
+        MEDIA_TASK_IDS,
+        media_solver,
+        validate_media_solver_selftest,
+    )
+except Exception:  # pragma: no cover
+    MEDIA_SOLVER_VERSION = "unavailable"
+    MEDIA_TASK_IDS = (
+        "video-filler-word-remover",
+        "video-silence-remover",
+        "video-tutorial-indexer",
+        "dynamic-object-aware-egomotion",
+        "multilingual-video-dubbing",
+        "pg-essay-to-audiobook",
+        "threejs-to-obj",
+        "threejs-structure-parser",
+    )
+    media_solver = None  # type: ignore
+
+    def validate_media_solver_selftest() -> dict[str, Any]:  # type: ignore
+        return {"ok": False, "errors": ["media_solver unavailable"]}
 
 
 try:
@@ -189,12 +214,38 @@ JSON_CSV_FAMILIES: tuple[str, ...] = (
     "csv_output",
     "data_json",
     "data_csv",
+    "citation_verification",
+    "structured_dialogue",
+    "vision_counting",
+    "scientific_compute",
+    "scientific_optimization",
+    "industrial_control",
+    "planning_control",
+    "finance_economics",
+    "math_reasoning_json",
     "general_file_output",
+)
+
+
+MEDIA_FAMILIES: tuple[str, ...] = (
+    "media_output",
+    "media_processing",
+    "video_processing",
+    "audio_processing",
+    "media_manifest",
+    "asset_output",
+    "geometry_asset",
+    "threejs",
+    "obj_output",
+    "gltf_output",
 )
 
 CODE_SOLUTION_FAMILIES: tuple[str, ...] = (
     "code_solution",
     "code_workspace",
+    "software_patch",
+    "python_solution",
+    "bugswarm_build_repair",
 )
 
 OFFICE_XLSX_FAMILIES: tuple[str, ...] = (
@@ -233,9 +284,11 @@ LEAN_FAMILIES: tuple[str, ...] = (
 
 SECURITY_FAMILIES: tuple[str, ...] = (
     "security_config",
+    "security_audit",
     "security_analysis",
     "security_output",
-    "cybersecurity",
+    "vulnerability_audit",
+    "intrusion_detection",
 )
 
 
@@ -279,6 +332,13 @@ def default_solver_registry() -> dict[str, SolverCallable]:
         registry.setdefault("fix_build", solve_fix_build_task)
 
     _register_many(registry, DEPLOY_SMOKE_TASK_IDS, deploy_smoke_solver)
+
+    # Media tasks used to fall through to general_file_output/json_output.  Keep
+    # them explicit so forensic traces preserve a concrete media family even
+    # when no heavy media stack such as ffmpeg is available.
+    _register_many(registry, MEDIA_TASK_IDS, media_solver)
+    _register_many(registry, MEDIA_FAMILIES, media_solver)
+
     _register_many(registry, JSON_CSV_FAMILIES, json_csv_solver)
     _register_many(registry, CODE_SOLUTION_FAMILIES, code_solution_solver)
     _register_many(registry, OFFICE_XLSX_FAMILIES, office_xlsx_solver)
@@ -299,6 +359,7 @@ def solver_registry_versions() -> dict[str, str]:
         "fix_build_solver": FIX_BUILD_SOLVER_VERSION,
         "deploy_smoke_solver": DEPLOY_SMOKE_SOLVER_VERSION,
         "json_csv_solver": JSON_CSV_SOLVER_VERSION,
+        "media_solver": MEDIA_SOLVER_VERSION,
         "code_solution_solver": CODE_SOLUTION_SOLVER_VERSION,
         "office_xlsx_solver": OFFICE_XLSX_SOLVER_VERSION,
         "office_docx_solver": OFFICE_DOCX_SOLVER_VERSION,
@@ -321,6 +382,10 @@ def validate_solver_registry_selftest() -> dict[str, Any]:
         "citation-check",
         "json_output",
         "csv_output",
+        "media_output",
+        "video-filler-word-remover",
+        "video-silence-remover",
+        "video-tutorial-indexer",
         "code_solution",
         "office_xlsx",
         "office_docx",
@@ -359,6 +424,7 @@ def validate_all_solver_selftests() -> dict[str, Any]:
         "fix_build_solver": validate_fix_build_solver_selftest,
         "deploy_smoke_solver": validate_deploy_smoke_solver_selftest,
         "json_csv_solver": validate_json_csv_solver_selftest,
+        "media_solver": validate_media_solver_selftest,
         "code_solution_solver": validate_code_solution_solver_selftest,
         "office_xlsx_solver": validate_office_xlsx_solver_selftest,
         "office_docx_solver": validate_office_docx_solver_selftest,
@@ -393,6 +459,7 @@ __all__ = [
     "FIX_BUILD_SOLVER_VERSION",
     "DEPLOY_SMOKE_SOLVER_VERSION",
     "JSON_CSV_SOLVER_VERSION",
+    "MEDIA_SOLVER_VERSION",
     "CODE_SOLUTION_SOLVER_VERSION",
     "OFFICE_XLSX_SOLVER_VERSION",
     "OFFICE_DOCX_SOLVER_VERSION",
@@ -403,6 +470,7 @@ __all__ = [
     "solve_fix_build_task",
     "deploy_smoke_solver",
     "json_csv_solver",
+    "media_solver",
     "code_solution_solver",
     "office_xlsx_solver",
     "office_docx_solver",
@@ -417,6 +485,7 @@ __all__ = [
     "validate_fix_build_solver_selftest",
     "validate_deploy_smoke_solver_selftest",
     "validate_json_csv_solver_selftest",
+    "validate_media_solver_selftest",
     "validate_code_solution_solver_selftest",
     "validate_office_xlsx_solver_selftest",
     "validate_office_docx_solver_selftest",

@@ -21,7 +21,7 @@ import json
 import re
 
 
-TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_3_pptx_output_routing_2026_06_09"
+TASK_CATALOG_VERSION = "skillsbench_task_catalog_standard_v1_v0_4_route_hardening_2026_06_10"
 TASK_SET_SCHEMA_VERSION = 'skillsbench.agentbeats.task_set.v1'
 TASK_SET_NAME = 'standard-v1'
 TASK_SET_CONDITION = 'with_skills'
@@ -53,6 +53,7 @@ SKILLSBENCH_FAMILIES = [
     "office_docx",
     "office_pptx",
     "pdf_document",
+    "media_output",
     "lean_solution",
     "security_config",
     "general_file_output",
@@ -135,6 +136,12 @@ FAMILY_PREFERRED_OUTPUTS = {
         "answer.json",
         "skillsbench_deliverable.md",
         "validation_notes.md"
+    ],
+
+    "media_output": [
+        "answer.json",
+        "media_manifest.json",
+        "processing_notes.md"
     ],
 
     # Task-specific deploy-smoke keys. These intentionally match registry keys
@@ -291,6 +298,12 @@ FAMILY_MIME_HINTS = {
         "text/markdown"
     ],
 
+    "media_output": [
+        "application/json",
+        "application/json",
+        "text/markdown"
+    ],
+
     # Task-specific deploy-smoke keys.
     "dialogue-parser": [
         "application/json",
@@ -381,7 +394,7 @@ SOLVER_FAMILY_ALIASES = {
     "data_json": "json_output",
     "formal_reasoning": "lean_solution",
     "industrial_control": "json_output",
-    "media_processing": "json_output",
+    "media_processing": "media_output",
     "office_document": "json_output",
     "scientific_compute": "json_output",
     "security_audit": "security_config",
@@ -440,11 +453,22 @@ TASK_SOLVER_FAMILY_OVERRIDES = {
     "data-to-d3": "code_solution",
     "react-performance-debugging": "code_solution",
     "syzkaller-ppdev-syzlang": "code_solution",
-    "video-tutorial-indexer": "json_output",
-    "video-filler-word-remover": "json_output",
+    "video-tutorial-indexer": "media_output",
+    "video-filler-word-remover": "media_output",
+    "video-silence-remover": "media_output",
+    "dynamic-object-aware-egomotion": "media_output",
+    "multilingual-video-dubbing": "media_output",
+    "pg-essay-to-audiobook": "media_output",
+    "threejs-to-obj": "media_output",
+    "threejs-structure-parser": "media_output",
     "pedestrian-traffic-counting": "csv_output",
     "jpg-ocr-stat": "json_output",
     "seismic-phase-picking": "csv_output",
+    "energy-ac-optimal-power-flow": "json_output",
+    "drone-planning-control": "json_output",
+    "exoplanet-detection-period": "json_output",
+    "gravitational-wave-detection": "json_output",
+    "invoice-fraud-detection": "office_xlsx",
 }
 
 TASK_PROFILES: dict[str, dict[str, Any]] = {
@@ -3903,7 +3927,8 @@ def infer_family_from_signals(metadata: Mapping[str, Any] | None = None, text: s
         "office_xlsx": ("excel", "xlsx", "spreadsheet", "pivot", "finance", "formula", "workbook"),
         "lean_solution": ("lean", "lean4", "proof", "theorem", "formal method"),
         "csv_output": ("csv", "table", "rows", "columns"),
-        "json_output": ("json", "parser", "search", "nlp", "taxonomy", "dialogue", "answer.json"),
+        "json_output": ("json", "parser", "search", "nlp", "taxonomy", "dialogue", "answer.json", "optimization", "control", "scientific"),
+        "media_output": ("video", "audio", "image", "media", "mp4", "wav", "obj", "threejs", "dubbing", "silence", "filler-word"),
     }
     for family, words in keyword_groups.items():
         for word in words:
@@ -4039,6 +4064,12 @@ def validate_task_catalog_selftest() -> dict[str, Any]:
         "pptx-reference-formatting": "office_pptx",
         "exceltable-in-ppt": "office_pptx",
         "software-dependency-audit": "security_config",
+        "pedestrian-traffic-counting": "csv_output",
+        "energy-ac-optimal-power-flow": "json_output",
+        "drone-planning-control": "json_output",
+        "xlsx-recover-data": "office_xlsx",
+        "video-filler-word-remover": "media_output",
+        "video-silence-remover": "media_output",
     }
     errors: list[str] = []
     results: dict[str, Any] = {}

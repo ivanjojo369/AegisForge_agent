@@ -1,0 +1,142 @@
+{
+  "all_official_artifact_refs_empty": false,
+  "diagnoses": {},
+  "file_errors": [],
+  "files_scanned": 11,
+  "filesystem_write_rows": 0,
+  "final_ref_rows": 0,
+  "join_strategy": "partial_sequence",
+  "local_final_contracts_selected": 0,
+  "logs_dir": "forensics\\quick_submit_latest\\logs\\run-scenario _ summary",
+  "official_rows_selected": 0,
+  "provenance": [
+    {
+      "data": {
+        "github_actions": {
+          "ref": "refs/pull/63/merge",
+          "repository_url": "https://github.com/benchflow-ai/skillsbench-leaderboard",
+          "run_url": "https://github.com/benchflow-ai/skillsbench-leaderboard/actions/runs/27241262480",
+          "sha": "2718497a06c2932dd4659ac36331c9585567c22e",
+          "workflow_ref": "benchflow-ai/skillsbench-leaderboard/.github/workflows/quick-submit.yml@refs/pull/63/merge",
+          "workflow_sha": "2718497a06c2932dd4659ac36331c9585567c22e"
+        },
+        "image_digests": {
+          "/agent": "ghcr.io/ivanjojo369/aegisforge_agent@sha256:8d7fe206192eb9444b9490cd726d1fc5d469b15019622ef2a4e318c25690df49",
+          "/gateway": "ghcr.io/rdi-foundation/agentbeats-gateway@sha256:3f9976889c598092dc4273312ec431cbc48bbe064ff65b5613425f4990bc1d4c",
+          "/green": "ghcr.io/benchflow-ai/skillsbench-agentbeats-worker@sha256:c08b3ec3f9bf5448eb4fe7acd2a7c29844bdedd944b1888ef07794de69b8a2fe"
+        },
+        "manifest_digests": {
+          "/": "sha256:qVR9Aid7Le1JW2h40d69XBDjJm83rS0e/6KO3o0V7V4=",
+          "/agent": "sha256:7z6rf83a8YGDrf53IirXjX8KCZgmtyeAL6mwrxUzEBQ=",
+          "/gateway": "sha256:Ba99ymNGSymbrF9jGwLfnZaSnzPrw9sTJ5veaYMxV2Q=",
+          "/green": "sha256:9CNYH0RoACYCScwbNrlUMX0JD7w5QolOhJZ+KdPLTww="
+        },
+        "timestamp": "2026-06-09T22:59:49Z"
+      },
+      "source_file": "5_Validate and merge provenance.txt"
+    }
+  ],
+  "rows": 0,
+  "source_summary": [
+    {
+      "file": "16_Post Run actions_checkout@v6.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "72eb864a03ee1789e66e2ae848051164bcb6d6d924696ceb6e9b15e63567b138",
+      "shard": ""
+    },
+    {
+      "file": "17_Complete job.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "4d02abf6668398602880db85cb00ef446293a0b9324014f65165556b292a8f75",
+      "shard": ""
+    },
+    {
+      "file": "1_Set up job.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "0019262d3d25bedcd1abda2aa8cc8f5b5043a8f390df582fb2666712c73136f1",
+      "shard": ""
+    },
+    {
+      "file": "2_Run actions_checkout@v6.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "a01166b88159de75b853957bafb05a4484727658802b10f2d5c0cdb1f9fe9a6a",
+      "shard": ""
+    },
+    {
+      "file": "3_Download all shard artifacts.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "af549fec367bfcec83c393479c69990325faac32c1ee3857559057ae91b25e37",
+      "shard": "3"
+    },
+    {
+      "file": "4_Aggregate results.txt",
+      "json_objects": 1,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "e3f4857df83f9d385e51c1ef09de98dda5a2c4b2f9ebba9a3615354b7df8531f",
+      "shard": "0"
+    },
+    {
+      "file": "5_Validate and merge provenance.txt",
+      "json_objects": 1,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "7e5b0dcc818eaa01d1067eacf4afa1f0c1312c5a1cf245c96355a89514729976",
+      "shard": ""
+    },
+    {
+      "file": "6_Commit results.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "ca6127e1d51cf36c5d9a4ae7ad2d6b1969659d4fea9af2a4560056c789373b63",
+      "shard": ""
+    },
+    {
+      "file": "7_Fetch GitHub OIDC token.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "b68287c328fdfb357cb35e601b95212f02c8896a733068dcdaf5afba0464c282",
+      "shard": ""
+    },
+    {
+      "file": "8_Delete secrets from backend.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "336ac56dd5ebb9497499e5c0cee1d56af8c1c1edb0daac5f0ff7b35347bc3e04",
+      "shard": ""
+    },
+    {
+      "file": "system.txt",
+      "json_objects": 0,
+      "local_final_contracts": 0,
+      "official_rows": 0,
+      "route_events": 0,
+      "sha256": "cdf293ca8fe50a112b3330dc27fcca4dcf25549318b50c12c031944cff02f890",
+      "shard": ""
+    }
+  ],
+  "version": "skillsbench_build_forensic_table_v2_2026_06_10"
+}
