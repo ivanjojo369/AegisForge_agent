@@ -96,7 +96,7 @@ ruff==0.15.4
     # via aegisforge-agent (pyproject.toml)
 sse-starlette==3.3.2
     # via a2a-sdk
-starlette==0.52.1
+starlette==1.0.0
     # via
     #   a2a-sdk
     #   fastapi
