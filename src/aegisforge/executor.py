@@ -15,6 +15,7 @@ Pi-Bench-specific revision:
 """
 
 from collections import OrderedDict
+import asyncio
 from pathlib import Path
 import base64
 import hashlib
@@ -30,7 +31,7 @@ from typing import Any, Mapping
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import FilePart, FileWithBytes, InvalidRequestError, Part, TaskState, TextPart, UnsupportedOperationError
+from a2a.types import DataPart, FilePart, FileWithBytes, InvalidRequestError, Part, TaskState, TextPart, UnsupportedOperationError
 from a2a.utils import get_message_text, new_agent_text_message, new_task
 from a2a.utils.errors import ServerError
 
@@ -367,6 +368,17 @@ PI_BENCH_BOOTSTRAP_METADATA: dict[str, Any] = {
 }
 
 
+# Opt-in Quipu Vision A2A bridge. The server's discovery endpoint uses the same
+# environment flag; only an explicit metadata selector can enter this route.
+QUIPU_VISION_SELECTOR = "quipu_vision"
+QUIPU_VISION_METADATA_KEYS = (
+    "capability", "operation", "reference_path", "observed_path",
+    "followup_path", "roi_xywh", "threshold", "min_region_fraction",
+    "annotate", "annotated_path", "cases",
+    "reference_image", "observed_image", "followup_image",
+)
+
+
 TERMINAL_STATES = {
     TaskState.completed,
     TaskState.canceled,
@@ -440,10 +452,21 @@ class _DeferredTerminalTaskUpdater:
 
 
 class Executor(AgentExecutor):
+    # Discovery contract consumed by a2a_server.py. Set only because this
+    # Executor now has an explicit, feature-gated Quipu Vision A2A route.
+    QUIPU_VISION_A2A_ROUTE_AVAILABLE = True
+
     def __init__(self) -> None:
         self._agents: OrderedDict[str, AegisForgeAgent] = OrderedDict()
         self._max_cached_agents = _max_cached_agents()
         self._executions = 0
+        self._vision_requests = 0
+        self._vision_successes = 0
+        self._vision_failures = 0
+        self._vision_last_status = "never_invoked"
+        # OpenCV is CPU-bound; avoid blocking Starlette's event loop and limit
+        # concurrent visual tasks in this Executor instance.
+        self._vision_slots = asyncio.Semaphore(2)
         self._pibench_requests = 0
         self._cybergym_requests = 0
         self._skillsbench_requests = 0
@@ -546,6 +569,26 @@ class Executor(AgentExecutor):
                             task_id=task.id,
                         )
                     )
+            return
+
+        # Visual requests are explicitly selected and do not enter the generic
+        # AegisForgeAgent cache or any benchmark's artifact contract. Keep
+        # Pi-Bench, CyberGym and SkillsBench priority, including forced mode.
+        if (
+            not is_pibench
+            and not is_cybergym
+            and not is_skillsbench
+            and self._is_quipu_vision_request(metadata)
+        ):
+            self._executions += 1
+            self._vision_requests += 1
+            await self._execute_quipu_vision(
+                message=message, metadata=metadata,
+                text=text,
+                updater=updater,
+                context_id=context_id,
+                task_id=task.id,
+            )
             return
 
         cache_key = self._build_cache_key(context_id, metadata, text=text, is_pibench=is_pibench)
@@ -749,6 +792,15 @@ class Executor(AgentExecutor):
             "max_cached_agents": self._max_cached_agents,
             "cached_agents": len(self._agents),
             "executions": self._executions,
+            "quipu_vision": {
+                "enabled": self._vision_enabled(),
+                "a2a_route_implemented": True,
+                "selector": {"capability": QUIPU_VISION_SELECTOR},
+                "requests": self._vision_requests,
+                "successes": self._vision_successes,
+                "failures": self._vision_failures,
+                "last_status": self._vision_last_status,
+            },
             "pibench_requests": self._pibench_requests,
             "cybergym_requests": self._cybergym_requests,
             "skillsbench_requests": self._skillsbench_requests,
@@ -802,6 +854,198 @@ class Executor(AgentExecutor):
             "cache_keys": list(self._agents.keys())[:8],
         }
 
+
+    @staticmethod
+    def _vision_enabled() -> bool:
+        return os.getenv("AEGISFORGE_ENABLE_QUIPU_VISION", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+
+    @staticmethod
+    def _is_quipu_vision_request(metadata: Any) -> bool:
+        """Explicit selector only; never infer Vision from arbitrary prompt text."""
+        return (
+            isinstance(metadata, Mapping)
+            and isinstance(metadata.get("capability"), str)
+            and metadata["capability"].strip().lower() == QUIPU_VISION_SELECTOR
+        )
+
+    @staticmethod
+    def _vision_public_result(*, task_id: str, ok: bool, output: Any,
+                              warnings: Any) -> dict[str, Any]:
+        """Return the existing plugin contract in an A2A DataPart."""
+        return {
+            "task_id": str(task_id),
+            "capability": QUIPU_VISION_SELECTOR,
+            "ok": bool(ok),
+            "plugin": QUIPU_VISION_SELECTOR,
+            "output": output if isinstance(output, dict) else {},
+            "warnings": list(warnings) if isinstance(warnings, (list, tuple)) else [],
+        }
+
+    @staticmethod
+    def _vision_get(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, Mapping):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @classmethod
+    def _vision_collect_inputs(cls, message: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Read A2A DataPart and FileWithBytes without the generic truncation layer.
+
+        FileWithUri (remote URL) is intentionally unsupported: fetching remote
+        resources here would expose the server to SSRF and unbounded downloads.
+        No image bytes or base64 are written to logs or public result objects.
+        """
+        accepted = set(QUIPU_VISION_METADATA_KEYS)
+        # Metadata extracted by the generic router is bounded. Re-read raw Vision
+        # fields from the original A2A message to recover full base64 values.
+        result = {key: metadata[key] for key in accepted if key in metadata}
+        raw_metadata = cls._vision_get(message, "metadata")
+        if isinstance(raw_metadata, Mapping):
+            result.update({key: raw_metadata[key] for key in accepted if key in raw_metadata})
+        file_parts: list[Any] = []
+        parts = cls._vision_get(message, "parts", ()) or ()
+        if not isinstance(parts, (list, tuple)):
+            raise ValueError("A2A message.parts must be a list")
+        for item in parts:
+            part = cls._vision_get(item, "root", item)
+            kind = cls._vision_get(part, "kind", "")
+            # Some A2A SDK versions wrap their DataPart under Part.root.
+            data = cls._vision_get(part, "data")
+            if kind == "data" and isinstance(data, Mapping):
+                for key in accepted:
+                    if key in data:
+                        result[key] = data[key]
+            elif kind == "file":
+                file_parts.append(part)
+        if file_parts:
+            if result.get("operation", "inspect") == "batch":
+                raise ValueError("A2A FilePart uploads are not supported in batch; use inline case images")
+            if len(file_parts) > 3:
+                raise ValueError("Quipu Vision accepts at most three A2A FilePart images")
+            role_aliases = {"reference": "reference", "referencia": "reference",
+                            "observed": "observed", "observation": "observed", "observacion": "observed",
+                            "followup": "followup", "seguimiento": "followup"}
+            for part in file_parts:
+                file = cls._vision_get(part, "file")
+                if file is None:
+                    raise ValueError("A2A FilePart does not contain a file")
+                name = cls._vision_get(file, "name") or cls._vision_get(part, "name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("A2A FilePart must be named reference, observed or followup")
+                # Path(name).stem excludes the extension, without trusting it as a path.
+                role = role_aliases.get(Path(name).stem.lower())
+                if role is None:
+                    raise ValueError("A2A FilePart name must identify reference, observed or followup")
+                image_key = f"{role}_image"
+                path_key = f"{role}_path"
+                if image_key in result or result.get(path_key) is not None:
+                    raise ValueError(f"Duplicate image source for {role}")
+                encoded = cls._vision_get(file, "bytes")
+                if not isinstance(encoded, str):
+                    raise ValueError("A2A images must use FileWithBytes; file URIs are not supported")
+                # Early size bound, before handing the base64 to the plugin.
+                if len(encoded) > ((10 * 1024 * 1024 + 2) // 3) * 4 + 4:
+                    raise ValueError("A2A image exceeds 10 MiB")
+                mime = cls._vision_get(file, "mime_type") or cls._vision_get(file, "mimeType")
+                result[image_key] = {"base64": encoded, **({"mime_type": mime} if mime else {})}
+        return result
+
+    async def _execute_quipu_vision(
+        self, *, message: Any, metadata: Mapping[str, Any], text: str,
+        updater: TaskUpdater, context_id: str, task_id: str,
+    ) -> None:
+        """Execute only the selected visual plugin; preserve benchmark contracts.
+
+        Accepts sandboxed paths, inline base64 DataParts, and FileWithBytes.
+        Does not fetch arbitrary URLs or capture from cameras.
+        """
+        try:
+            if not self._vision_enabled():
+                payload = self._vision_public_result(
+                    task_id=task_id, ok=False,
+                    output={
+                        "status": "error",
+                        "verified": False,
+                        "error": {"code": "vision_disabled",
+                                  "message": "Set AEGISFORGE_ENABLE_QUIPU_VISION=true to enable Vision."},
+                    },
+                    warnings=["Quipu Vision is disabled in this runtime."],
+                )
+            else:
+                # Lazy imports: keep non-vision benchmarks working when the
+                # optional vision package or OpenCV is not installed.
+                from .plugins.contracts import PluginContext
+                from .plugins.examples.quipu_vision import QuipuVisionPlugin
+
+                vision_inputs = self._vision_collect_inputs(message, metadata)
+                context = PluginContext(
+                    task_id=str(task_id), track="vision", prompt="",
+                    metadata=vision_inputs,
+                )
+                # The adapter enforces safe-root paths, validation and limits.
+                async with self._vision_slots:
+                    plugin_result = await asyncio.to_thread(QuipuVisionPlugin().run, context)
+
+                payload = self._vision_public_result(
+                    task_id=task_id, ok=plugin_result.ok,
+                    output=plugin_result.output, warnings=plugin_result.warnings,
+                )
+
+            # One machine-readable, real A2A artifact. Never emit a fabricated
+            # successful observation when OpenCV/plugin validation fails.
+            await updater.add_artifact(
+                parts=[Part(root=DataPart(data=payload))],
+                name="quipu_vision_result",
+            )
+            if payload["ok"]:
+                self._vision_successes += 1
+                output = payload["output"]
+                self._vision_last_status = str(output.get("status") or "completed")[:80]
+                summary = {
+                    "capability": QUIPU_VISION_SELECTOR,
+                    "status": self._vision_last_status,
+                    "operation": output.get("operation", metadata.get("operation", "inspect")),
+                    "next_action": output.get("next_action"),
+                    "verified": bool(output.get("verified", False)),
+                    "artifact": "quipu_vision_result",
+                    "task_id": task_id,
+                }
+                await updater.complete(new_agent_text_message(
+                    json.dumps(summary, ensure_ascii=False),
+                    context_id=context_id, task_id=task_id,
+                ))
+            else:
+                self._vision_failures += 1
+                self._vision_last_status = "failed"
+                # Include the bounded plugin error without misreporting success.
+                message = json.dumps(payload, ensure_ascii=False, default=str)[:6000]
+                await updater.failed(new_agent_text_message(
+                    message, context_id=context_id, task_id=task_id,
+                ))
+        except ValueError as exc:
+            self._vision_failures += 1
+            self._vision_last_status = "failed"
+            if not self._terminal_reached(updater):
+                await updater.failed(new_agent_text_message(
+                    json.dumps({"capability": QUIPU_VISION_SELECTOR, "status": "error",
+                                "error": {"code": "invalid_request", "message": str(exc)[:240]}},
+                               ensure_ascii=False),
+                    context_id=context_id, task_id=task_id,
+                ))
+        except Exception:
+            self._vision_failures += 1
+            self._vision_last_status = "failed"
+            # Guard against leaking filesystem paths, filenames, or raw image
+            # bytes from unexpected exceptions through the public A2A endpoint.
+            if not self._terminal_reached(updater):
+                await updater.failed(new_agent_text_message(
+                    '{"capability":"quipu_vision","status":"error",'
+                    '"error":{"code":"execution_failed",'
+                    '"message":"Visual execution failed; consult server logs."}}',
+                    context_id=context_id, task_id=task_id,
+                ))
 
     def _skillsbench_record_route_probe(self, event: str, **payload: Any) -> dict[str, Any]:
         """Record a bounded SkillsBench route-probe event.
@@ -4916,6 +5160,9 @@ class Executor(AgentExecutor):
         interesting_keys = {
             "track",
             "track_hint",
+            # The A2A DataPart payload can carry the explicitly-selected Vision
+            # request, in addition to message.metadata; do not infer from text.
+            *QUIPU_VISION_METADATA_KEYS,
             "arena",
             "benchmark",
             "category",

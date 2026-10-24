@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.11-slim
+FROM python:3.11-slim AS aegisforge_base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,6 +24,80 @@ COPY requirements.txt ./requirements.txt
 COPY run.sh ./run.sh
 COPY src ./src
 
+# Existing AegisForge dependencies; do not modify its benchmark integrations.
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir . \
+ && chmod +x /app/run.sh
+
+# ---------------------------------------------------------------------------
+# Vision-only build: excludes the benchmark SQLite DB/manifest from the image.
+# Build: docker build --target vision -t aegisforge-vision:0.4 .
+# ---------------------------------------------------------------------------
+FROM aegisforge_base AS vision
+
+# Nested Quipu Vision is a separate installable Python distribution.
+# Keep the package tree, but exclude demo data and generated caches via .dockerignore.
+COPY Quipu-Vision ./Quipu-Vision
+
+# OpenCV GUI wheel may load OpenGL/X11 at import time, even without windows.
+# Debian bookworm/trixie use different GLib package names.
+RUN set -eu; \
+    . /etc/os-release; \
+    if [ "${VERSION_CODENAME:-}" = "trixie" ]; then glib=libglib2.0-0t64; else glib=libglib2.0-0; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      libgl1 "$glib" libx11-6 libxcb1 libxext6 libxrender1 libsm6; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir ./Quipu-Vision \
+ && python -c "import cv2, quipu_vision; v=cv2.__version__; print('Quipu Vision OpenCV',v); assert v.split('.')[0]=='5', 'OpenCV 5 is required'" \
+ && pip check
+
+ENV AEGISFORGE_ENABLE_QUIPU_VISION=true \
+    QUIPU_VISION_INPUT_ROOT=/app/vision-input \
+    QUIPU_VISION_OUTPUT_ROOT=/app/vision-output \
+    HOME=/home/vision
+
+# An empty input folder is intentional: normal remote requests send image bytes
+# through A2A; no local datasets or benchmark databases are required.
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin vision \
+ && mkdir -p /app/vision-input /app/vision-output \
+ && chown vision:vision /app/vision-input /app/vision-output
+USER vision
+
+EXPOSE 8001
+# The same real server module is executed by run.sh; no root-level .py copy.
+ENTRYPOINT ["bash", "/app/run.sh"]
+
+# ---------------------------------------------------------------------------
+# AWS Lambda deployment for short authenticated A2A vision requests.
+# Build: docker buildx build --platform linux/amd64 --provenance=false
+#          --sbom=false --target vision_lambda -t <ECR-URI>:0.4-lambda --load .
+# Lambda Web Adapter runs the existing ASGI HTTP server; no second server.
+# ---------------------------------------------------------------------------
+FROM vision AS vision_lambda
+
+# Official AWS-maintained Lambda Web Adapter; supports non-Lambda base images.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 \
+    /lambda-adapter /opt/extensions/lambda-adapter
+
+# AWS Lambda filesystem is read-only except /tmp.
+# quipu_vision.py stages A2A image bytes inside QUIPU_VISION_OUTPUT_ROOT.
+ENV AWS_LWA_PORT=8001 \
+    AWS_LWA_READINESS_CHECK_PATH=/health \
+    AWS_LWA_READINESS_CHECK_HEALTHY_STATUS=200 \
+    QUIPU_VISION_INPUT_ROOT=/tmp/vision-input \
+    QUIPU_VISION_OUTPUT_ROOT=/tmp/vision-output \
+    HOME=/tmp
+
+# Keep the inherited /app/run.sh entrypoint: it starts
+# python -m aegisforge.a2a_server on 0.0.0.0:8001.
+
+# ---------------------------------------------------------------------------
+# Legacy default build, unchanged as AgentBeats/Unified Purple deployment.
+# docker build -t aegisforge-agent:latest .
+# ---------------------------------------------------------------------------
+FROM aegisforge_base AS agentbeats
 # Copy AegisForge Unified Purple local data.
 # Supported repo layouts:
 #   data/aegisforge_unified_purple_agent.db
@@ -150,10 +224,6 @@ else:
     )
 DOCKER_PY
 
-# Install dependencies + local package.
-RUN pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir .
-
 # OpenAI-compatible endpoint defaults.
 # The leaderboard scenario passes API keys via Amber/runtime secrets when available.
 # This Dockerfile deliberately does not set OPENAI_API_KEY.
@@ -161,9 +231,6 @@ ENV OPENAI_BASE_URL=https://api.openai.com/v1 \
     AEGISFORGE_LLM_TIMEOUT_SECONDS=75 \
     AEGISFORGE_MAX_LLM_CALLS_PER_RESPONSE=1 \
     AEGISFORGE_RUNTIME_PROFILE=crmarena_unified_purple_db_ready
-
-# Make entrypoint executable.
-RUN chmod +x /app/run.sh
 
 # SkillsBench/BenchFlow standard-v1 grades real filesystem outputs.
 # Several tasks require exact paths under /root, for example /root/answer.json,

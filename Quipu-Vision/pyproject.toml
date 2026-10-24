@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quipu-vision"
+version = "0.1.0"
+description = "Evidence-first OpenCV perception engine for AegisForge"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "opencv-python==5.0.0.93"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -19,11 +19,12 @@ from __future__ import annotations
 import argparse
 import copy
 import os
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 
 from a2a.server.apps import A2AStarletteApplication
@@ -35,6 +36,54 @@ from .executor import Executor
 
 
 RUNTIME_VERSION = "1.4.0-pibench-skillsbench-filesystem-output-primary"
+
+# Quipu Vision is opt-in and cannot be advertised as an A2A-executable skill
+# until Executor implements and explicitly declares the vision dispatch branch.
+QUIPU_VISION_DISCOVERY_URN = "urn:aegisforge:quipu-vision:discovery:v1"
+
+
+def _quipu_vision_enabled() -> bool:
+    """Read the deployment-owned feature flag, not A2A request metadata."""
+    return os.getenv("AEGISFORGE_ENABLE_QUIPU_VISION", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _quipu_vision_a2a_ready() -> bool:
+    """Stay False until the Executor exposes its implemented vision route.
+
+    The matching Executor change should declare
+    ``QUIPU_VISION_A2A_ROUTE_AVAILABLE = True`` on its class ONLY after its
+    visual request path is implemented and tested.
+    """
+    return _quipu_vision_enabled() and bool(
+        getattr(Executor, "QUIPU_VISION_A2A_ROUTE_AVAILABLE", False)
+    )
+
+
+def _quipu_vision_discovery() -> dict[str, Any]:
+    """Public, non-sensitive description of the *current* integration stage."""
+    a2a_ready = _quipu_vision_a2a_ready()
+    return {
+        "uri": QUIPU_VISION_DISCOVERY_URN,
+        "version": "1",
+        "capability": "quipu_vision",
+        "enabled": _quipu_vision_enabled(),
+        "integration_status": "a2a_ready" if a2a_ready else "discovery_only",
+        "a2a_task_execution": a2a_ready,
+        "capabilities_endpoint": "/vision/capabilities",
+        "operations": ["inspect", "verify", "batch", "capabilities"],
+        "selector": {"capability": "quipu_vision"},
+        "input_contract": "Allowed local image paths, inline base64 DataParts, or named A2A FileWithBytes parts",
+        "image_input_modes": ["sandboxed_paths", "a2a_inline_base64", "a2a_filepart_bytes"],
+        "max_inline_image_bytes": 10 * 1024 * 1024,
+        "remote_image_uris": False,
+        "temporary_uploads_removed": True,
+        "verification_scope": "Persistent visual pixel changes; not object or safety verification",
+        "automatic_camera_capture": False,
+        "video_processing": False,
+    }
+
 
 # One selected opponent per AgentX-AgentBeats category.
 # "mcu" covers the MCU/Minecraft benchmark; we do not treat mcu-minecraft as a separate track.
@@ -482,6 +531,25 @@ def _enrich_agent_card_dict(card_data: dict[str, Any]) -> dict[str, Any]:
     data["x-aegisforge-pibench-policy-bootstrap"] = PI_BENCH_POLICY_BOOTSTRAP
     data["x-aegisforge-skillsbench-filesystem-output"] = SKILLSBENCH_FILESYSTEM_OUTPUT
     data["x-aegisforge-skillsbench-artifact-output"] = SKILLSBENCH_ARTIFACT_OUTPUT
+
+    # Discovery is deliberately distinct from claiming a functional A2A skill.
+    # The corresponding AgentSkill is only created when Executor has the route.
+    if _quipu_vision_enabled():
+        vision_discovery = _quipu_vision_discovery()
+        if QUIPU_VISION_DISCOVERY_URN not in extensions:
+            extensions.append(QUIPU_VISION_DISCOVERY_URN)
+        if not any(
+            isinstance(item, dict) and item.get("uri") == QUIPU_VISION_DISCOVERY_URN
+            for item in extensions
+        ):
+            extensions.append({
+                "uri": QUIPU_VISION_DISCOVERY_URN,
+                "description": "Quipu Vision plugin and integration readiness discovery.",
+                "required": False,
+                "params": vision_discovery,
+            })
+        metadata["quipu_vision"] = vision_discovery
+        data["x-aegisforge-quipu-vision"] = vision_discovery
     return data
 
 
@@ -515,6 +583,19 @@ def validate_a2a_server_selftest() -> dict[str, Any]:
         errors.append("file output mode missing")
     if not any(skill.get("id") == "quipuloop.aegisforge.skillsbench_artifact_solver" for skill in data.get("skills", []) if isinstance(skill, dict)):
         errors.append("SkillsBench skill missing")
+    vision_skills = [
+        skill for skill in data.get("skills", [])
+        if isinstance(skill, dict) and skill.get("id") == "quipuloop.aegisforge.quipu_vision"
+    ]
+    if _quipu_vision_enabled():
+        if QUIPU_VISION_DISCOVERY_URN not in extensions:
+            errors.append("Quipu Vision discovery extension missing")
+        if not isinstance(metadata, dict) or "quipu_vision" not in metadata:
+            errors.append("Quipu Vision discovery metadata missing")
+        if bool(vision_skills) != _quipu_vision_a2a_ready():
+            errors.append("Vision skill must match the actual executor readiness")
+    elif vision_skills:
+        errors.append("Vision skill advertised while Vision is disabled")
 
     return {
         "ok": not errors,
@@ -604,6 +685,26 @@ def build_agent_card(*, url: str) -> AgentCard:
         ),
     ]
 
+    # No false AgentSkill advertisement: until Executor is patched, this stays
+    # hidden even when the read-only discovery endpoint is enabled.
+    if _quipu_vision_a2a_ready():
+        skills.append(
+            AgentSkill(
+                id="quipuloop.aegisforge.quipu_vision",
+                name="Quipu Vision audited image-change inspection",
+                description=(
+                    "Inspect images from allowed paths, inline base64 or named A2A "
+                    "FileWithBytes parts and request/verify follow-up observations. "
+                    "It detects visual changes, not semantic objects or physical safety."
+                ),
+                tags=["quipu-vision", "opencv", "visual-inspection", "evidence", "verification"],
+                examples=[
+                    'metadata: {"capability":"quipu_vision","operation":"inspect",'
+                    '"reference_path":"reference.png","observed_path":"observed.png"}',
+                ],
+            )
+        )
+
     return AgentCard(
         name="AegisForge (QuipuLoop)",
         description=(
@@ -620,6 +721,61 @@ def build_agent_card(*, url: str) -> AgentCard:
         skills=skills,
     )
 
+
+
+# The browser is opt-in with Quipu Vision. Only these three named assets are
+# served; arbitrary paths, directories, and user-supplied filenames are never
+# passed to FileResponse.
+_VISION_WEB_ASSETS = {
+    "index.html": "text/html; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+    "styles.css": "text/css; charset=utf-8",
+}
+
+
+def _vision_web_asset(filename: str) -> Path | None:
+    """Find a UI asset in source/editable installs or the Docker build tree.
+
+    In the Vision Docker image, ``COPY src ./src`` provides /app/src, even when
+    the installed Python distribution does not package HTML/CSS/JS as data.
+    Avoid using the requested URL to construct filesystem paths.
+    """
+    if filename not in _VISION_WEB_ASSETS:
+        return None
+    candidates = (
+        Path(__file__).resolve().parent / "web" / "vision" / filename,
+        Path.cwd() / "src" / "aegisforge" / "web" / "vision" / filename,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _vision_web_response(filename: str):
+    path = _vision_web_asset(filename)
+    if path is None:
+        # Not a server crash, and do not disclose private filesystem paths.
+        return JSONResponse(
+            {"status": "unavailable", "detail": "Quipu Vision web assets are not installed."},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+    }
+    if filename == "index.html":
+        # Keep script execution and A2A requests restricted to this origin.
+        headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; "
+            "base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+        )
+    return FileResponse(path, media_type=_VISION_WEB_ASSETS[filename], headers=headers)
 
 def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
     advertised_url = _normalize_base_url(card_url) if card_url else _default_advertised_url(host, port)
@@ -651,6 +807,7 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
                 "skillsbench_artifact_output_compat": True,
                 "skillsbench_extension": SKILLSBENCH_ARTIFACT_OUTPUT_URN,
                 "executor": snapshot,
+                **({"quipu_vision": _quipu_vision_discovery()} if _quipu_vision_enabled() else {}),
             }
         )
 
@@ -659,6 +816,69 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
 
     async def pibench_bootstrap_route(_request):
         return JSONResponse(PI_BENCH_POLICY_BOOTSTRAP)
+
+    async def quipu_vision_capabilities_route(_request):
+        """Read-only readiness probe; NEVER accepts caller-controlled file paths.
+
+        This GET route never executes image tasks or accepts uploads.
+        Image processing occurs on the explicitly selected A2A task route.
+        """
+        discovery = _quipu_vision_discovery()
+        try:
+            # Imports are deferred so installations without Quipu Vision keep
+            # their existing A2A server behavior and startup dependencies.
+            from .plugins.contracts import PluginContext
+            from .plugins.examples.quipu_vision import QuipuVisionPlugin
+            from quipu_vision.workflow import run_visual_workflow  # noqa: F401
+
+            plugin = QuipuVisionPlugin()
+            result = plugin.run(
+                PluginContext(
+                    task_id="vision-readiness",
+                    track="vision",
+                    prompt="Return Quipu Vision capabilities",
+                    metadata={"operation": "capabilities"},
+                )
+            )
+            if not result.ok:
+                return JSONResponse(
+                    {**discovery, "plugin_available": False, "status": "unavailable"},
+                    status_code=503,
+                )
+            info = result.output if isinstance(result.output, dict) else {}
+            return JSONResponse({
+                **discovery,
+                "plugin_available": True,
+                "status": "available",
+                "plugin_version": info.get("version"),
+                "opencv_version": info.get("opencv_version"),
+                "opencv5_confirmed": bool(info.get("opencv5_confirmed", False)),
+                "supported_inputs": info.get("supported_inputs", []),
+                "batch_limit": info.get("batch_limit"),
+                "uses_audited_workflow": bool(info.get("uses_audited_workflow", False)),
+            })
+        except Exception:
+            # Error details can include private filesystem locations. Do not
+            # return them to unauthenticated callers.
+            return JSONResponse(
+                {**discovery, "plugin_available": False, "status": "unavailable"},
+                status_code=503,
+            )
+
+    # The fixed UI routes MUST precede Mount("/", app=a2a_app). That mount
+    # otherwise consumes /demo/vision requests. No separate server is needed.
+    # Keep both the UI and the capabilities endpoint disabled by default so
+    # unrelated AgentBeats deployments preserve their existing behavior.
+    vision_routes = (
+        [
+            Route("/vision/capabilities", quipu_vision_capabilities_route, methods=["GET"]),
+            Route("/demo/vision", lambda _request: _vision_web_response("index.html"), methods=["GET"]),
+            Route("/demo/vision/", lambda _request: _vision_web_response("index.html"), methods=["GET"]),
+            Route("/demo/vision/app.js", lambda _request: _vision_web_response("app.js"), methods=["GET"]),
+            Route("/demo/vision/styles.css", lambda _request: _vision_web_response("styles.css"), methods=["GET"]),
+        ]
+        if _quipu_vision_enabled() else []
+    )
 
     # We explicitly serve both endpoints to avoid SDK/version differences.
     return Starlette(
@@ -671,6 +891,7 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
             Route("/skillsbench/filesystem-output", lambda _request: JSONResponse(SKILLSBENCH_FILESYSTEM_OUTPUT), methods=["GET"]),
             Route("/skillsbench/output-contract", lambda _request: JSONResponse(SKILLSBENCH_FILESYSTEM_OUTPUT), methods=["GET"]),
             Route("/skillsbench/artifact-output", lambda _request: JSONResponse(SKILLSBENCH_ARTIFACT_OUTPUT), methods=["GET"]),
+            *vision_routes,
             Mount("/", app=a2a_app),
         ]
     )
@@ -685,6 +906,7 @@ __all__ = [
     "SKILLSBENCH_FILESYSTEM_OUTPUT",
     "SKILLSBENCH_ARTIFACT_OUTPUT_URN",
     "SKILLSBENCH_ARTIFACT_OUTPUT",
+    "QUIPU_VISION_DISCOVERY_URN",
     "build_agent_card",
     "build_app",
     "validate_a2a_server_selftest",

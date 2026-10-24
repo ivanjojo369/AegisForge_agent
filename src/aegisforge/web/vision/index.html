@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#101729">
+  <meta name="description" content="Quipu Vision — evidence-driven visual change inspection powered by OpenCV 5 and AegisForge A2A.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Quipu Vision | Visual Inspection</title>
+  <link rel="stylesheet" href="/demo/vision/styles.css">
+  <script src="/demo/vision/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app-shell">
+    <header class="site-header">
+      <a class="brand" href="/demo/vision" aria-label="Quipu Vision home">
+        <span class="brand-mark" aria-hidden="true">QV</span>
+        <span class="brand-copy"><strong>Quipu Vision</strong><small>Visual Evidence Workspace</small></span>
+      </a>
+      <div class="header-status">
+        <span id="server-status" class="status-indicator" role="status" aria-live="polite">Connecting to AegisForge…</span>
+        <span id="opencv-version" class="version-label">OpenCV —</span>
+      </div>
+    </header>
+
+    <main id="main-content" class="main-content">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">OpenCV 5 · AegisForge · A2A</p>
+        <h1 id="page-title">Inspect what changed.<br><span class="accent-text">Verify what persists.</span></h1>
+        <p class="intro-copy">Compare a reference image with a new observation. If a change is detected, provide a follow-up image to assess whether the same visual region still differs.</p>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel input-panel" aria-labelledby="inputs-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">01 · Inputs</p>
+              <h2 id="inputs-title">Visual observations</h2>
+            </div>
+            <span class="panel-hint">PNG · JPEG · BMP · WebP</span>
+          </div>
+
+          <form id="vision-form" novalidate>
+            <div class="image-input-grid">
+              <div class="upload-card" id="reference-dropzone">
+                <div class="upload-card-top"><span class="step-number">01</span><span class="required-tag">Required</span></div>
+                <label for="reference-file" class="upload-title">Reference image</label>
+                <p class="upload-description">The baseline scene to compare against.</p>
+                <input id="reference-file" name="reference" type="file" accept="image/png,image/jpeg,image/bmp,image/webp" required aria-describedby="reference-help">
+                <p id="reference-help" class="file-hint">Select a local image · Max 10 MiB</p>
+                <div class="preview" id="reference-preview" hidden>
+                  <img id="reference-image" alt="Selected reference image preview">
+                  <span id="reference-name" class="file-name"></span>
+                </div>
+              </div>
+
+              <div class="upload-card" id="observed-dropzone">
+                <div class="upload-card-top"><span class="step-number">02</span><span class="required-tag">Required</span></div>
+                <label for="observed-file" class="upload-title">Observed image</label>
+                <p class="upload-description">The scene captured after the baseline.</p>
+                <input id="observed-file" name="observed" type="file" accept="image/png,image/jpeg,image/bmp,image/webp" required aria-describedby="observed-help">
+                <p id="observed-help" class="file-hint">Select a local image · Same dimensions as reference</p>
+                <div class="preview" id="observed-preview" hidden>
+                  <img id="observed-image" alt="Selected observation image preview">
+                  <span id="observed-name" class="file-name"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="followup-block">
+              <div class="followup-heading">
+                <div>
+                  <label for="followup-file" class="upload-title">Follow-up observation</label>
+                  <p class="upload-description">Optional third image. Use it to check whether a detected difference remains in the same region.</p>
+                </div>
+                <span class="optional-tag">Optional</span>
+              </div>
+              <input id="followup-file" name="followup" type="file" accept="image/png,image/jpeg,image/bmp,image/webp" aria-describedby="followup-help">
+              <p id="followup-help" class="file-hint">Choose a follow-up image only when available. Quipu Vision does not capture images automatically.</p>
+              <div class="preview followup-preview" id="followup-preview" hidden>
+                <img id="followup-image" alt="Selected follow-up image preview">
+                <span id="followup-name" class="file-name"></span>
+              </div>
+            </div>
+
+            <details class="advanced-options">
+              <summary>Advanced inspection settings</summary>
+              <div class="setting-grid">
+                <div class="field">
+                  <label for="threshold">Pixel difference threshold</label>
+                  <input id="threshold" type="number" name="threshold" min="1" max="255" step="1" placeholder="Use engine default">
+                  <small>Leave empty to use the workflow default.</small>
+                </div>
+                <div class="field">
+                  <label for="min-region-fraction">Minimum region fraction</label>
+                  <input id="min-region-fraction" type="number" name="min_region_fraction" min="0.000001" max="1" step="0.0001" placeholder="Use engine default">
+                  <small>Fraction of the inspected image area.</small>
+                </div>
+              </div>
+              <p class="file-hint">ROI is not configured in this first interface version. The core workflow supports it through its API.</p>
+            </details>
+
+            <div class="form-actions">
+              <button id="run-button" type="submit" class="button button-primary" disabled>Run visual inspection</button>
+              <button id="reset-button" type="reset" class="button button-secondary">Clear inputs</button>
+            </div>
+            <p id="form-feedback" class="form-feedback" role="status" aria-live="polite">Select two images to begin.</p>
+          </form>
+        </section>
+
+        <section class="panel results-panel" aria-labelledby="results-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">02 · Evidence</p>
+              <h2 id="results-title">Inspection result</h2>
+            </div>
+            <span id="analysis-status" class="result-status" role="status" aria-live="polite">Not started</span>
+          </div>
+
+          <div id="empty-results" class="empty-results">
+            <div class="empty-results-symbol" aria-hidden="true">◎</div>
+            <h3>No inspection yet</h3>
+            <p>Upload a reference and an observed image, then run an inspection to see evidence and recommended next steps.</p>
+          </div>
+
+          <div id="results-content" class="results-content" hidden>
+            <div class="result-summary">
+              <span class="summary-label">Recommended next action</span>
+              <h3 id="next-action">—</h3>
+              <p id="result-summary">—</p>
+            </div>
+
+            <dl class="metrics-grid">
+              <div class="metric"><dt>Change detected</dt><dd id="change-detected">—</dd></div>
+              <div class="metric"><dt>Spatial persistence</dt><dd id="verified">—</dd></div>
+              <div class="metric"><dt>Changed pixels</dt><dd id="changed-fraction">—</dd></div>
+              <div class="metric"><dt>Processing time</dt><dd id="processing-ms">—</dd></div>
+            </dl>
+
+            <section class="result-subsection" aria-labelledby="regions-title">
+              <div class="subsection-heading"><h3 id="regions-title">Detected regions</h3><span id="region-count">—</span></div>
+              <div id="regions-empty" class="minor-empty">No regions to display.</div>
+              <div class="table-scroll" id="regions-table-wrap" hidden>
+                <table class="regions-table">
+                  <thead><tr><th scope="col">Region</th><th scope="col">X</th><th scope="col">Y</th><th scope="col">Width</th><th scope="col">Height</th></tr></thead>
+                  <tbody id="regions-table-body"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="result-subsection" aria-labelledby="evidence-title">
+              <h3 id="evidence-title">Evidence and events</h3>
+              <ul id="events-list" class="event-list"><li>No events available.</li></ul>
+              <details class="raw-result"><summary>View structured JSON response</summary><pre id="raw-json" tabindex="0"></pre></details>
+            </section>
+          </div>
+
+          <div id="error-panel" class="error-panel" role="alert" hidden>
+            <strong>Inspection could not be completed</strong>
+            <p id="error-message"></p>
+          </div>
+        </section>
+      </div>
+
+      <section class="disclaimer" aria-label="Scope and limitations">
+        <strong>Evidence, not certification.</strong> Quipu Vision detects visual pixel changes and can assess spatial persistence when a follow-up is supplied. It does not identify objects, operate a camera or certify physical safety. A persistent change may require human review.
+      </section>
+    </main>
+    <footer class="site-footer"><span>Quipu Vision 0.4 · AegisForge</span><span>Local-first visual inspection · OpenCV 5</span></footer>
+  </div>
+  <noscript><p class="noscript-warning">JavaScript must be enabled to communicate with the AegisForge A2A server.</p></noscript>
+</body>
+</html>

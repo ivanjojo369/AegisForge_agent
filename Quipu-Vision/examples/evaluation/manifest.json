@@ -1,0 +1,396 @@
+{
+  "schema": "quipu_vision.evaluation_manifest.v1",
+  "dataset_name": "Quipu Vision Fixed-Camera Synthetic Evaluation v1",
+  "dataset_origin": "synthetic_generated_programmatically",
+  "scene": "Fixed-view stylized static walkway, 320x240 BGR PNG; no people or physical safety inference.",
+  "random_seed": 20261023,
+  "reference_scope": "All cases share one scene/reference; data are correlated and not statistically independent real-world samples.",
+  "ground_truth": {
+    "expected_change": "Deliberate, meaningful new scene structure INSIDE the ROI. Changes due only to illumination, blur, sensor noise or camera jitter are negatives.",
+    "expected_persistent": "Where followup is specified, a significant newly changed region persists spatially with overlap; not object identity, motion tracking or safety.",
+    "labeling_method": "Known image-generation operations, not model predictions.",
+    "warning": "Synthetic results cannot establish accuracy on real-world images or physical hazard detection."
+  },
+  "settings": {
+    "threshold": 32,
+    "min_region_fraction": 0.004
+  },
+  "image_sha256": {
+    "images/base.png": "37f3eb0c8eec5129d60cfb9d81afcac80363a9a82117009ee4250c46ad37d682",
+    "images/identical.png": "37f3eb0c8eec5129d60cfb9d81afcac80363a9a82117009ee4250c46ad37d682",
+    "images/bright_soft.png": "2257052a807720a75bf9f1be8e8024089b226513dc17331c3511c0389a1f345e",
+    "images/noise.png": "d78a561c6cc1e197a9a75fe5ef43144c06d382f82ef9f1fa2b9134e4e53771c9",
+    "images/speck.png": "ae6b0e5da417e9ce2401ce89f9ad7342f8301fcdb631e530057699135bbbe431",
+    "images/strong_lighting.png": "b0f1675761fbc32cecc04b92d39d5f97b0c82f3a389661b1f7de6ee09d162ecb",
+    "images/shadow.png": "3f2a8bbc3c4b8b68161d2bcd970efd00485e91e1d7321599020285a52c55e66c",
+    "images/camera_jitter.png": "e20d9e6d7e212768bbfba903c46705778f510f1a385fb4abe3cfd26c528ed8b0",
+    "images/glare.png": "4a80f407e362b59f4963b957e4975b35f076ceae07044c9f31080bde7d9dee56",
+    "images/blur.png": "f90c679ed0249243b492019f5c1131616aa95ced0690ab73c3689283af8d4360",
+    "images/object_a.png": "c94cc1eed1c7f327913c57631e868ae8bc8f7beb70ca2fb9316d2e7fc35c3013",
+    "images/object_a_shift.png": "04a8632a32976c1edca11fc3390d223a6c07c9941769f4500e1533985e1a02ed",
+    "images/object_far.png": "54e3bfd4ec01499a51aeba3da48ee0754745b39b1daa4bab3232a9babc939e52",
+    "images/object_second.png": "8e943b206519183195278bf26ec20b01db9be2a0fe4fd5d75b8f381256e19332",
+    "images/low_contrast.png": "cc142cb3cd56e85c1f78b1fbe001a471a01bba7a2348a43c1ebea06814b23c70",
+    "images/thin_strip.png": "1845404f4d3b7ad44cc298072b69abed90204ba1bccbb823e37692ad22203c30",
+    "images/two_objects.png": "44b93383702ee698b193c7f3171837d06d5962a56d092af59b49cb377f1d11f1",
+    "images/round_object.png": "558617e62760b7c0b744270b760586625624f17894a2132b3ce60bae10a36e10",
+    "images/partial_region.png": "10a972ca7f772c318cef0d7a7306558c339c4319bb53ca1951f922b98fdd3564",
+    "images/partial_region_shift.png": "f304b38ced79ed0100f7667e6a32651a60c83f0b103e8bec3a2b2873eba07fdf",
+    "images/cleared.png": "37f3eb0c8eec5129d60cfb9d81afcac80363a9a82117009ee4250c46ad37d682",
+    "images/object_a_clone.png": "c94cc1eed1c7f327913c57631e868ae8bc8f7beb70ca2fb9316d2e7fc35c3013",
+    "images/low_contrast_clone.png": "cc142cb3cd56e85c1f78b1fbe001a471a01bba7a2348a43c1ebea06814b23c70"
+  },
+  "cases": [
+    {
+      "id": "no_change_identical",
+      "category": "control",
+      "reference": "images/base.png",
+      "observed": "images/identical.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Exact same scene, no scene changes.",
+      "tags": []
+    },
+    {
+      "id": "no_change_soft_illumination",
+      "category": "lighting",
+      "reference": "images/base.png",
+      "observed": "images/bright_soft.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Small global lighting shift, no new object.",
+      "tags": [
+        "nuisance",
+        "lighting"
+      ]
+    },
+    {
+      "id": "no_change_sensor_noise",
+      "category": "noise",
+      "reference": "images/base.png",
+      "observed": "images/noise.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Gaussian sensor noise, no changed object.",
+      "tags": [
+        "nuisance",
+        "noise"
+      ]
+    },
+    {
+      "id": "no_change_one_pixel",
+      "category": "noise",
+      "reference": "images/base.png",
+      "observed": "images/speck.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Single hot pixel, not a meaningful region.",
+      "tags": [
+        "nuisance",
+        "noise"
+      ]
+    },
+    {
+      "id": "no_change_strong_lighting",
+      "category": "lighting",
+      "reference": "images/base.png",
+      "observed": "images/strong_lighting.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Major lighting-only change, no new object.",
+      "tags": [
+        "stress",
+        "nuisance",
+        "lighting"
+      ]
+    },
+    {
+      "id": "no_change_shadow",
+      "category": "lighting",
+      "reference": "images/base.png",
+      "observed": "images/shadow.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Moving cast shadow only, no new object.",
+      "tags": [
+        "stress",
+        "nuisance",
+        "lighting"
+      ]
+    },
+    {
+      "id": "no_change_camera_motion",
+      "category": "motion",
+      "reference": "images/base.png",
+      "observed": "images/camera_jitter.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Static scene translated by camera jitter.",
+      "tags": [
+        "stress",
+        "nuisance",
+        "registration"
+      ]
+    },
+    {
+      "id": "no_change_glare",
+      "category": "lighting",
+      "reference": "images/base.png",
+      "observed": "images/glare.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Localized light glare, no new object.",
+      "tags": [
+        "stress",
+        "nuisance",
+        "lighting"
+      ]
+    },
+    {
+      "id": "no_change_blur",
+      "category": "focus",
+      "reference": "images/base.png",
+      "observed": "images/blur.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Blurred image due to focus change, no new object.",
+      "tags": [
+        "stress",
+        "nuisance",
+        "focus"
+      ]
+    },
+    {
+      "id": "object_appears",
+      "category": "scene_change",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Bright stationary rectangle enters monitoring area.",
+      "tags": [
+        "positive",
+        "basic"
+      ]
+    },
+    {
+      "id": "object_persists_shift",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": true,
+      "description": "Large rectangle remains in overlapping region on follow-up.",
+      "tags": [
+        "positive",
+        "followup"
+      ],
+      "followup": "images/object_a_shift.png"
+    },
+    {
+      "id": "object_persists_exact",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": true,
+      "description": "Large rectangle remains in exactly the same location.",
+      "tags": [
+        "positive",
+        "followup"
+      ],
+      "followup": "images/object_a_clone.png"
+    },
+    {
+      "id": "object_disappears",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": false,
+      "description": "The object disappears before follow-up.",
+      "tags": [
+        "positive",
+        "followup"
+      ],
+      "followup": "images/cleared.png"
+    },
+    {
+      "id": "object_moves_far",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": false,
+      "description": "Object moves to a disjoint location; the same spatial region does not persist.",
+      "tags": [
+        "positive",
+        "followup"
+      ],
+      "followup": "images/object_far.png"
+    },
+    {
+      "id": "object_moves_overlapping",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": true,
+      "description": "Object shifts while overlapping a previously changed region.",
+      "tags": [
+        "positive",
+        "followup"
+      ],
+      "followup": "images/object_second.png"
+    },
+    {
+      "id": "roi_outside_object",
+      "category": "roi",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": false,
+      "expected_persistent": null,
+      "description": "Real object appears outside monitored ROI; expectation is no *in-ROI* change.",
+      "tags": [
+        "roi",
+        "negative"
+      ],
+      "roi_xywh": [
+        8,
+        10,
+        65,
+        55
+      ]
+    },
+    {
+      "id": "roi_inside_object",
+      "category": "roi",
+      "reference": "images/base.png",
+      "observed": "images/object_a.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Object appears inside monitored ROI.",
+      "tags": [
+        "roi",
+        "positive"
+      ],
+      "roi_xywh": [
+        110,
+        88,
+        112,
+        100
+      ]
+    },
+    {
+      "id": "thin_object",
+      "category": "difficult_change",
+      "reference": "images/base.png",
+      "observed": "images/thin_strip.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Very thin new structure; intentionally challenges morphology.",
+      "tags": [
+        "stress",
+        "positive",
+        "small_region"
+      ]
+    },
+    {
+      "id": "low_contrast_object",
+      "category": "difficult_change",
+      "reference": "images/base.png",
+      "observed": "images/low_contrast.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Low-contrast rectangular object; challenges fixed intensity threshold.",
+      "tags": [
+        "stress",
+        "positive",
+        "low_contrast"
+      ]
+    },
+    {
+      "id": "low_contrast_persists",
+      "category": "difficult_change",
+      "reference": "images/base.png",
+      "observed": "images/low_contrast.png",
+      "expected_change": true,
+      "expected_persistent": true,
+      "description": "Low-contrast object persists but may evade first observation.",
+      "tags": [
+        "stress",
+        "positive",
+        "followup",
+        "low_contrast"
+      ],
+      "followup": "images/low_contrast_clone.png"
+    },
+    {
+      "id": "two_new_objects",
+      "category": "scene_change",
+      "reference": "images/base.png",
+      "observed": "images/two_objects.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Two large disjoint objects appear.",
+      "tags": [
+        "positive",
+        "multi_region"
+      ]
+    },
+    {
+      "id": "round_object",
+      "category": "scene_change",
+      "reference": "images/base.png",
+      "observed": "images/round_object.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Large circular object appears.",
+      "tags": [
+        "positive",
+        "geometry"
+      ]
+    },
+    {
+      "id": "partially_visible_object",
+      "category": "roi",
+      "reference": "images/base.png",
+      "observed": "images/partial_region.png",
+      "expected_change": true,
+      "expected_persistent": null,
+      "description": "Object overlaps a deliberately clipped ROI.",
+      "tags": [
+        "positive",
+        "roi",
+        "partial"
+      ],
+      "roi_xywh": [
+        195,
+        120,
+        60,
+        80
+      ]
+    },
+    {
+      "id": "partial_object_persists",
+      "category": "persistence",
+      "reference": "images/base.png",
+      "observed": "images/partial_region.png",
+      "expected_change": true,
+      "expected_persistent": true,
+      "description": "Partially visible object remains inside selected ROI.",
+      "tags": [
+        "positive",
+        "followup",
+        "roi"
+      ],
+      "followup": "images/partial_region_shift.png",
+      "roi_xywh": [
+        195,
+        120,
+        60,
+        80
+      ]
+    }
+  ]
+}

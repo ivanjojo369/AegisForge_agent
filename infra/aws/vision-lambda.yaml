@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Quipu Vision 0.4 AWS Lambda deployment. IAM-authenticated HTTPS Function URL,
+  OpenCV 5 inside the Lambda container, 7-day log retention and bounded concurrency.
+Parameters:
+  VisionImageUri:
+    Type: String
+    Description: Full ECR image URI including tag, built with the vision_lambda target.
+    AllowedPattern: '^([0-9]{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-zA-Z0-9_./-]+:[a-zA-Z0-9_.-]+$'
+  VisionFunctionName:
+    Type: String
+    Default: quipu-vision-a2a
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,64}$'
+  VisionPublicUrl:
+    Type: String
+    Default: ''
+    Description: Optional AWS Lambda HTTPS URL to advertise in the Agent Card after first deployment.
+Resources:
+  VisionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${VisionFunctionName}'
+      RetentionInDays: 7
+  VisionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  VisionFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: VisionLogGroup
+    Properties:
+      FunctionName: !Ref VisionFunctionName
+      PackageType: Image
+      Architectures: [x86_64]
+      Code:
+        ImageUri: !Ref VisionImageUri
+      Role: !GetAtt VisionExecutionRole.Arn
+      Timeout: 90
+      MemorySize: 2048
+      EphemeralStorage:
+        Size: 512
+      ReservedConcurrentExecutions: 2
+      Environment:
+        Variables:
+          AEGISFORGE_ENABLE_QUIPU_VISION: 'true'
+          QUIPU_VISION_INPUT_ROOT: /tmp/vision-input
+          QUIPU_VISION_OUTPUT_ROOT: /tmp/vision-output
+          AWS_LWA_PORT: '8001'
+          AWS_LWA_READINESS_CHECK_PATH: /health
+          AWS_LWA_READINESS_CHECK_HEALTHY_STATUS: '200'
+          HOME: /tmp
+          AEGISFORGE_PUBLIC_URL: !Ref VisionPublicUrl
+  VisionFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt VisionFunction.Arn
+      AuthType: AWS_IAM
+      InvokeMode: BUFFERED
+Outputs:
+  VisionFunctionName:
+    Value: !Ref VisionFunction
+    Description: Function to invoke with SigV4 or to inspect in CloudWatch.
+  VisionFunctionUrl:
+    Value: !GetAtt VisionFunctionUrl.FunctionUrl
+    Description: HTTPS URL; signed AWS_IAM requests only, not public access.
+  VisionLogGroup:
+    Value: !Ref VisionLogGroup
+    Description: CloudWatch log group (7-day retention).

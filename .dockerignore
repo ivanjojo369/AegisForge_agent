@@ -103,3 +103,11 @@ Thumbs.db
 !data/aegisforge_unified_purple_agent.db
 !data/unified_purple_agent/
 !data/unified_purple_agent/**
+
+# Quipu Vision: keep only installable source and packaging metadata.
+Quipu-Vision/examples/
+Quipu-Vision/.git/
+Quipu-Vision/.venv/
+Quipu-Vision/.pytest_cache/
+Quipu-Vision/outputs/
+Quipu-Vision/data/
