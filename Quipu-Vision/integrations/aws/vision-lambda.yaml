@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Quipu Vision 0.4 AWS integration template: deploy a prebuilt AegisForge
+  vision_lambda container image (with OpenCV 5 and Lambda Web Adapter) to a
+  private IAM-authenticated Lambda Function URL. Deployment and real image
+  processing must be tested separately; this template is not deployment proof.
+
+# This file belongs in Quipu-Vision/integrations/aws/ as a DISTRIBUTABLE
+# integration template. It does not import files by relative filesystem path.
+# The container image is built from the separate AegisForge_agent Dockerfile,
+# target "vision_lambda", and published to an Amazon ECR repository in the
+# SAME AWS REGION as the Lambda function. Do not deploy the standalone
+# Quipu-Vision Python package as though it were an HTTP Lambda image.
+#
+# AWS_IAM is intentional: the Function URL is not a public browser demo.
+# Authorized callers must SigV4-sign requests and have both IAM actions:
+# lambda:InvokeFunctionUrl and lambda:InvokeFunction (AWS rules since Oct 2025).
+# Grant those permissions narrowly outside this stack to intended principals.
+# Never include secrets, image payloads or access tokens in template parameters.
+
+Parameters:
+  VisionImageUri:
+    Type: String
+    Description: >-
+      Complete same-region ECR image URI for target vision_lambda; an immutable
+      @sha256 digest is recommended, or use a fixed release tag.
+    AllowedPattern: '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-zA-Z0-9_./-]+(?::[a-zA-Z0-9_.-]+|@sha256:[0-9a-f]{64})$'
+    ConstraintDescription: Supply a full ECR image URI with tag or sha256 digest.
+
+  VisionFunctionName:
+    Type: String
+    Default: quipu-vision-a2a
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,64}$'
+
+  VisionMemoryMB:
+    Type: Number
+    Default: 2048
+    MinValue: 1024
+    MaxValue: 10240
+    Description: Memory allocated to the OpenCV 5 image-processing workload.
+
+  VisionTimeoutSeconds:
+    Type: Number
+    Default: 90
+    MinValue: 30
+    MaxValue: 900
+    Description: Maximum duration per Lambda invocation.
+
+  VisionReservedConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 10
+    Description: >-
+      Set 0 to omit reserved concurrency (recommended for initial deployment
+      and accounts with low concurrency quota); otherwise reserve 1-10.
+
+  VisionLogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+    Description: CloudWatch retention; never log raw images or credentials.
+
+  VisionAsyncInit:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable Lambda Web Adapter asynchronous startup checks.
+
+  VisionAdvertisedUrl:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional verified HTTPS Function URL to advertise in the A2A Agent Card.
+      Leave blank initially; a Function URL using AWS_IAM remains private.
+
+Conditions:
+  HasReservedConcurrency:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: VisionReservedConcurrency
+          - '0'
+
+Resources:
+  VisionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: '/aws/lambda/${VisionFunctionName}'
+      RetentionInDays:
+        Ref: VisionLogRetentionDays
+
+  VisionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - Fn::Sub: 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  VisionFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: VisionLogGroup
+    Properties:
+      FunctionName:
+        Ref: VisionFunctionName
+      Description: OpenCV 5 image change inspection via AegisForge A2A (Quipu Vision 0.4).
+      PackageType: Image
+      Architectures: [x86_64]
+      Code:
+        ImageUri:
+          Ref: VisionImageUri
+      Role:
+        Fn::GetAtt: [VisionExecutionRole, Arn]
+      Timeout:
+        Ref: VisionTimeoutSeconds
+      MemorySize:
+        Ref: VisionMemoryMB
+      EphemeralStorage:
+        Size: 512
+      ReservedConcurrentExecutions:
+        Fn::If:
+          - HasReservedConcurrency
+          - Ref: VisionReservedConcurrency
+          - Ref: AWS::NoValue
+      Environment:
+        Variables:
+          AEGISFORGE_ENABLE_QUIPU_VISION: 'true'
+          # The host AegisForge image starts its A2A HTTP server on 8001.
+          AWS_LWA_PORT: '8001'
+          AWS_LWA_READINESS_CHECK_PATH: /health
+          AWS_LWA_READINESS_CHECK_HEALTHY_STATUS: '200'
+          AWS_LWA_ASYNC_INIT:
+            Ref: VisionAsyncInit
+          # Lambda only permits writes under /tmp.
+          QUIPU_VISION_INPUT_ROOT: /tmp/vision-input
+          QUIPU_VISION_OUTPUT_ROOT: /tmp/vision-output
+          HOME: /tmp
+          # Explicitly set this only after obtaining and testing the URL.
+          AEGISFORGE_PUBLIC_URL:
+            Ref: VisionAdvertisedUrl
+      Tags:
+        - Key: Project
+          Value: Quipu-Vision
+        - Key: Component
+          Value: vision-a2a
+
+  VisionFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn:
+        Fn::GetAtt: [VisionFunction, Arn]
+      AuthType: AWS_IAM
+      InvokeMode: BUFFERED
+
+Outputs:
+  VisionFunctionName:
+    Description: Name of the deployed Lambda function.
+    Value:
+      Ref: VisionFunction
+
+  VisionFunctionArn:
+    Description: Restrict authorized caller policies to this function ARN.
+    Value:
+      Fn::GetAtt: [VisionFunction, Arn]
+
+  VisionFunctionUrl:
+    Description: Private HTTPS endpoint; requires SigV4 and BOTH IAM invoke actions.
+    Value:
+      Fn::GetAtt: [VisionFunctionUrl, FunctionUrl]
+
+  VisionLogGroup:
+    Description: Short-retention CloudWatch log group for operational evidence.
+    Value:
+      Ref: VisionLogGroup
