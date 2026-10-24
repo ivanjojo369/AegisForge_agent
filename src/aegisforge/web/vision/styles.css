@@ -375,3 +375,21 @@ input[type="file"]::file-selector-button:hover { background: #1a4c58; }
   .upload-card, .button, .panel, .result-status, .status-indicator, .error-panel { border: 1px solid CanvasText; }
   .button:disabled { opacity: 1; color: GrayText; }
 }
+
+/* Quipu Vision web 0.5 integration: optional capture advisory, overlays and trace. */
+.qv-quality-panel, .qv-trace-panel { margin-top: 17px; padding: 16px; border: 1px solid var(--line); border-radius: 11px; background: rgba(13, 34, 49, .65); }
+.qv-quality-panel h3, .qv-trace-panel h3 { margin: 0 0 9px; font-size: .94rem; }
+.qv-note { color: var(--text-secondary); font-size: .78rem; line-height: 1.55; margin: 7px 0; }
+.qv-quality-warnings { margin: 8px 0; padding-left: 22px; color: var(--warning); font-size: .79rem; line-height: 1.55; overflow-wrap: anywhere; }
+.qv-quality-warnings li { margin: 6px 0; }
+.qv-overlay-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 13px; }
+.qv-overlay-figure { margin: 0; padding: 10px; border-radius: 11px; border: 1px solid var(--line-soft); background: #0b1727; min-width: 0; }
+.qv-overlay-figure canvas { display: block; width: 100%; height: auto; max-width: 100%; border-radius: 8px; }
+.qv-overlay-figure figcaption { color: var(--text-secondary); font-size: .73rem; line-height: 1.55; margin-top: 9px; }
+.qv-trace-list { margin: 11px 0; padding-left: 22px; display: grid; gap: 10px; }
+.qv-trace-step { color: var(--text-secondary); line-height: 1.4; font-size: .78rem; }
+.qv-trace-phase { display: block; color: var(--accent-strong); margin-bottom: 2px; }
+.qv-trace-result { display: block; overflow-wrap: anywhere; }
+.qv-trace-next-action, .qv-trace-disclaimer { color: var(--text-secondary); font-size: .75rem; line-height: 1.55; }
+.qv-trace-download { margin-top: 12px; }
+.site-footer a { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 3px; }

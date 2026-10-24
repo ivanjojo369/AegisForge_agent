@@ -9,6 +9,10 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Quipu Vision | Visual Inspection</title>
   <link rel="stylesheet" href="/demo/vision/styles.css">
+  <!-- Quipu Vision web 0.5 integration: scripts execute in document order. -->
+  <script src="/demo/vision/image-quality.js" defer></script>
+  <script src="/demo/vision/evidence-overlay.js" defer></script>
+  <script src="/demo/vision/decision-trace.js" defer></script>
   <script src="/demo/vision/app.js" defer></script>
 </head>
 <body>
@@ -107,6 +111,12 @@
               <button id="reset-button" type="reset" class="button button-secondary">Clear inputs</button>
             </div>
             <p id="form-feedback" class="form-feedback" role="status" aria-live="polite">Select two images to begin.</p>
+            <section id="qv-quality-panel" class="qv-quality-panel" aria-labelledby="qv-quality-title" hidden>
+              <h3 id="qv-quality-title">Image quality preflight</h3>
+              <p id="qv-quality-summary" class="qv-note"></p>
+              <ul id="qv-quality-warnings" class="qv-quality-warnings"></ul>
+              <p class="qv-note">Browser advisories only: OpenCV results and decisions are unchanged.</p>
+            </section>
           </form>
         </section>
 
@@ -150,9 +160,29 @@
               </div>
             </section>
 
+            <section class="result-subsection" id="qv-overlay-panel" aria-labelledby="qv-overlay-title" hidden>
+              <h3 id="qv-overlay-title">Visual evidence overlays</h3>
+              <p class="qv-note" id="qv-overlay-status">Regions originate from the server's OpenCV result; no object recognition is implied.</p>
+              <div class="qv-overlay-grid">
+                <figure id="qv-observed-figure" class="qv-overlay-figure" hidden>
+                  <canvas id="qv-observed-canvas" aria-label="Observed image with pixel-change regions"></canvas>
+                  <figcaption>Initial observation · OpenCV detected regions</figcaption>
+                </figure>
+                <figure id="qv-followup-figure" class="qv-overlay-figure" hidden>
+                  <canvas id="qv-followup-canvas" aria-label="Follow-up image with pixel-change regions"></canvas>
+                  <figcaption>Follow-up · only if the server processed that image</figcaption>
+                </figure>
+              </div>
+            </section>
+
             <section class="result-subsection" aria-labelledby="evidence-title">
               <h3 id="evidence-title">Evidence and events</h3>
               <ul id="events-list" class="event-list"><li>No events available.</li></ul>
+              <section id="qv-trace-panel" class="qv-trace-panel" aria-labelledby="qv-trace-title" hidden>
+                <h3 id="qv-trace-title">Auditable decision trace</h3>
+                <div id="qv-decision-trace"></div>
+                <button id="qv-download-trace" class="button button-secondary qv-trace-download" type="button" disabled>Download trace (.txt)</button>
+              </section>
               <details class="raw-result"><summary>View structured JSON response</summary><pre id="raw-json" tabindex="0"></pre></details>
             </section>
           </div>
@@ -168,7 +198,7 @@
         <strong>Evidence, not certification.</strong> Quipu Vision detects visual pixel changes and can assess spatial persistence when a follow-up is supplied. It does not identify objects, operate a camera or certify physical safety. A persistent change may require human review.
       </section>
     </main>
-    <footer class="site-footer"><span>Quipu Vision 0.4 · AegisForge</span><span>Local-first visual inspection · OpenCV 5</span></footer>
+    <footer class="site-footer"><span>Quipu Vision 0.4 · AegisForge</span><span>Local-first visual inspection · OpenCV 5 · <a href="/demo/vision/evaluation-lab.html">Evaluation Lab</a></span></footer>
   </div>
   <noscript><p class="noscript-warning">JavaScript must be enabled to communicate with the AegisForge A2A server.</p></noscript>
 </body>

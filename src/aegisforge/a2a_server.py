@@ -723,13 +723,18 @@ def build_agent_card(*, url: str) -> AgentCard:
 
 
 
-# The browser is opt-in with Quipu Vision. Only these three named assets are
+# The browser is opt-in with Quipu Vision. Only these named allowlisted assets are
 # served; arbitrary paths, directories, and user-supplied filenames are never
 # passed to FileResponse.
 _VISION_WEB_ASSETS = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
+    # Quipu Vision web 0.5 integration: hardcoded assets only (never arbitrary paths).
+    "image-quality.js": "text/javascript; charset=utf-8",
+    "evidence-overlay.js": "text/javascript; charset=utf-8",
+    "decision-trace.js": "text/javascript; charset=utf-8",
+    "evaluation-lab.html": "text/html; charset=utf-8",
 }
 
 
@@ -742,9 +747,13 @@ def _vision_web_asset(filename: str) -> Path | None:
     """
     if filename not in _VISION_WEB_ASSETS:
         return None
+    # Evaluation Lab is a separate static page at web/evaluation-lab.html.
+    # All names are checked against the fixed allowlist above.
+    relative = (Path("web") / "evaluation-lab.html" if filename == "evaluation-lab.html"
+                else Path("web") / "vision" / filename)
     candidates = (
-        Path(__file__).resolve().parent / "web" / "vision" / filename,
-        Path.cwd() / "src" / "aegisforge" / "web" / "vision" / filename,
+        Path(__file__).resolve().parent / relative,
+        Path.cwd() / "src" / "aegisforge" / relative,
     )
     for candidate in candidates:
         if candidate.is_file():
@@ -876,6 +885,10 @@ def build_app(*, host: str, port: int, card_url: str | None) -> Starlette:
             Route("/demo/vision/", lambda _request: _vision_web_response("index.html"), methods=["GET"]),
             Route("/demo/vision/app.js", lambda _request: _vision_web_response("app.js"), methods=["GET"]),
             Route("/demo/vision/styles.css", lambda _request: _vision_web_response("styles.css"), methods=["GET"]),
+            Route("/demo/vision/image-quality.js", lambda _request: _vision_web_response("image-quality.js"), methods=["GET"]),
+            Route("/demo/vision/evidence-overlay.js", lambda _request: _vision_web_response("evidence-overlay.js"), methods=["GET"]),
+            Route("/demo/vision/decision-trace.js", lambda _request: _vision_web_response("decision-trace.js"), methods=["GET"]),
+            Route("/demo/vision/evaluation-lab.html", lambda _request: _vision_web_response("evaluation-lab.html"), methods=["GET"]),
         ]
         if _quipu_vision_enabled() else []
     )

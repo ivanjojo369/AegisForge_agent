@@ -74,6 +74,7 @@
     elements.raw.textContent = "";
     elements.regionsBody.replaceChildren();
     elements.events.replaceChildren();
+    clearWebEnhancements();
   }
 
   function guessedMime(file) {
@@ -401,6 +402,123 @@
     preview.hidden = false;
   }
 
+  // Quipu Vision web 0.5 integration. These advisory UI helpers do not
+  // intercept, alter, suppress or reclassify A2A results.
+  let qvLastArtifact = null;
+
+  function clearWebEnhancements() {
+    qvLastArtifact = null;
+    const quality = $("qv-quality-panel");
+    const overlays = $("qv-overlay-panel");
+    const trace = $("qv-trace-panel");
+    if (quality) quality.hidden = true;
+    if (overlays) overlays.hidden = true;
+    if (trace) trace.hidden = true;
+    const observed = $("qv-observed-figure");
+    const followup = $("qv-followup-figure");
+    if (observed) observed.hidden = true;
+    if (followup) followup.hidden = true;
+    const traceContent = $("qv-decision-trace");
+    if (traceContent) traceContent.replaceChildren();
+    const download = $("qv-download-trace");
+    if (download) download.disabled = true;
+  }
+
+  async function reportImageQuality(files) {
+    const panel = $("qv-quality-panel");
+    const analyzer = window.QuipuVisionImageQuality;
+    if (!panel || !analyzer || typeof analyzer.analyzeFiles !== "function") return;
+    const summary = $("qv-quality-summary");
+    const list = $("qv-quality-warnings");
+    list.replaceChildren();
+    panel.hidden = false;
+    try {
+      // Only the user's local File objects; no image data is sent by this module.
+      const byRole = Object.fromEntries(files.map(({ role, file }) => [role, file]));
+      const report = await analyzer.analyzeFiles(byRole);
+      const issues = Array.isArray(report?.comparison?.issues) ? report.comparison.issues : [];
+      summary.textContent = issues.length
+        ? `${issues.length} capture-quality advisory notice(s). The inspection will still run.`
+        : "No quality warnings from this optional browser preflight.";
+      for (const issue of issues.slice(0, 8)) {
+        const li = document.createElement("li");
+        li.textContent = String(issue?.message || issue?.code || "Capture quality warning").slice(0, 350);
+        list.appendChild(li);
+      }
+      if (issues.length > 8) {
+        const li = document.createElement("li");
+        li.textContent = `${issues.length - 8} additional notice(s) omitted.`;
+        list.appendChild(li);
+      }
+    } catch {
+      summary.textContent = "Image-quality preflight unavailable. Original OpenCV inspection will continue.";
+    }
+  }
+
+  async function renderWebEvidence(artifact) {
+    qvLastArtifact = artifact;
+    const tracer = window.QuipuVisionDecisionTrace;
+    const tracePanel = $("qv-trace-panel");
+    if (tracer && tracePanel && typeof tracer.renderTrace === "function") {
+      try {
+        tracer.renderTrace({ container: $("qv-decision-trace"), artifact, showWarnings: false });
+        tracePanel.hidden = false;
+        $("qv-download-trace").disabled = false;
+      } catch {
+        tracePanel.hidden = true;
+      }
+    }
+    const tool = window.QuipuVisionEvidenceOverlay;
+    const panel = $("qv-overlay-panel");
+    if (!tool || !panel || typeof tool.extractEvidence !== "function") return;
+    try {
+      const evidence = tool.extractEvidence(artifact);
+      const renderOne = async (role, stage, part) => {
+        if (!part) return false;
+        const image = $(`${role}-image`);
+        if (!image || !image.getAttribute("src")) return false;
+        // A2A may return before the browser finishes loading the image preview.
+        if (!image.complete || !image.naturalWidth) await image.decode();
+        if (qvLastArtifact !== artifact) return false;
+        const canvas = $(`qv-${role}-canvas`);
+        tool.drawOverlay({ canvas, image, ...part, stage, maxWidth: 920, maxHeight: 640 });
+        $(`qv-${role}-figure`).hidden = false;
+        return true;
+      };
+      const initial = await renderOne("observed", "observed", evidence.observed);
+      const followup = await renderOne("followup", "followup", evidence.followup);
+      if (qvLastArtifact !== artifact) return;
+      panel.hidden = !(initial || followup);
+      if (initial || followup) {
+        $("qv-overlay-status").textContent =
+          "Colored boxes indicate pixel-difference regions measured by OpenCV. They do not identify objects or certify safety.";
+      }
+    } catch {
+      // An optional visualization failure must never change task success.
+      panel.hidden = true;
+    }
+  }
+
+  const traceDownloadButton = $("qv-download-trace");
+  if (traceDownloadButton) traceDownloadButton.addEventListener("click", () => {
+    const tracer = window.QuipuVisionDecisionTrace;
+    if (!qvLastArtifact || !tracer || typeof tracer.traceToText !== "function") return;
+    try {
+      const content = tracer.traceToText(qvLastArtifact);
+      const blob = new Blob([content + "\n"], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "quipu-vision-decision-trace.txt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      // No fallback that could expose private image payloads or paths.
+    }
+  });
+
   elements.form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || !ready) return;
@@ -415,6 +533,7 @@
     try {
       const files = selectedImages();
       await validateDimensions(files);
+      await reportImageQuality(files);
       const request = await buildRequest(files);
       const response = await jsonRequest(ENDPOINTS.a2a, {
         method: "POST", signal: controller.signal,
@@ -427,6 +546,7 @@
         throw new Error(terminalMessage(task) || `A2A task ${taskState(task) || "returned"} without a Quipu Vision result artifact.`);
       }
       renderResult(artifact);
+      void renderWebEvidence(artifact);
     } catch (error) {
       const message = error?.name === "AbortError"
         ? "The request timed out. Check whether the server is still processing the task."
