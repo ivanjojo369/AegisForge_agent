@@ -1,0 +1,10 @@
+Quipu Vision trace — case 1
+1. Observation: change detected
+2. Planning: request second observation
+3. Action: await external followup image
+4. Decision: request second observation
+Next action: request second observation
+Warnings:
+- Changes are not object detections; fixed viewpoint and stable lighting required.
+- Human review required before any consequential action.
+No object identity or safety certification is implied.

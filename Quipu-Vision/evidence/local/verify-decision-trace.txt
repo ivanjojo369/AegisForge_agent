@@ -1,0 +1,11 @@
+Quipu Vision trace — case 1
+1. Observation: change detected
+2. Planning: request second observation
+3. Action: process supplied followup image
+4. Verification: persistent pixel change
+5. Decision: request human review
+Next action: request human review
+Warnings:
+- Changes are not object detections; fixed viewpoint and stable lighting required.
+- Human review required before any consequential action.
+No object identity or safety certification is implied.
