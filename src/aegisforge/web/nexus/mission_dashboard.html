@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Colossus · Mission Control</title>
+  <link rel="stylesheet" href="/assets/mission_dashboard.css">
+</head>
+<body>
+<main class="shell">
+  <header class="masthead">
+    <div class="mark" aria-hidden="true">◈</div>
+    <div class="brand"><div class="eyebrow">AEGISFORGE NEXUS / COLOSSUS</div><h1>Mission Control</h1><p>Centro de observación de misiones y evidencias</p></div>
+    <span class="state">LOCAL · SIN EFECTOS</span>
+  </header>
+  <section class="login" aria-label="Acceso al panel">
+    <div class="panel-head"><h2>Acceso privado</h2><span class="quiet">Credencial solo en memoria</span></div>
+    <label for="secret">Token del operador</label>
+    <div class="credentials"><input id="secret" type="password" autocomplete="off" spellcheck="false" placeholder="Introduce el token local de Mission Control"><button id="connect">Conectar</button><button id="disconnect" class="secondary">Desconectar</button></div>
+    <div id="message" role="status" aria-live="polite">Introduce el token configurado al iniciar el servidor.</div>
+  </section>
+  <section class="metrics" aria-label="Resumen del sistema">
+    <div><small>ESTADO DE LA API</small><strong id="connection">Sin conexión</strong><span class="hint">Servidor local autenticado</span></div>
+    <div><small>MISIONES VISIBLES</small><strong id="count">—</strong><span class="hint">Según los permisos del operador</span></div>
+    <div><small>RÉGIMEN DE OPERACIÓN</small><strong>Solo lectura</strong><span class="hint">Sin aprobaciones ni efectos</span></div>
+  </section>
+  <section class="content" aria-label="Misiones y detalles">
+    <article class="panel"><div class="panel-head"><h2>Misiones</h2><button id="refresh" class="secondary" disabled>Actualizar</button></div><label for="product-filter" class="quiet">Producto</label><select id="product-filter" disabled><option value="">Todos</option><option value="nexus">Nexus</option><option value="aegisgrid">AegisGrid</option><option value="live_forge">Live Forge</option><option value="colossus">Colossus</option></select><div id="checkpoint-info" class="quiet" role="status">Origen del registro: no consultado.</div><div id="missions" class="missions" aria-live="polite"><p class="quiet">Conéctate para consultar las misiones disponibles.</p></div></article>
+    <article class="panel"><div class="panel-head"><h2>Detalle de misión</h2><span class="tag">REGISTRO</span></div>
+      <div class="actions"><button id="detail" disabled>Detalle</button><button id="history" disabled>Historial</button><button id="preview" disabled>Preview</button><button id="inspect" disabled>Inspección</button></div>
+      <pre id="result" aria-live="polite">Selecciona una misión para inspeccionar sus metadatos.</pre>
+    </article>
+  </section>
+  <div class="section-heading"><div><div class="eyebrow">SUPERVISIÓN DE SOLO LECTURA</div><h2>Observatorio de la misión</h2><p class="quiet">Datos vinculados al registro seleccionado; las fuentes no disponibles se identifican expresamente.</p></div><span id="view-mission" class="tag">Sin selección</span></div>
+  <section class="monitor-grid" aria-label="Observatorio">
+    <article class="panel monitor"><div class="panel-head"><div><div class="eyebrow">01 / TRAZABILIDAD</div><h2>ProofGraph</h2></div><span class="tag">INTEGRIDAD</span></div><div id="graph-view" class="monitor-body"><p class="quiet">Selecciona una misión.</p></div></article>
+    <article class="panel monitor"><div class="panel-head"><div><div class="eyebrow">02 / EVALUACIONES</div><h2>Nexus Laboratory</h2></div><span class="tag">MÉTRICAS</span></div><div id="lab-view" class="monitor-body"><p class="quiet">Selecciona una misión.</p></div></article>
+    <article class="panel monitor"><div class="panel-head"><div><div class="eyebrow">03 / CONTROL DE ACCESO</div><h2>Nexus Trust</h2></div><span class="tag">SOLO ESTADO</span></div><div id="trust-view" class="monitor-body"><p class="quiet">Selecciona una misión.</p></div></article>
+    <article class="panel monitor"><div class="panel-head"><div><div class="eyebrow">04 / HISTORIAL</div><h2>Mission Timeline</h2></div><span class="tag">EVENTOS</span></div><div id="timeline-view" class="monitor-body"><p class="quiet">Selecciona una misión.</p></div></article>
+  </section>
+  <div class="section-heading"><div><div class="eyebrow">ARCHIVO MULTIGENERACIONAL / SOLO LECTURA</div><h2>Cierres históricos de la misión</h2><p class="quiet">Resúmenes anteriores. No sustituyen las fuentes actuales ni recuperan permisos de Trust.</p></div></div>
+  <section class="panel historical-panel" aria-label="Cierres históricos">
+    <div class="historical-selector">
+      <div><label for="archive-generation" class="quiet">Generación histórica</label><select id="archive-generation" disabled><option value="">Sin selección</option></select></div>
+      <span class="tag">ARCHIVO INERTE</span>
+    </div>
+    <div id="archive-summary" class="quiet" role="status">Selecciona una misión.</div>
+    <h3 class="historical-heading">Evolución de observaciones de Laboratory</h3>
+    <div id="archive-trend" class="archive-trend"><p class="quiet">Sin datos históricos.</p></div>
+    <div class="historical-grid">
+      <div class="historical-subpanel"><h3>ProofGraph archivado</h3><div id="archive-graph"></div></div>
+      <div class="historical-subpanel"><h3>Laboratory archivado</h3><div id="archive-laboratory"></div></div>
+      <div class="historical-subpanel"><h3>Trust histórico</h3><div id="archive-trust"></div></div>
+    </div>
+  </section>
+  <footer>Las huellas SHA-256 indican consistencia estructural, no autenticidad de las fuentes. Las métricas son descriptivas. Un estado de aprobación no concede permiso de ejecución. Este panel no ejecuta herramientas ni modifica misiones.</footer>
+</main>
+<script src="/assets/mission_dashboard.js" defer></script>
+</body></html>

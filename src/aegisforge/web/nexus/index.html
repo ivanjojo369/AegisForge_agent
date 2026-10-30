@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Consola local de AegisForge Nexus Colossus: ingeniería verificable, energía y experiencias interactivas.">
+  <meta name="referrer" content="no-referrer">
+  <title>AegisForge Nexus · Colossus Unified Console</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Saltar al contenido</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Menú de la consola">
+      <a class="brand" href="#overview" aria-label="AegisForge Nexus, inicio">
+        <div class="brandmark" aria-hidden="true">N<span>◈</span></div>
+        <div><div class="brand-title">AEGISFORGE</div><div class="brand-sub">NEXUS / COLOSSUS</div></div>
+      </a>
+      <div class="side-caption">CENTRO DE OPERACIONES</div>
+      <nav class="primary-nav" aria-label="Navegación principal">
+        <a class="nav-link active" href="#overview" data-nav="overview"><span aria-hidden="true">▤</span> Vista general</a>
+        <a class="nav-link" href="#workspaces" data-nav="workspaces"><span aria-hidden="true">◇</span> Tres espacios</a>
+        <a class="nav-link" href="#plan" data-nav="plan"><span aria-hidden="true">≡</span> Plan y revisión</a>
+        <a class="nav-link" href="#evidence" data-nav="evidence"><span aria-hidden="true">▦</span> Evidencias</a>
+        <a class="nav-link" href="#neb" data-nav="neb"><span aria-hidden="true">◎</span> Nemotron / Nebius</a>
+        <a class="nav-link" href="#mission" data-nav="mission"><span aria-hidden="true">◷</span> Mission Control</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mini-label"><span class="online-dot" id="mode-dot" aria-hidden="true"></span><span id="sidebar-mode">Comprobando servidor…</span></div>
+        <p>Local · 127.0.0.1<br>La API de planificación no ejecuta herramientas.<br>La demo Docker opcional exige revisión por efecto.</p>
+      </div>
+    </aside>
+
+    <main id="main-content" class="main-area">
+      <header class="topbar">
+        <div class="crumb">PROYECTO <span>/</span> NEXUS <span>/</span> CONSOLA UNIFICADA</div>
+        <div class="topbar-right"><span class="pale-pill" id="server-pill" role="status">Comprobando…</span><span class="avatar">LOCAL</span></div>
+      </header>
+      <div class="content">
+        <section class="hero" id="overview" aria-labelledby="hero-title">
+          <div class="hero-main">
+            <div class="eyebrow"><span class="green-dot" aria-hidden="true"></span> COLOSSUS · PROOF-DRIVEN AGENTIC ENGINEERING</div>
+            <h1 id="hero-title">Un motor de ingeniería.<br><em>Tres dominios. Evidencia primero.</em></h1>
+            <p>Comprender código, planificar cambios, revisar resultados e iterar. El mismo núcleo puede apoyar la ingeniería general, el análisis energético y la interacción creativa en Twitch, con permisos y pruebas por separado.</p>
+            <div class="hero-actions">
+              <a class="primary-btn" href="#workspaces">Explorar espacios <span aria-hidden="true">↗</span></a>
+              <a class="secondary-btn" href="#evidence">Importar evidencias</a>
+            </div>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <div class="halo halo-outer"></div><div class="halo halo-mid"></div><div class="halo halo-inner"></div>
+            <div class="hero-core"><span>NX</span><small>COLOSSUS</small></div>
+            <div class="orbit-label orbit-label-a">CODE</div><div class="orbit-label orbit-label-b">GRID</div><div class="orbit-label orbit-label-c">LIVE</div>
+          </div>
+        </section>
+
+        <section class="section-block" aria-labelledby="lifecycle-title">
+          <div class="section-title"><div><div class="section-kicker">MOTOR COMPARTIDO</div><h2 id="lifecycle-title">Ciclo de ingeniería verificable</h2></div><span class="soft-tag">Permisos antes de efectos</span></div>
+          <div class="lifecycle">
+            <div>01 <strong>Comprender</strong></div><div>02 <strong>Planificar</strong></div><div>03 <strong>Proponer</strong></div><div>04 <strong>Comprobar</strong></div><div>05 <strong>Verificar</strong></div><div>06 <strong>Iterar</strong></div>
+          </div>
+          <p class="fine-note">Este es el objetivo arquitectónico. La API de planificación no ejecuta herramientas. El modo Docker opcional ejecuta exclusivamente una reparación sintética con autorización individual y no habilita operaciones sobre repositorios reales.</p>
+        </section>
+
+        <section class="section-block" id="workspaces" aria-labelledby="workspaces-title">
+          <div class="section-title"><div><div class="section-kicker">UN NÚCLEO · TRES EXPERIENCIAS</div><h2 id="workspaces-title">Espacios especializados</h2><p>Cada espacio prepara una tarea; no activa conexiones externas por sí mismo.</p></div><span id="selected-mode-label" class="source-badge">NEXUS ENGINEERING</span></div>
+          <div class="mode-grid" role="group" aria-label="Seleccionar espacio de trabajo">
+            <button class="mode-card selected" type="button" data-mode="nexus" aria-pressed="true"><span class="mode-icon" aria-hidden="true">⌘</span><span class="mode-copy"><strong>Nexus Engineering</strong><small>Repositorios · cambios · pruebas</small></span><span class="card-caret" aria-hidden="true">↗</span></button>
+            <button class="mode-card" type="button" data-mode="grid" aria-pressed="false"><span class="mode-icon energy-icon" aria-hidden="true">ϟ</span><span class="mode-copy"><strong>AegisGrid</strong><small>Energía · costos · continuidad</small></span><span class="card-caret" aria-hidden="true">↗</span></button>
+            <button class="mode-card" type="button" data-mode="live" aria-pressed="false"><span class="mode-icon live-icon" aria-hidden="true">◉</span><span class="mode-copy"><strong>Live Forge</strong><small>Twitch · comunidad · propuestas</small></span><span class="card-caret" aria-hidden="true">↗</span></button>
+          </div>
+          <div class="panel workspace-panel">
+            <div class="workspace-heading"><div><div id="workspace-kicker" class="section-kicker">MODO NEXUS</div><h3 id="workspace-title">Reparación verificable de software</h3><p id="workspace-description">Prepara una tarea para un repositorio autorizado. La consola no puede leer ni modificar repositorios desde esta página.</p></div><span id="workspace-availability" class="soft-tag">PLANTILLA LOCAL</span></div>
+
+            <div id="workspace-nexus" class="workspace-body">
+              <div class="form-row"><label for="repo-kind">Tipo de proyecto</label><select id="repo-kind"><option value="python">Python / pytest</option><option value="javascript">JavaScript / Node</option><option value="java">Java / JVM</option><option value="csharp">C# / .NET</option><option value="other">Otro / por descubrir</option></select></div>
+              <div class="form-row"><label for="repo-goal">Objetivo de ingeniería</label><textarea id="repo-goal" rows="3" maxlength="900" placeholder="Describe el error, mejora o verificación que necesitas.">Identifica un fallo reproducible en un repositorio autorizado y propone una reparación mínima con pruebas y criterios de aceptación.</textarea></div>
+              <button id="nexus-to-task" class="small-btn" type="button">Preparar tarea de ingeniería <span aria-hidden="true">→</span></button>
+              <div class="demo-console" id="repo-inspection">
+                <div class="section-kicker">NEXUS WORKSPACE · INSPECCIÓN DE SOLO LECTURA</div>
+                <h3>Repositorio autorizado</h3>
+                <p class="fine-note">Usa el mismo token de demostración de abajo. El operador elige la carpeta al iniciar el servidor con --inspect-repo. El inventario muestra metadatos. Si eliges «Leer y analizar archivo», se muestra su contenido solo en esta pestaña, sin enviarlo a Nebius ni aplicar parches.</p>
+                <div class="action-row"><button class="small-btn ghost" id="repo-inspect" type="button" disabled>Inspeccionar repositorio</button></div>
+                <p id="repo-inspect-message" class="workspace-message" role="status" aria-live="polite">Inspección no habilitada.</p>
+                <div class="form-row" id="repo-file-selection" hidden>
+                  <label for="repo-file-choice">Archivo de código que deseas priorizar</label>
+                  <select id="repo-file-choice"></select>
+                  <p id="repo-file-metadata" class="fine-note demo-wrap"></p>
+                  <div class="action-row"><button class="small-btn ghost" id="repo-use-file" type="button">Vincular archivo a tarea</button><button class="small-btn ghost" id="repo-read-file" type="button">Leer y analizar archivo (local)</button></div>
+                  <div id="repo-source-panel" class="form-row" hidden>
+                    <p id="repo-source-message" class="fine-note" role="status" aria-live="polite"></p>
+                    <p id="repo-static-analysis" class="fine-note demo-wrap"></p>
+                    <textarea id="repo-source-text" class="mono demo-wrap" rows="12" readonly spellcheck="false" aria-label="Código fuente inspeccionado"></textarea>
+                    <p class="fine-note">Vista local de solo lectura. No ejecuta el código ni lo envía automáticamente a Nemotron; comprueba que no incluya credenciales antes de compartirlo.</p>
+                    <div class="action-row"><button class="small-btn ghost" id="repo-propose" type="button" disabled>Proponer corrección local (vista previa)</button></div>
+                    <p class="fine-note">Primer caso real: únicamente scripts/build_scorecard.py y el defecto conocido de warnings. Se reutilizan Code Proposer y Diff Builder sin modelo; no se escribe ni ejecuta código.</p>
+                    <div class="form-row">
+                      <label for="repo-nebius-goal">Solicitud para Nemotron (opcional, consulta con posible costo)</label>
+                      <textarea id="repo-nebius-goal" maxlength="600" rows="2" placeholder="Describe el defecto concreto y el cambio mínimo que propondrías."></textarea>
+                      <p class="fine-note">Solo si el operador inició el servidor con --allow-nebius-proposals. Envía el código fuente visible (máximo 8,000 caracteres) y la solicitud a Nebius tras una confirmación escrita. Una primera consulta y, solo tras un Docker fallido, una segunda revisión autorizada; nunca automática. Ningún modelo aplica código ni ejecuta Docker desde esta opción.</p>
+                      <div class="action-row"><button class="small-btn ghost" id="repo-nebius-check-model" type="button" disabled>Comprobar acceso al modelo (sin inferencia)</button><button class="small-btn ghost" id="repo-nebius-propose" type="button" disabled>Solicitar propuesta a Nemotron (requiere autorización)</button></div>
+                      <p class="fine-note">La comprobación consulta una sola vez el catálogo de modelos con tu token de demostración; no envía código ni ejecuta el modelo, y no prueba el saldo o una futura inferencia.</p>
+                      <p class="workspace-message" id="repo-nebius-message" role="status" aria-live="polite">Nebius desactivado.</p>
+                      <div class="action-row"><button class="small-btn ghost" id="repo-revision-feedback" type="button" disabled>Preparar segunda ronda desde el fallo Docker (sin Nebius)</button></div>
+                      <p class="fine-note" id="repo-revision-message">Una segunda consulta de Nemotron será posible solo después de una prueba fallida en Docker y con autorización independiente; no hay reintentos automáticos.</p>
+                      <div class="form-row">
+                        <label for="repo-import-source">Reutilizar un diff anterior (sin consulta a Nebius)</label>
+                        <textarea id="repo-import-source" rows="5" maxlength="12000" spellcheck="false" class="mono demo-wrap" placeholder="Pega un diff completo con encabezados --- a/ruta/del/archivo y +++ b/ruta/del/archivo"></textarea>
+                        <p class="fine-note">Se acepta un diff completo de cualquier archivo de texto permitido en el inventario y leído previamente. Se valida su ruta, contenido y SHA-256. Para verificar otros archivos, añade una prueba pytest revisada por ti. No se envía a Nebius ni modifica el repositorio.</p>
+                        <label for="repo-regression-source">Prueba de regresión para Docker (opcional para scorecard; requerida para otros archivos)</label>
+                        <textarea id="repo-regression-source" rows="6" maxlength="6000" class="mono demo-wrap" spellcheck="false" placeholder="from pathlib import Path
+
+def test_comportamiento():
+    archivo = Path(__file__).parent / 'ruta/al/archivo'
+    assert ..."></textarea>
+                        <p class="fine-note">Escribe o pega una prueba pytest que compruebe el comportamiento del archivo seleccionado. Debe fallar con el original y pasar con el candidato. Se ejecutará en Docker sin red, solo tras tus aprobaciones de Trust. La verificación abarca esa prueba, no garantiza todos los comportamientos.</p>
+                        <button class="small-btn ghost" id="repo-import-diff" type="button" disabled>Revisar diff pegado (sin Nebius)</button>
+                        <p class="workspace-message" id="repo-import-message" role="status" aria-live="polite"></p>
+                      </div>
+                    </div>
+                    <div id="repo-proposal-panel" class="form-row" hidden>
+                      <p id="repo-proposal-message" class="workspace-message" role="status" aria-live="polite"></p>
+                      <p id="repo-proposal-meta" class="fine-note demo-wrap"></p>
+                      <pre id="repo-proposal-diff" class="mono demo-wrap" style="white-space:pre-wrap;overflow:auto;max-height:440px" aria-label="Propuesta de diferencias de código"></pre>
+                      <p class="fine-note">Ejecución optativa: se comprobará este mismo diff en copias temporales con un test de regresión generado solo durante la ejecución. Trust pedirá aprobación para cada efecto. No se modifica el archivo original ni se utiliza Nebius. Docker no es una frontera absoluta para código hostil.</p>
+                      <div class="action-row"><button class="small-btn" type="button" id="repo-run-reviewed" disabled>Verificar este diff en Docker (copia aislada)</button></div>
+                      <p class="workspace-message" id="repo-run-message" role="status" aria-live="polite"></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="demo-console" id="verified-demo">
+                <div class="section-kicker">VERIFIED REPAIR · EJECUCIÓN LOCAL SUPERVISADA</div>
+                <h3>Reparación reproducible en Docker</h3>
+                <p class="fine-note">Ejecución supervisada de un parche revisado en copias temporales, con una prueba pytest propia o la regresión del scorecard. No llama a Nebius, no admite comandos del chat y requiere una aprobación nueva por cada efecto (caduca a los 8 minutos). No certifica repositorios reales.</p>
+                <div class="form-row"><label for="demo-token">Token de demostración (solo en la memoria de esta pestaña)</label><input id="demo-token" type="password" autocomplete="off" spellcheck="false" placeholder="Pega el token que muestra el servidor local"></div>
+                <p id="demo-image" class="fine-note demo-wrap">La ejecución de Docker requiere iniciar el servidor con --verified-demo.</p>
+                <div class="action-row"><button id="demo-start" class="small-btn" type="button" disabled>Iniciar reparación sintética supervisada</button><button id="demo-refresh" class="small-btn ghost" type="button" disabled>Consultar estado</button></div>
+                <p id="demo-message" class="workspace-message" role="status" aria-live="polite">Modo de ejecución no habilitado.</p>
+                <div id="demo-review" class="review-panel" hidden>
+                  <strong id="demo-review-title">Revisión pendiente</strong>
+                  <p id="demo-effect" class="fine-note"></p>
+                  <p id="demo-patch" class="mono demo-wrap"></p>
+                  <p class="fine-note">Huella de la operación:</p><p id="demo-fingerprint" class="mono demo-wrap"></p>
+                  <p class="fine-note">Comprueba la operación y pulsa el botón para autorizar solo ESTE efecto. El código de confirmación se incorpora automáticamente en tu clic; las demás operaciones no se aprueban sin tu acción.</p>
+                  <div class="action-row"><button id="demo-approve" class="small-btn" type="button">Autorizar este efecto</button><button id="demo-deny" class="small-btn ghost" type="button">Rechazar</button></div>
+                </div>
+                <div id="demo-result" class="demo-result" hidden><strong>Resultado de la demostración</strong><pre id="demo-result-text" class="demo-wrap"></pre></div>
+              </div>
+            </div>
+
+            <div id="workspace-grid" class="workspace-body" hidden>
+              <div class="form-grid">
+                <div class="form-row"><label for="energy-context">Instalación</label><select id="energy-context"><option value="clínica comunitaria">Clínica comunitaria</option><option value="escuela">Escuela</option><option value="hogar">Hogar</option><option value="microred">Microred comunitaria</option></select></div>
+                <div class="form-row"><label for="energy-demand">Demanda diaria estimada (kWh)</label><input id="energy-demand" type="number" min="0.1" max="1000000" step="0.1" value="120"></div>
+                <div class="form-row"><label for="energy-currency">Moneda del escenario</label><select id="energy-currency"><option value="MXN">MXN · peso mexicano</option><option value="USD">USD · dólar estadounidense</option><option value="EUR">EUR · euro</option><option value="GBP">GBP · libra esterlina</option><option value="OTRA">Otra (especificar al verificar)</option></select></div><div class="form-row"><label for="energy-tariff">Tarifa estimada (moneda/kWh)</label><input id="energy-tariff" type="number" min="0" max="10000" step="0.01" value="3.5"></div>
+                <div class="form-row"><label for="energy-critical">Demanda crítica diaria (kWh)</label><input id="energy-critical" type="number" min="0" max="1000000" step="0.1" value="30"></div>
+                <div class="form-row"><label for="energy-outage">Horas de cortes al día (estimadas)</label><input id="energy-outage" type="number" min="0" max="24" step="0.5" value="4"></div>
+                <div class="form-row"><label for="energy-solar">Generación solar diaria (kWh)</label><input id="energy-solar" type="number" min="0" max="1000000" step="0.1" value="30"></div>
+                <div class="form-row"><label for="energy-battery">Batería utilizable (kWh)</label><input id="energy-battery" type="number" min="0" max="1000000" step="0.1" value="20"></div>
+              </div>
+              <p class="fine-note">Valores de ejemplo editables. El formulario no calcula optimización ni asegura mejoras de suministro; prepara un escenario hipotético que debe verificarse en Laboratory.</p>
+              <button id="grid-to-task" class="small-btn" type="button">Preparar problema energético <span aria-hidden="true">→</span></button>
+            </div>
+
+            <div id="workspace-live" class="workspace-body" hidden>
+              <div class="inline-alert">SIMULADOR LOCAL · NO CONECTADO A TWITCH · SIN EVENTSUB NI CODEX ACTIVO</div>
+              <div class="form-row"><label for="live-idea">Propuesta de la comunidad</label><div class="inline-form"><input id="live-idea" type="text" maxlength="120" placeholder="Ej.: Añadir un modo de accesibilidad a la interfaz"><button id="live-add" class="small-btn" type="button">Añadir</button></div></div>
+              <div id="live-proposals" class="proposals" aria-live="polite"><div class="empty-inline">Sin propuestas. Añade una para simular una votación.</div></div>
+              <div class="action-row"><button id="live-to-task" class="small-btn" type="button" disabled>Preparar propuesta más votada</button><button id="live-reset" class="small-btn ghost" type="button">Reiniciar votos</button></div>
+              <p class="fine-note">Los votos ocurren solo en este navegador y no se guardan. Ninguna sugerencia del público autoriza cambiar código. El streamer debe revisar cada propuesta.</p>
+            </div>
+            <p id="workspace-message" class="workspace-message" role="status" aria-live="polite">Elige un escenario y prepara su descripción para Nemotron.</p>
+          </div>
+        </section>
+
+        <section class="section-block" aria-labelledby="summary-title">
+          <div class="section-title"><div><div class="section-kicker">EVIDENCIAS CARGADAS</div><h2 id="summary-title">Resumen de ejecución</h2><p id="source-summary">Todavía no se ha cargado un resultado.</p></div><span class="source-badge" id="source-badge">SIN DATOS</span></div>
+          <div class="metrics" aria-label="Métricas de ejecución">
+            <div class="metric-card"><div class="metric-name">ESTADO REPORTADO</div><div class="metric-value metric-words" id="m-verdict">—</div><div class="metric-note" id="m-verdict-caption">No verificado por la interfaz</div></div>
+            <div class="metric-card"><div class="metric-name">PASOS</div><div class="metric-value" id="m-steps">—</div><div class="metric-note">Plan reportado</div></div>
+            <div class="metric-card"><div class="metric-name">HERRAMIENTAS</div><div class="metric-value" id="m-tools">—</div><div class="metric-note">Invocaciones reportadas</div></div>
+            <div class="metric-card"><div class="metric-name">COMPROBACIONES</div><div class="metric-value" id="m-checks">—</div><div class="metric-note">Aprobadas / realizadas</div></div>
+          </div>
+        </section>
+
+        <section class="two-col" id="plan" aria-label="Planificación y verificación">
+          <div class="panel"><div class="panel-heading"><div><div class="section-kicker">PLANIFICACIÓN</div><h2>Secuencia de trabajo</h2></div><span id="plan-label" class="soft-tag">Sin plan</span></div><div id="plan-steps" class="steps-list"><div class="empty-block">Carga un resumen JSON o prepara un plan para consultar sus pasos.</div></div></div>
+          <div class="panel"><div class="panel-heading"><div><div class="section-kicker">CONTROL DE CALIDAD</div><h2>Resultado y garantías</h2></div><span class="soft-tag" id="execution-tag">—</span></div>
+            <div class="verdict-card" id="verdict-card"><div class="verdict-symbol" id="verdict-icon">?</div><div><strong id="verdict-title">Sin resultado</strong><p id="verdict-message">Los resultados importados no se autentican automáticamente.</p></div></div>
+            <div class="audit-row"><span>Modelo / proveedor</span><strong id="model-label">—</strong></div><div class="audit-row"><span>Huella declarada</span><strong class="mono truncate" id="sha-label" title="">—</strong></div><div class="audit-row"><span>Eventos de auditoría</span><strong id="events-label">—</strong></div>
+            <p class="fine-note">«Verified» es un estado informado por la fuente: no equivale a validación independiente de esta interfaz. SHA-256 no acredita autenticidad.</p>
+          </div>
+        </section>
+
+        <section class="panel evidence-panel" id="evidence">
+          <div class="panel-heading"><div><div class="section-kicker">PRUEBAS Y TRAZABILIDAD</div><h2>Explorador de evidencias</h2><p>Abre un resumen <code>.json</code>, una auditoría <code>.jsonl</code> o un plan complementario de la misma ejecución. Se procesan localmente en tu navegador.</p></div><div><input id="file-picker" type="file" accept=".json,.jsonl,application/json,application/x-ndjson" multiple hidden><button id="select-files" class="small-btn" type="button">Elegir archivos</button></div></div>
+          <div id="drop-zone" class="file-zone" role="button" tabindex="0" aria-label="Importar archivos de evidencia"><span class="file-icon" aria-hidden="true">⇧</span><div><strong>Arrastra los archivos de evidencia</strong><p>JSON / JSONL · máximo 1 MB por archivo · sin subirlos a Nebius</p></div></div>
+          <div id="evidence-items" class="evidence-list"><div class="empty-inline">Aún no hay eventos de auditoría cargados.</div></div>
+          <div class="action-row"><button id="clear-evidence" class="small-btn ghost" type="button">Limpiar evidencia cargada</button></div>
+        </section>
+
+        <section class="panel api-panel" id="neb">
+          <div class="panel-heading"><div><div class="section-kicker">MODELOS NVIDIA MEDIANTE NEBIUS</div><h2>Planificador supervisado</h2><p>La API HTTP local existente solo prepara planes, previsualiza y finaliza sin ejecutar herramientas.</p></div><span class="soft-tag" id="api-badge">Desconectado</span></div>
+          <div class="api-grid">
+            <div class="api-form">
+              <label for="api-token">NEXUS_API_TOKEN · solo memoria de esta pestaña</label>
+              <div class="token-line"><input id="api-token" type="password" autocomplete="off" spellcheck="false" placeholder="Token local de Nexus"><button id="connect-btn" class="small-btn" type="button">Conectar</button><button id="disconnect-btn" class="small-btn ghost" type="button">Desconectar</button></div>
+              <label for="task-input">Tarea a planificar</label>
+              <textarea id="task-input" rows="5" maxlength="2000" placeholder="Describe el objetivo, las restricciones y cómo comprobarlo.">Analiza un problema de código autorizado, propone un plan por pasos y define criterios de verificación independientes. No ejecutes herramientas.</textarea>
+              <div class="api-actions"><button id="prepare-btn" class="primary-btn" type="button" disabled>Planificar con Nemotron</button><button id="preview-btn" class="small-btn" type="button" disabled>Previsualizar</button><button id="finalize-btn" class="small-btn" type="button" disabled>Finalizar sin herramientas</button></div>
+            </div>
+            <div class="api-info"><strong>Frontera de seguridad</strong><p>Una petición LIVE a Nebius puede consumir créditos y siempre exige confirmación. Preparar un plan <b>no</b> significa que se haya reparado código, optimizado energía ni conectado Twitch.</p><p>La API no ejecuta herramientas ni cambia archivos desde este panel. El trabajo real requiere herramientas autorizadas y verificación posterior.</p><p id="api-message" role="status" aria-live="polite">Detectando servidor de Nexus…</p></div>
+          </div>
+        </section>
+
+        <section class="panel mission-panel" id="mission"><div class="panel-heading"><div><div class="section-kicker">SEGUIMIENTO Y AUDITORÍA</div><h2>Mission Control</h2><p>El Dashboard privado de Colossus conserva su propio servidor y token de operador, independientes de esta interfaz Nexus.</p></div><span class="soft-tag">SERVICIO SEPARADO</span></div>
+          <div class="mission-row"><div><strong>Registro · ProofGraph · Laboratory · Trust · Historial</strong><p>Consulta misiones y generaciones archivadas desde el panel de solo lectura, si está ejecutándose en tu equipo.</p></div><a class="secondary-btn" href="http://127.0.0.1:8765/dashboard" target="_blank" rel="noopener noreferrer">Abrir Mission Control ↗</a></div>
+          <p class="fine-note">Este enlace no comprueba si el servicio está abierto. No comparte ni transfiere tokens de autenticación.</p>
+        </section>
+        <footer><span>AEGISFORGE NEXUS / COLOSSUS</span><span>Consola local · Modos especializados en desarrollo · Evidencia antes de afirmaciones</span></footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

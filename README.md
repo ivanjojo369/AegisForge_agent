@@ -1,3 +1,19 @@
+# AegisForge Nexus — Nebius × NVIDIA Global AI Hackathon 2026
+
+**Track:** Coding and Agentic Engineering  
+**Technology:** NVIDIA Nemotron through Nebius Token Factory, supervised patch review, isolated Docker regressions and ProofGraph evidence.
+
+**Judges and reviewers:** Start with [the English evaluation and reproduction guide](NEBIUS_NVIDIA_HACKATHON_2026_EVALUATION_GUIDE.md). It documents installation, session authorization, live model proposals, regression verification, the two tested examples, limits, and the meaning of the evidence fields.
+
+**Code entry point:** `scripts/nexus/serve_nexus_web.py`  
+**Browser UI:** `src/aegisforge/web/nexus/`  
+**Core implementation:** `src/aegisforge/nexus/`
+
+> Security: Never commit or share `NEBIUS_API_KEY`, session tokens, or local log files. `127.0.0.1` is a local URL, not a public demo. The operator must approve potentially sensitive effects.
+
+---
+
+## Earlier AegisForge Agent documentation
 # AegisForge Agent — Unified Purple Agent for AgentX-AgentBeats Phase 2
 
 **AegisForge Agent** is an A2A-compatible **Purple Agent** for AgentX-AgentBeats Phase 2. It is designed as one unified runtime, not as separate benchmark-specific bots. The agent combines a clean A2A server, selected-opponent routing, benchmark-aware track profiles, safety/self-check logic, and reproducible local validation.

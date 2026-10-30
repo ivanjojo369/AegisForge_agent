@@ -29,6 +29,15 @@ RUN pip install --no-cache-dir -r requirements.txt \
  && pip install --no-cache-dir . \
  && chmod +x /app/run.sh
 
+ 
+# ---------------------------------------------------------------------------
+# Nexus Verified Repair - isolated Python test environment.
+# Build: docker build --target nexus_pytest_sandbox -t colossus-pytest:local .
+# ---------------------------------------------------------------------------
+FROM aegisforge_base AS nexus_pytest_sandbox
+
+RUN python -m pip install --no-cache-dir pytest==9.0.2
+
 # ---------------------------------------------------------------------------
 # Vision-only build: excludes the benchmark SQLite DB/manifest from the image.
 # Build: docker build --target vision -t aegisforge-vision:0.4 .
