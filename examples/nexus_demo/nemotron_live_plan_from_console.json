@@ -1,0 +1,52 @@
+{
+  "type": "aegisforge_nexus_plan_review",
+  "source": "manual_transcription_of_user_supplied_console_output",
+  "note": "Supplemental UI review only. Not a signed record; original verified audit remains separate.",
+  "request_id": "chatcmpl-69a48e2a7fb0f86fee39823c59b4ed26",
+  "plan_sha256": "fc3f63ff6ec3b6d0185efe5202e77106e38c8360fdd3e6e09d97d064ff43e18e",
+  "model": "nvidia/Nemotron-3_5-Lightning",
+  "steps": [
+    {
+      "id": "s1",
+      "kind": "reason",
+      "tool": null,
+      "title": "Review fixture scope",
+      "description": "Confirm the fixture and six tests align with host vetting records",
+      "success_criteria": "Scope review completed and confirmed against host-approved specifications",
+      "depends_on": []
+    },
+    {
+      "id": "s2",
+      "kind": "tool",
+      "tool": "nexus.demo.write",
+      "title": "Write trusted fixture",
+      "description": "Execute the authorized nexus.demo.write operation",
+      "success_criteria": "Fixture write operation finishes as the host-approved vetted source",
+      "depends_on": [
+        "s1"
+      ]
+    },
+    {
+      "id": "s3",
+      "kind": "tool",
+      "tool": "nexus.demo.tests",
+      "title": "Run static tests",
+      "description": "Execute the authorized nexus.demo.tests suite",
+      "success_criteria": "All six trusted tests run without modification to the fixture source",
+      "depends_on": [
+        "s2"
+      ]
+    },
+    {
+      "id": "s4",
+      "kind": "verify",
+      "tool": null,
+      "title": "Verify completion",
+      "description": "Confirm plan steps finish per host-backed trusted callback protocol",
+      "success_criteria": "Host verification callbacks report successful execution",
+      "depends_on": [
+        "s3"
+      ]
+    }
+  ]
+}

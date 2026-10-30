@@ -155,3 +155,7 @@ node_modules/
 .coverage
 htmlcov/
 .nexus_state/
+
+# Backups locales excluidos de la entrega Nebius x NVIDIA
+.nexus_migration_backups/
+README.before-nebius-hackathon.bak

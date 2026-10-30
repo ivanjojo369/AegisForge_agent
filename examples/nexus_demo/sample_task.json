@@ -1,0 +1,9 @@
+{
+  "task": "Propón un plan auditable para revisar la salida de un algoritmo sobre datos sintéticos y describir cómo verificar sus resultados sin modificar archivos.",
+  "constraints": [
+    "Utilizar solo datos sintéticos y herramientas expresamente autorizadas.",
+    "No ejecutar comandos de terminal ni realizar cambios en archivos.",
+    "Distinguir las declaraciones del modelo de la evidencia comprobada.",
+    "Incluir al final un paso de verificación independiente."
+  ]
+}

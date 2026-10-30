@@ -1,0 +1,24 @@
+{
+  "mode": "live_nebius",
+  "live_inference": true,
+  "model": "nvidia/Nemotron-3_5-Lightning",
+  "request_id": "chatcmpl-69a48e2a7fb0f86fee39823c59b4ed26",
+  "usage": {
+    "completion_tokens": 2563,
+    "prompt_tokens": 704,
+    "total_tokens": 3267
+  },
+  "plan_sha256": "fc3f63ff6ec3b6d0185efe5202e77106e38c8360fdd3e6e09d97d064ff43e18e",
+  "plan_step_count": 4,
+  "tools_invoked": 2,
+  "independent_checks_run": 3,
+  "verification_status": "verified",
+  "status": "completed",
+  "preview_status": "preview",
+  "execution_status": "reported_complete",
+  "independent_checks_passed": 3,
+  "audit_events": 3,
+  "audit_sha256": "81bdbab197542ef18cfbc1ec340384360935ee22f19e21058de1294737ae91e8",
+  "temporary_workspace_removed_on_exit": true,
+  "fixed_fixture_only": true
+}

@@ -12,7 +12,7 @@ import os
 import re
 from typing import Any, Mapping
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8001"
@@ -90,9 +90,7 @@ class OpenEnvAdapterConfig(BaseModel):
     strict_contract: bool = Field(default=False)
     validate_registry_imports: bool = Field(default=False)
 
-    class Config:
-        extra = "allow"
-        validate_assignment = True
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     @classmethod
     def from_env(cls) -> "OpenEnvAdapterConfig":
