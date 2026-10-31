@@ -1,0 +1,58 @@
+{
+  "source_file": "aegisgrid-multiday-grid.2ac63e774fe44a15aa1df318eb1f99df.json",
+  "source_file_sha256": "4ef10f22062213186805702cf6a4b3d05314dbefc6a3d9324240381db8041078",
+  "schema": "aegisforge.aegisgrid.multiday.v1",
+  "mission_id": "grid.2ac63e774fe44a15aa1df318eb1f99df",
+  "mission_status": "reported_complete",
+  "checkpoint_generation": 2,
+  "sources_archived_flag": true,
+  "result_digest_declared": "de8ab25e591b18303e8f335fb6065881d049474c5042a23c4e5cbceafbbb09f2",
+  "scope": "Exported synthetic result; numerical accounting checks, not external or physical validation",
+  "steps_per_strategy": 144,
+  "strategy_count": 4,
+  "steps_checked": 576,
+  "arithmetic_checks": {
+    "pass": true,
+    "max_load_balance_abs_kwh": 4.440892098500626e-16,
+    "max_solar_balance_abs_kwh": 0,
+    "max_battery_soc_abs_kwh": 0,
+    "max_totals_abs_kwh": 0,
+    "max_daily_metrics_abs_kwh": 4.440892098500626e-16,
+    "grid_import_during_outage_violations": 0,
+    "battery_soc_bounds_violations": 0,
+    "selected_strategy_lexicographic_rule_matches": true
+  },
+  "strategies": {
+    "grid_only": {
+      "intervals": 144,
+      "daily_summaries": 3,
+      "total_critical_unserved_kwh": 15,
+      "total_unserved_kwh": 60,
+      "cost_mxn": 1050
+    },
+    "solar_balanced": {
+      "intervals": 144,
+      "daily_summaries": 3,
+      "total_critical_unserved_kwh": 9.875,
+      "total_unserved_kwh": 47.875,
+      "cost_mxn": 838.69
+    },
+    "solar_critical_reserve": {
+      "intervals": 144,
+      "daily_summaries": 3,
+      "total_critical_unserved_kwh": 7.375,
+      "total_unserved_kwh": 47.875,
+      "cost_mxn": 838.69
+    },
+    "solar_grid_recharge": {
+      "intervals": 144,
+      "daily_summaries": 3,
+      "total_critical_unserved_kwh": 0,
+      "total_unserved_kwh": 6.075,
+      "cost_mxn": 1000.79
+    }
+  },
+  "independence_limit": "Independent recalculation of numeric balances from exported trace. The exported trace and scenario are still simulator-generated, without external validation.",
+  "mission_control_live_view": "not_checked_from_this_environment",
+  "local_git_branch_and_publication": "not_checked_from_this_environment"
+}
