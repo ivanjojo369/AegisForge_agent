@@ -26,6 +26,9 @@
   let repoReadEpoch = 0;
   let repoReviewedSha = '';
   let repoReviewOffer = null;
+  let gridLastResult = null;
+  let gridLastMultiday = null;
+  let gridCheckpointEnabled = false;
   const workspaceNames = {nexus:'NEXUS ENGINEERING',grid:'AEGISGRID',live:'LIVE FORGE'};
   const workspaceInfo = {
     nexus: ['MODO NEXUS','Reparación verificable de software','Inspecciona un archivo autorizado localmente; las modificaciones siguen bloqueadas.','PLANTILLA LOCAL'],
@@ -354,18 +357,170 @@
     return value;
   }
 
+  function gridInputs() {
+    const demand=numericInput('energy-demand',0.1,1000000);
+    return {
+      site:$('energy-context').value,
+      currency:$('energy-currency').value,
+      demand_kwh:demand,
+      critical_kwh:numericInput('energy-critical',0,demand),
+      outage_hours:numericInput('energy-outage',0,24),
+      solar_kwh:numericInput('energy-solar',0,1000000),
+      battery_kwh:numericInput('energy-battery',0,1000000),
+      tariff:numericInput('energy-tariff',0,10000)
+    };
+  }
+
   function makeGridTask() {
     try {
-      const demand=numericInput('energy-demand',0.1,1000000);
-      const tariff=numericInput('energy-tariff',0,10000);
-      const currency=$('energy-currency').value;
-      const critical=numericInput('energy-critical',0,demand);
-      const outage=numericInput('energy-outage',0,24);
-      const solar=numericInput('energy-solar',0,1000000);
-      const battery=numericInput('energy-battery',0,1000000);
-      const site=$('energy-context').value;
+      const {site,currency,demand_kwh:demand,critical_kwh:critical,outage_hours:outage,
+             solar_kwh:solar,battery_kwh:battery,tariff}=gridInputs();
       placeTask(`MODO AEGISGRID. ESCENARIO HIPOTÉTICO (NO SON MEDICIONES REALES). Instalación: ${site}. Demanda estimada: ${demand} kWh/día; tarifa: ${tariff} ${currency}/kWh; demanda crítica estimada: ${critical} kWh/día; cortes: ${outage} horas/día; solar: ${solar} kWh/día; batería utilizable: ${battery} kWh.\nPropón una metodología verificable para comparar una estrategia de referencia con una optimización de costo y continuidad. No inventes ahorros ni resultados: explica datos horarios faltantes, restricciones de batería, cargas críticas, supuestos, métricas y verificadores independientes. No controles equipos reales ni ejecutes herramientas.`, 'AegisGrid');
     } catch (error) { $('workspace-message').textContent = safeText(error.message, 150); }
+  }
+
+  async function simulateGrid() {
+    if (gridCheckpointEnabled && !window.confirm(
+      'La simulación guardará metadatos de la misión en el directorio local configurado para Mission Control. ¿Continuar?'
+    )) return;
+    const button=$('grid-simulate');
+    const panel=$('grid-simulation-result');
+    const details=$('grid-simulation-details');
+    button.disabled=true;
+    gridLastResult=null;
+    $('grid-export-evidence').disabled=true;
+    panel.hidden=true;
+    $('workspace-message').textContent='Calculando escenario hipotético de 24 horas...';
+    try {
+      const scenario=gridInputs();
+      const response=await fetch('/aegisgrid/simulate',{
+        method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
+        body:JSON.stringify(scenario),cache:'no-store',credentials:'omit',redirect:'error'
+      });
+      if (!response.ok) throw new Error(`El servidor rechazó la simulación (HTTP ${response.status}).`);
+      const data=await response.json();
+      if (data.schema!=='aegisforge.aegisgrid.simulation.v1' || data.verification?.passed!==true)
+        throw new Error('La simulación no superó sus comprobaciones matemáticas internas.');
+      if (data.colossus?.schema!=='aegisforge.aegisgrid.colossus_integration.v1' ||
+          !data.colossus.mission || !data.colossus.laboratory || !data.colossus.proof_graph)
+        throw new Error('Falta la integración registrada con Laboratory, ProofGraph y Mission Control.');
+      const base=data.reference.totals;
+      const plan=data.solar_battery.totals;
+      const n=v=>Number(v).toFixed(2);
+      details.textContent=[
+        'Escenario hipotético: 24 h · 48 intervalos de 30 min (NO mediciones reales)',
+        `Solo red: ${n(base.critical_unserved_kwh)} kWh críticos sin suministro; ${n(base.grid_cost)} ${scenario.currency} en energía de red`,
+        `Solar+batería: ${n(plan.critical_unserved_kwh)} kWh críticos sin suministro; ${n(plan.grid_cost)} ${scenario.currency} en energía de red`,
+        `Demanda total sin suministro: ${n(base.total_unserved_kwh)} → ${n(plan.total_unserved_kwh)} kWh`,
+        `Carga crítica atendida: ${n(base.critical_served_percent)}% → ${n(plan.critical_served_percent)}%`,
+        `Batería al final: ${n(plan.final_battery_soc_kwh)} kWh de ${n(scenario.battery_kwh)} kWh utilizables`,
+        'Balance matemático interno: aprobado. Verificación externa: PENDIENTE.',
+        'Supuestos: carga uniforme, sol idealizado 06–18 h, corte desde las 18 h, batería inicial al 50%.',
+        'No hay control de infraestructura, optimización demostrada ni cálculo de inversión o mantenimiento.',
+        `SHA-256 de consistencia del resultado: ${data.result_sha256}`,
+        '',
+        'COLOSSUS · LABORATORY / PROOFGRAPH / MISSION REGISTRY',
+        `Misión: ${safeText(data.colossus.mission.mission_id, 95)} · Estado: ${safeText(data.colossus.mission.status, 40)}`,
+        `Laboratory: ${safeText(data.colossus.laboratory.status, 30)} · Relectura independiente de balances: ${data.colossus.laboratory.replay.passed ? 'APROBADA' : 'FALLIDA'}`,
+        `Comprobaciones de relectura: ${Object.values(data.colossus.laboratory.replay.checks).filter(Boolean).length} de ${Object.keys(data.colossus.laboratory.replay.checks).length}`,
+        `ProofGraph: ${data.colossus.proof_graph.node_count} nodos · ${data.colossus.proof_graph.edge_count} relaciones`,
+        `Registro: ${data.colossus.storage.kind === 'checkpoint' ? 'checkpoint local, generación '+data.colossus.storage.generation : 'memoria de este servidor (no persistente)'}`,
+        `Archivo de fuentes Laboratory/ProofGraph: ${data.colossus.storage.external_monitor_sources_archived ? 'GUARDADO (metadatos históricos)' : 'no guardado'}`,
+        'Estado de misión no equivale a validación física ni autenticidad externa.',
+        'El dashboard independiente de Mission Control solo leerá un checkpoint cuando se inicie con esa fuente.',
+        `Scorecard SHA-256: ${safeText(data.colossus.laboratory.scorecard_sha256, 64)}`
+      ].join('\n');
+      gridLastResult=data;
+      $('grid-export-evidence').disabled=false;
+      panel.hidden=false;
+      $('workspace-message').textContent='Simulación registrada en los contratos Colossus; validación del mundo real pendiente.';
+    } catch (error) {
+      $('workspace-message').textContent=`Simulación no completada: ${safeText(error.message,180)}`;
+    } finally { button.disabled=false; }
+  }
+
+  async function simulateGridMultiday() {
+    if (gridCheckpointEnabled && !window.confirm(
+      'Se registrará una misión y se archivarán resúmenes de Laboratory y ProofGraph. ¿Continuar?'
+    )) return;
+    const button=$('grid-multiday');
+    const panel=$('grid-multiday-result');
+    button.disabled=true;
+    gridLastMultiday=null;
+    $('grid-multiday-export').disabled=true;
+    panel.hidden=true;
+    $('workspace-message').textContent='Comparando estrategias energéticas durante varios días...';
+    try {
+      const request={scenario:gridInputs(),days:Number($('grid-days').value),
+        weather:$('grid-weather').value,outage_schedule:$('grid-outages').value};
+      const response=await fetch('/aegisgrid/multiday',{
+        method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
+        body:JSON.stringify(request),cache:'no-store',credentials:'omit',redirect:'error'
+      });
+      if(!response.ok)throw new Error(`No se pudo calcular la comparación (HTTP ${response.status}).`);
+      const data=await response.json();
+      if(data.schema!=='aegisforge.aegisgrid.multiday.v1' || data.verification?.passed!==true ||
+         data.colossus?.laboratory?.replay?.passed!==true || !data.colossus?.mission)
+        throw new Error('No se recibieron verificaciones de balances y misión de Colossus.');
+      const label={grid_only:'Solo red',solar_balanced:'Solar equilibrada',
+        solar_critical_reserve:'Reserva crítica',solar_grid_recharge:'Recarga desde red'};
+      const n=v=>Number(v).toFixed(2);
+      const lines=[
+        `Horizonte: ${request.days} día(s), ${request.days*48} franjas de 30 minutos por estrategia`,
+        `Sol hipotético: ${request.weather} · cortes: ${request.outage_schedule} (NO pronóstico)`,
+        '', 'ESTRATEGIAS / ENERGÍA CRÍTICA NO SUMINISTRADA / TOTAL NO SUMINISTRADA / COSTO DE RED',
+      ];
+      for(const [policy,item] of Object.entries(data.strategies)){
+        const t=item.totals;
+        lines.push(`${label[policy]||policy}: ${n(t.critical_unserved_kwh)} kWh / ${n(t.total_unserved_kwh)} kWh / ${n(t.grid_cost)} ${request.scenario.currency} · batería final ${n(t.final_battery_soc_kwh)} kWh`);
+      }
+      lines.push('',`Mejor entre políticas ensayadas: ${label[data.comparison.selected_policy]||data.comparison.selected_policy}`,
+        'Criterio: primero continuidad crítica, después demanda total atendida, luego costo de red.',
+        'No demuestra óptimo global; no considera CAPEX, mantenimiento ni mediciones reales.',
+        '', 'ENERGÍA CRÍTICA NO SUMINISTRADA POR DÍA / POLÍTICA SELECCIONADA');
+      const winner=data.strategies[data.comparison.selected_policy];
+      for(const day of winner.daily)lines.push(`Día ${day.day}: ${n(day.critical_unserved_kwh)} kWh críticos · ${n(day.total_unserved_kwh)} kWh total · batería ${n(day.initial_soc_kwh)} → ${n(day.final_soc_kwh)} kWh`);
+      const replay=data.colossus.laboratory.replay;
+      lines.push('', 'COLOSSUS · LABORATORY / PROOFGRAPH / MISSION CONTROL',
+        `Misión: ${safeText(data.colossus.mission.mission_id,96)} · ${safeText(data.colossus.mission.status,36)}`,
+        `Revisión independiente: ${Object.values(replay.checks).filter(Boolean).length} / ${Object.keys(replay.checks).length} comprobaciones`,
+        `ProofGraph: ${data.colossus.proof_graph.node_count} nodos · ${data.colossus.proof_graph.edge_count} relaciones`,
+        `Archivo de fuentes: ${data.colossus.storage.external_monitor_sources_archived?'GUARDADO':'NO GUARDADO'} · Generación ${data.colossus.storage.generation ?? 'en memoria'}`,
+        `SHA-256 resultado: ${data.result_sha256}`,
+        'Integridad matemática no equivale a validación física ni a autenticidad externa.');
+      $('grid-multiday-details').textContent=lines.join('\n');
+      gridLastMultiday=data;
+      $('grid-multiday-export').disabled=false;
+      panel.hidden=false;
+      $('workspace-message').textContent='Comparación energética registrada; revisa sus limitaciones y evidencia.';
+    }catch(error){
+      $('workspace-message').textContent=`Comparación no completada: ${safeText(error.message,180)}`;
+    }finally{button.disabled=false;}
+  }
+
+  function exportGridMultiday() {
+    if(!gridLastMultiday?.colossus?.mission)return;
+    const file=new Blob([JSON.stringify(gridLastMultiday,null,2)],{type:'application/json'});
+    const link=document.createElement('a');
+    const href=URL.createObjectURL(file);
+    link.href=href;
+    link.download='aegisgrid-multiday-'+gridLastMultiday.colossus.mission.mission_id+'.json';
+    document.body.appendChild(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(href),1000);
+  }
+
+  function exportGridEvidence() {
+    if (!gridLastResult || !gridLastResult.colossus) return;
+    const file = new Blob([JSON.stringify(gridLastResult, null, 2)], {type:'application/json'});
+    const link = document.createElement('a');
+    const href = URL.createObjectURL(file);
+    link.href=href;
+    link.download='aegisgrid-' + gridLastResult.colossus.mission.mission_id + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Revoke shortly after the synchronous user activation has been consumed.
+    setTimeout(()=>URL.revokeObjectURL(href), 1000);
   }
 
   function renderLiveProposals() {
@@ -921,6 +1076,10 @@
     for(const button of document.querySelectorAll('[data-mode]')) button.addEventListener('click',()=>selectWorkspace(button.dataset.mode));
     $('nexus-to-task').addEventListener('click',makeNexusTask);
     $('grid-to-task').addEventListener('click',makeGridTask);
+    $('grid-simulate').addEventListener('click',simulateGrid);
+    $('grid-multiday').addEventListener('click',simulateGridMultiday);
+    $('grid-multiday-export').addEventListener('click',exportGridMultiday);
+    $('grid-export-evidence').addEventListener('click',exportGridEvidence);
     $('live-add').addEventListener('click',addLiveProposal);
     $('live-idea').addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();addLiveProposal();}});
     $('live-to-task').addEventListener('click',makeLiveTask);
@@ -960,6 +1119,7 @@
     $('clear-evidence').addEventListener('click',resetEvidence);
     try { const r = await fetch('/web-status',{cache:'no-store'});if(!r.ok)throw new Error();const d=await r.json();
       state.mode=d.mode==='live'?'live':'offline';
+      gridCheckpointEnabled=d.aegisgrid_mission_checkpoint_enabled===true;
       demoEnabled = d.synthetic_demo_available === true;
       repoInspectionAvailable = d.repo_inspection_available === true;
       nebiusProposalEnabled = d.nebius_code_proposals_enabled === true;

@@ -258,6 +258,7 @@ def build_app(*, live: bool = False, orchestrator: Any = None, token: str | None
               verified_demo: bool = False, demo_image: str | None = None,
               demo_token: str | None = None, demo_runner: Any = None,
               inspect_repo: str | Path | None = None,
+              aegisgrid_checkpoint_dir: str | None = None,
               nebius_proposals: bool = False, nebius_client_factory: Any = None) -> Starlette:
     """Build a local UI; real inference is never triggered by app creation."""
     if nebius_proposals and (not verified_demo or inspect_repo is None or live):
@@ -298,6 +299,9 @@ def build_app(*, live: bool = False, orchestrator: Any = None, token: str | None
         app = Starlette(debug=False)
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
+    from aegisforge.products.aegisgrid.integration import AegisGridIntegration
+    grid_integration = AegisGridIntegration(checkpoint_dir=aegisgrid_checkpoint_dir)
+
     async def web_status(_request: Any) -> Response:
         return JSONResponse({"mode": "live" if live else "offline",
                              "tool_execution_over_http": False,
@@ -311,7 +315,8 @@ def build_app(*, live: bool = False, orchestrator: Any = None, token: str | None
                              "scorecard_proposal_preview_available": workspace is not None,
                              "scorecard_copy_docker_available": workspace is not None and verified_demo,
                              "nebius_code_proposals_enabled": nebius_proposals,
-                             "nebius_code_proposal_limit": 2 if nebius_proposals else 0})
+                             "nebius_code_proposal_limit": 2 if nebius_proposals else 0,
+                             "aegisgrid_mission_checkpoint_enabled": grid_integration.persistent})
 
     async def asset(request: Any) -> Response:
         # Only known immutable filenames are accessible, not arbitrary paths.
@@ -1068,7 +1073,65 @@ def build_app(*, live: bool = False, orchestrator: Any = None, token: str | None
             Route("/demo/repair/decision", demo_decision, methods=["POST"]),
         ])
 
+    async def simulate_aegisgrid(request: Request) -> Response:
+        """Run a bounded scenario and record it in existing Colossus contracts."""
+        origin = request.headers.get("origin")
+        if origin is not None and origin != str(request.base_url).rstrip("/"):
+            return JSONResponse({"error": "origin_denied"}, status_code=403)
+        if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+            return JSONResponse({"error": "origin_denied"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return JSONResponse({"error": "json_required"}, status_code=415)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            body.extend(chunk)
+        try:
+            from aegisforge.products.aegisgrid.simulator import simulate
+            scenario = json.loads(body.decode("utf-8"))
+            result = simulate(scenario)
+        except (ValueError, UnicodeError, OverflowError):
+            return JSONResponse({"error": "invalid_scenario"}, status_code=422)
+        try:
+            result["colossus"] = await run_in_threadpool(grid_integration.record, result)
+        except Exception:
+            # Do not expose internal evidence, filesystem details or secret state.
+            return JSONResponse({"error": "colossus_integration_unavailable"}, status_code=503)
+        return JSONResponse(result)
+
+    async def simulate_aegisgrid_multiday(request: Request) -> Response:
+        """Compare bounded synthetic strategies; archive via existing mission contracts."""
+        origin = request.headers.get("origin")
+        if origin is not None and origin != str(request.base_url).rstrip("/"):
+            return JSONResponse({"error": "origin_denied"}, status_code=403)
+        if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+            return JSONResponse({"error": "origin_denied"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return JSONResponse({"error": "json_required"}, status_code=415)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            body.extend(chunk)
+        try:
+            from aegisforge.products.aegisgrid.multiday import simulate_multiday
+            from aegisforge.products.aegisgrid.multiday_validation import verify_multiday
+            config = json.loads(body.decode("utf-8"))
+            result = await run_in_threadpool(simulate_multiday, config)
+            if not result["verification"]["passed"] or not verify_multiday(result)["passed"]:
+                return JSONResponse({"error": "energy_balance_failed"}, status_code=422)
+        except (ValueError, TypeError, UnicodeError, OverflowError):
+            return JSONResponse({"error": "invalid_scenario"}, status_code=422)
+        try:
+            result["colossus"] = await run_in_threadpool(grid_integration.record, result)
+        except Exception:
+            return JSONResponse({"error": "colossus_integration_unavailable"}, status_code=503)
+        return JSONResponse(result)
+
     app.router.routes.extend([
+        Route("/aegisgrid/simulate", simulate_aegisgrid, methods=["POST"]),
+        Route("/aegisgrid/multiday", simulate_aegisgrid_multiday, methods=["POST"]),
         Route("/web-status", web_status, methods=["GET"]),
         Route("/", asset, methods=["GET"]),
         Route("/styles.css", asset, methods=["GET"]),
@@ -1100,6 +1163,8 @@ def main() -> None:
     p.add_argument("--inspect-repo", help="Absolute operator-authorized repository directory (read-only)")
     p.add_argument("--allow-nebius-proposals", action="store_true",
                    help="Permit one opt-in proposal and one independently approved post-failure revision (may incur costs)")
+    p.add_argument("--aegisgrid-checkpoint-dir", default=None,
+                   help="Existing operator-owned directory for optional Mission Control registry checkpoints")
     p.add_argument("--port", type=int, default=8012)
     args = p.parse_args()
     if not 1024 <= args.port <= 65535:
@@ -1119,6 +1184,7 @@ def main() -> None:
         app = build_app(live=args.live, verified_demo=args.verified_demo,
                         demo_image=args.demo_image, demo_token=demo_token,
                         inspect_repo=args.inspect_repo,
+                        aegisgrid_checkpoint_dir=args.aegisgrid_checkpoint_dir,
                         nebius_proposals=args.allow_nebius_proposals)
     except (ValueError, ImportError) as exc:
         p.exit(status=2, message=f"Configuration error: {exc}\n")

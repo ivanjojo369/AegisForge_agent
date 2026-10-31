@@ -264,12 +264,66 @@ def create_mission_http_app(
         return _ok({"mission_id": mission_id, "events": list(rows), "count": len(rows)},
                    max_bytes=max_response_bytes)
 
+    def unbound_record_view(mission_id: str, principal: str, *, inspection: bool) -> dict[str, Any]:
+        """Read-only fallback for checkpoint missions with no persisted workflow.
+
+        It is NOT a reconstructed workflow, execution replay, or verification.
+        All reads go through the authenticated, host-authorized service.
+        """
+        row = service.get_mission(mission_id, actor_id=principal)
+        references = row["references"]
+        base: dict[str, Any] = {
+            "schema": "aegisforge.nexus.mission_control.record_view.v1",
+            "view": "inspection" if inspection else "preview",
+            "mode": "persisted_registry_only",
+            "mission_id": mission_id,
+            "product": row["product"],
+            "status": row["status"],
+            "mission_head_sha256": row["head_sha256"],
+            "workflow_configured": False,
+            "original_workflow_available": False,
+            "reason": "workflow_not_persisted_in_checkpoint",
+            "read_only": True,
+            "authorization_granted": False,
+            "effects_executed": False,
+            "integrity_only": True,
+            "authenticity_verified": False,
+        }
+        if not inspection:
+            base["record_preview"] = {
+                "registered_components": list(row["components"]),
+                "reference_kinds": sorted({r["kind"] for r in references}),
+                "reference_count": row["reference_count"],
+                "event_count": row["event_count"],
+                "can_replay_original_workflow": False,
+                "note": "Vista previa del registro conservado; el plan original no se guardo.",
+            }
+        else:
+            history = service.mission_history(mission_id, actor_id=principal)
+            timeline = NexusMissionMonitorViews.timeline(mission_id, history)
+            base["record_inspection"] = {
+                "components": list(row["components"]),
+                "references": [{"kind": r["kind"], "sha256": r["sha256"]}
+                               for r in references],
+                "timeline": timeline["events"],
+                "event_count": timeline["count"],
+                "note": "Eventos registrados; no son pruebas de ejecucion fisica ni de autenticidad.",
+            }
+        return base
+
     async def preview(request: Request) -> Response:
         mission_id = request.path_params["mission_id"]
         if not _is_safe_mission(mission_id):
             raise HTTPException(404, "Not found")
         _query(request, set())
-        report = service.preview_workflow(mission_id, actor_id=actor(request))
+        principal = actor(request)
+        try:
+            report = service.preview_workflow(mission_id, actor_id=principal)
+        except NexusMissionServiceError as exc:
+            if str(exc) != "mission workflow not configured":
+                raise
+            return _ok(unbound_record_view(mission_id, principal, inspection=False),
+                       max_bytes=max_response_bytes)
         return _ok(report.to_dict(), max_bytes=max_response_bytes)
 
     async def inspect(request: Request) -> Response:
@@ -277,7 +331,14 @@ def create_mission_http_app(
         if not _is_safe_mission(mission_id):
             raise HTTPException(404, "Not found")
         _query(request, set())
-        report = service.inspect_workflow(mission_id, actor_id=actor(request))
+        principal = actor(request)
+        try:
+            report = service.inspect_workflow(mission_id, actor_id=principal)
+        except NexusMissionServiceError as exc:
+            if str(exc) != "mission workflow not configured":
+                raise
+            return _ok(unbound_record_view(mission_id, principal, inspection=True),
+                       max_bytes=max_response_bytes)
         return _ok(report.to_dict(), max_bytes=max_response_bytes)
 
     async def monitor(request: Request) -> Response:

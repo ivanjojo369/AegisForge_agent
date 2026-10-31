@@ -163,6 +163,23 @@ def test_comportamiento():
               </div>
               <p class="fine-note">Valores de ejemplo editables. El formulario no calcula optimización ni asegura mejoras de suministro; prepara un escenario hipotético que debe verificarse en Laboratory.</p>
               <button id="grid-to-task" class="small-btn" type="button">Preparar problema energético <span aria-hidden="true">→</span></button>
+              <button id="grid-simulate" class="small-btn ghost" type="button">Simular 24 horas (sin Nebius)</button>
+              <div class="form-grid" aria-label="Simulación multidiaria">
+                <div class="form-row"><label for="grid-days">Horizonte de simulación</label><select id="grid-days"><option value="1">1 día</option><option value="3" selected>3 días</option><option value="7">7 días</option></select></div>
+                <div class="form-row"><label for="grid-weather">Producción solar hipotética</label><select id="grid-weather"><option value="stable">Constante</option><option value="variable" selected>Variable entre días</option><option value="low_solar">Producción baja</option></select></div>
+                <div class="form-row"><label for="grid-outages">Horario de cortes</label><select id="grid-outages"><option value="fixed">Corte fijo desde las 18:00</option><option value="shifted" selected>Horario variable entre días</option></select></div>
+              </div>
+              <button id="grid-multiday" class="small-btn" type="button">Comparar estrategias (multidía)</button>
+              <div id="grid-multiday-result" class="demo-result" hidden>
+                <strong>Comparación de estrategias · escenarios sintéticos</strong>
+                <pre id="grid-multiday-details" class="mono demo-wrap" aria-live="polite"></pre>
+                <button id="grid-multiday-export" class="small-btn ghost" type="button" disabled>Exportar análisis multidiario JSON</button>
+              </div>
+              <div id="grid-simulation-result" class="demo-result" hidden>
+                <strong>Simulación energética hipotética</strong>
+                <pre id="grid-simulation-details" class="mono demo-wrap" aria-live="polite"></pre>
+                <button id="grid-export-evidence" class="small-btn ghost" type="button" disabled>Exportar evidencia JSON</button>
+              </div>
             </div>
 
             <div id="workspace-live" class="workspace-body" hidden>
